@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drawio-generator"
+version = "1.2.0"
+description = "Draw.io/SVG 矢量图生成引擎 - 根据结构化布局 JSON 渲染矢量图"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

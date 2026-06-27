@@ -1,0 +1,21 @@
+{
+  "domain": "",
+  "atomics_dir": ".kb_manifest_test_articles_atomics",
+  "updated_at": "2026-06-15 08:34:45",
+  "items": [
+    {
+      "path": "test_articles/knowledge-tree-builder-readme.md",
+      "title": "Knowledge Tree Builder — 知识分域建树管线",
+      "status": "extracted",
+      "error": "",
+      "atomics_file": ".kb_manifest_test_articles_atomics/Knowledge Tree Builder _ 知识分域建树管线_30062.json"
+    },
+    {
+      "path": "test_articles/se-agent.md",
+      "title": "精读笔记：SE-Agent 自进化智能体",
+      "status": "extracted",
+      "error": "",
+      "atomics_file": ".kb_manifest_test_articles_atomics/精读笔记_SE-Agent 自进化智能体_70997.json"
+    }
+  ]
+}

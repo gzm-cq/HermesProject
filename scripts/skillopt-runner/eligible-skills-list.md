@@ -1,0 +1,141 @@
+# Eligible Skills for SkillOpt (114 total)
+
+Generated: 2026-06-17 UTC
+
+Filter rules (user confirmed: exclude infrastructure):
+- pinned: false
+- state: active
+- denylist (exclude third-party collections + infrastructure):
+  - ^lark/
+  - ^sensenova/
+  - ^gstack/
+  - ^lark-
+  - ^gstack-
+  - ^sn-
+  - ^honcho-
+  - ^hermes-
+  - ^hindsight-
+  - ^mcp/
+  - /mcp/
+  - ^hermes-agent$
+  - autonomous-ai-agents/hermes-agent
+- includes: created_by=agent OR (local manual business skill with activity ≥ 1)
+
+---
+
+Total eligible: 114
+
+- Data Analysis
+- agent-capability-absorption
+- agent-harness-package-management
+- agent-memory-maintenance
+- agentic-engineering
+- ai-project-feasibility-assessment
+- ai-report-generation-system-implementation
+- architecture-diagram
+- article-publishing
+- audit-methodology
+- axiom-wiki
+- backend-patterns
+- baoyu-article-illustrator
+- baoyu-comic
+- baoyu-infographic
+- category-statistics
+- causal-link-detection
+- ceo-document-review-workflow
+- claude-design
+- clustering-analysis
+- code-audit
+- codebase-inspection
+- coding-agent-delegation
+- coding-standards
+- collect-baseline
+- cost-aware-llm-pipeline
+- council
+- cuml-migration-patterns
+- deep-research
+- design-environment-verification
+- devops/kanban-worker
+- devops/system-health-check
+- dify-knowledge-base-bridge
+- dify-workflow-dsl
+- docker-compose-port-conflict-resolution
+- docker-network-fallback-memory
+- docker-patterns
+- docker-wsl2-network-diagnostics
+- document-audit-optimization
+- docx-infographic-pipeline
+- drawio-generator
+- e2e-testing
+- enhanced-memory-retrieval
+- enterprise-data-governance
+- error-fix-knowledge-base
+- excalidraw
+- executive-briefing
+- executive-briefing-synthesis
+- frontend-patterns
+- honcho_base_memory
+- humanizer
+- infogen
+- journal-paper-submission
+- kanban-orchestrator
+- kanban-system-design
+- kanban-worker
+- karpathy-ai-coding-principles
+- knowledge-document-processing
+- knowledge-navigation
+- knowledge-tree-builder
+- knowledge-tree-plugin
+- llm-generated-content-quality-audit
+- llm-pipeline-component-awareness-audit
+- memory-architecture-design
+- memory-cleanup
+- memory-correction
+- memory-file-management
+- memory-maintenance
+- memory-management
+- memory-md-cleanup
+- mlops/hindsight-memory
+- native-mcp
+- obsidian-dashboard
+- office-hours
+- plan-ceo-review
+- powerpoint
+- project-initializer
+- python-component-init-ordering
+- python-module-fallback-simulation
+- python-patterns
+- report-generation-orchestration
+- report-intent-driven-planning
+- requesting-code-review
+- research-paper-writing
+- researcher
+- santa-method
+- se-agent-evolution
+- search-first
+- secure-hermes-update-workaround
+- self-evolving-agents
+- session-progress-snapshot
+- simplify-code
+- sketch
+- skillopt-hermes-integration
+- software-design-philosophy
+- software-development/ai-report-generation-system-implementation
+- software-development/audit-methodology
+- software-development/knowledge-navigation
+- software-development/systematic-debugging
+- source-document-logical-audit
+- spike
+- subagent-driven-development
+- system-design
+- system-health-check
+- system-operations-rules
+- systematic-debugging
+- test-driven-development
+- user-preference-driven-solution-evaluation
+- web-research
+- wiki-administration
+- wiki-ingestion
+- wiki-management
+- wiki-task-board
+- writing-plans

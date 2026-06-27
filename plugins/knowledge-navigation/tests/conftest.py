@@ -1,0 +1,77 @@
+"""全局测试 fixtures。"""
+
+import os
+import tempfile
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+# pytest 进程必须写临时 trace，避免污染生产 trace.log。
+os.environ["KN_TRACE_LOG_PATH"] = os.path.join(
+    tempfile.gettempdir(), "knowledge-navigation-pytest-trace.log"
+)
+
+import pytest
+
+from knowledge_navigation.config import KnowledgeNavigationConfig
+
+
+@pytest.fixture
+def default_config() -> KnowledgeNavigationConfig:
+    """返回默认测试配置。"""
+    return KnowledgeNavigationConfig()
+
+
+@pytest.fixture(autouse=True)
+def cleanup_hooks_globals() -> None:
+    """自动清理 hooks 模块级全局状态，避免测试间污染。"""
+    import knowledge_navigation.core.hooks as nav_hooks
+    import knowledge_navigation.core.circuit_breaker as _cb
+    _cb._circuit_failures = 0
+    _cb._circuit_open_until = 0.0
+    _cb._circuit_failure_types.clear()
+    nav_hooks._injected_ids.clear()
+    nav_hooks._hit_counter = nav_hooks._HitCounter()
+    nav_hooks._task_tracker = nav_hooks._TaskTracker()
+    yield
+
+
+@pytest.fixture
+def mock_ctx() -> MagicMock:
+    """返回 mock 的 Hermes 插件上下文。"""
+    ctx = MagicMock()
+    ctx.register_hook = MagicMock()
+    return ctx
+
+
+@pytest.fixture
+def sample_raw_results() -> list[dict]:
+    """返回示例原始结果列表。"""
+    return [
+        {"id": "node1", "text": "  First memory text  "},
+        {"id": "node2", "text": "Second memory text"},
+        {"id": "node3", "text": "Third memory text"},
+        {"id": "node4", "text": ""},
+        {"id": "node5", "text": "Fifth memory text"},
+    ]
+
+
+@pytest.fixture
+def sample_rerank_map() -> dict[str, float]:
+    """返回示例 rerank 分数映射。"""
+    return {
+        "node1": 0.95,
+        "node2": 0.75,
+        "node3": 0.55,
+        "node5": 0.88,
+    }
+
+
+@pytest.fixture
+def sample_raw_results_with_time() -> list[dict]:
+    """返回包含时间戳的示例结果。"""
+    now = datetime.now(timezone.utc)
+    return [
+        {"id": "node1", "text": "Recent memory", "mentioned_at": now.isoformat()},
+        {"id": "node2", "text": "Old memory", "mentioned_at": (now - timedelta(days=60)).isoformat()},
+        {"id": "node3", "text": "Medium memory", "mentioned_at": (now - timedelta(days=15)).isoformat()},
+    ]

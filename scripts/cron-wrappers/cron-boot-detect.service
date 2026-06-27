@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermes Cron Boot Catch-up Detect
+Documentation=https://github.com/NousResearch/hermes-agent
+After=hermes-gateway.service
+Requires=hermes-gateway.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 30
+ExecStart=/root/.hermes/scripts/cron-boot-detect.sh
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

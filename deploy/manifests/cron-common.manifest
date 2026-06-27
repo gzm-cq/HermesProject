@@ -1,0 +1,10 @@
+# cron-common 部署清单
+# 源:  scripts/
+# 标:  /root/.hermes/lib/
+# 影响: 所有 cron 定时任务的公共库；无需重启服务
+
+cron_common.sh
+cron_job_template.sh
+
+!**/__pycache__/**
+!**/*.pyc

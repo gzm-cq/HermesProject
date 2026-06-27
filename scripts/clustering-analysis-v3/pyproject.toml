@@ -1,0 +1,114 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clustering-analysis"
+version = "0.1.0"
+description = "Causal Chain Clustering Analysis for Hermes Memory"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Hermes Team", email = "team@hermes.ai"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+keywords = ["hermes", "clustering", "causal-chain"]
+dependencies = [
+    "typer>=0.9.0",
+    "psycopg2-binary",
+    "numpy",
+    "torch",
+    "scikit-learn",
+    "requests",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "black>=24.0",
+    "mypy>=1.0.0",
+    "pre-commit>=3.0.0",
+]
+dedup = [
+    "datasketch>=1.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/hermes-ai/clustering-analysis"
+Repository = "https://github.com/hermes-ai/clustering-analysis"
+
+[project.entry-points.console_scripts]
+clustering-analysis = "clustering_analysis.cli:main"
+clustering-analysis-v3 = "clustering_analysis.cli:main"  # 兼容旧命令名
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.yml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "C4",
+    "UP",
+    "SIM",
+]
+ignore = [
+    "E501",
+    "B008",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["clustering_analysis"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+]
+markers = [
+    "unit: unit tests",
+    "integration: integration tests (require external services)",
+    "e2e: end-to-end tests",
+]

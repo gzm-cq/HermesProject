@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "self-evolving"
+version = "0.1.0"
+description = "SE-Agent 自进化算子 — 轨迹级自进化能力"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6.0", "typer>=0.9.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.entry-points.console_scripts]
+se-revision = "self_evolving.scripts.se_revision:main"
+se-recombine = "self_evolving.scripts.se_recombine:main"
+se-refine = "self_evolving.scripts.se_refine:main"
+kanban-reflect = "kanban_reflection.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

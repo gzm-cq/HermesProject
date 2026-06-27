@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-plugin-template"
+version = "0.1.0"
+description = "官方推荐的 Hermes 插件开发模板（Python）"
+authors = [{name = "Hermes Team", email = "dev@hermes.ai"}]
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["hermes", "plugin", "ai", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+# ✅ Hermes 插件必需：注册入口点
+# 格式："插件ID" = "python包名.模块名:函数名"
+[project.entry-points."hermes.plugins"]
+"template" = "hermes_plugin_template.main:register"
+
+[project.urls]
+Homepage = "https://docs.hermes.ai/plugins/python"
+Repository = "https://github.com/hermes-ai/plugins"

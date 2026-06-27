@@ -1,0 +1,95 @@
+# ============================================================
+# HermesProject 根目录 .gitignore
+# ============================================================
+
+# === 系统残留 ===
+nul
+
+# === Python 通用 ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.installed.cfg
+build/
+dist/
+develop-eggs/
+sdist/
+wheels/
+MANIFEST
+
+# === 测试 / 覆盖率 ===
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+nosetests.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# === 虚拟环境 ===
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# === IDE / 编辑器 ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Qoder（自动生成 / 个人设置）===
+.qoder/repowiki/
+.qoder/settings.local.json
+
+# === 项目运行时产物 ===
+state/
+search_cache/
+memory/
+test_output.txt
+test_outputs/
+*.db
+*.sqlite
+*.log
+
+# === 临时文件 ===
+*.tmp
+tmp/
+temp/
+
+# === 报告生成产物（在子目录中有更精细规则）===
+reports/**/sections/
+reports/**/charts/
+exports/
+outputs/
+
+# === 数据目录中的大文件 / 生成物 ===
+data/raw/
+data/processed/
+data/interim/
+
+# === 模型文件 ===
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.pth
+
+# === 密钥 ===
+*.secret
+config/local*.yaml
+config/local*.yml

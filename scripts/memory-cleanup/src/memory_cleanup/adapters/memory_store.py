@@ -1,0 +1,257 @@
+"""记忆文件读写适配器 — 读取 MEMORY.md/USER.md 并执行清理操作。"""
+
+import json
+import logging
+import re
+import shutil
+import sys
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from memory_cleanup.config import AppConfig, CONFIG
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryFileStore:
+    """MEMORY.md / USER.md 读写适配器。
+
+    提供：
+    - load_file(): 读取并去重条目
+    - execute_cleanup(): 执行 merge/compress/remove + Hindsight retain
+    """
+
+    def __init__(self, config: AppConfig = CONFIG) -> None:
+        self._config = config
+
+    def load_file(self, path: str) -> list[str]:
+        """加载记忆文件，按 entry_delimiter 分割并去重。"""
+        p = Path(path)
+        if not p.exists():
+            return []
+        raw = p.read_text(encoding="utf-8")
+        entries = [e.strip() for e in raw.split(self._config.entry_delimiter)]
+        entries = [e for e in entries if e]  # 过滤空字符串（含仅分隔符文件）
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for e in entries:
+            norm = re.sub(r"\s+", "", e).lower()
+            if norm not in seen:
+                seen.add(norm)
+                deduped.append(e)
+        return deduped
+
+    def _retain(self, content: str) -> bool:
+        """retain 到 Hindsight（2 次重试），返回成功/失败。"""
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(
+                    self._config.hindsight_url,
+                    data=json.dumps({"items": [{"content": content}]}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=120):
+                    return True
+            except Exception as e:
+                if attempt < 1:
+                    continue
+                logger.warning("retain failed after 2 attempts: %s", e)
+                return False
+
+    def execute_cleanup(
+        self,
+        entries: list[str],
+        source: str,
+        target: str,
+        merge_list: list[dict[str, Any]],
+        compress_list: list[dict[str, Any]],
+        remove_list: list[dict[str, Any]],
+        v2_correct: list[dict[str, Any]],
+        v2_corrected: list[dict[str, Any]],
+        v2_keep: list[dict[str, Any]],
+        hindsight_list: list[dict[str, Any]] | None = None,
+    ) -> dict[str, list]:
+        """执行清理：merge/compress/remove + Phase 2 三类判决 + hindsight。
+
+        延迟导入 hermes-agent MemoryStore，仅在 --apply 模式下触发。
+        """
+        # 延迟导入 hermes-agent MemoryStore
+        agent_path = self._config.hermes_agent_path
+        if agent_path not in sys.path:
+            sys.path.insert(0, agent_path)
+        from tools.memory_tool import MemoryStore  # type: ignore[import]
+
+        # 备份
+        mem_dir = Path(self._config.memory_path).parent
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak_path = mem_dir / f"{target.upper()}.md.bak.{ts}"
+        src_path = mem_dir / f"{target.upper()}.md"
+        if src_path.exists():
+            shutil.copy2(str(src_path), str(bak_path))
+            print(f"  📦 备份: {bak_path.name}", flush=True)
+
+        limit = self._config.memory_char_limit if target == "memory" else self._config.user_char_limit
+        store = MemoryStore(memory_char_limit=limit, user_char_limit=limit)
+        store.load_from_disk()
+
+        results: dict[str, list] = {"ok": [], "fail": []}
+        removed_already: set[int] = set()
+
+        def _remove_key(idx: int) -> str:
+            """Return a substring that uniquely identifies entries[idx] in this run.
+
+            Hermes MemoryStore.remove() deliberately refuses ambiguous substring
+            matches. USER.md can contain near-duplicates with identical first
+            80 chars, so a fixed prefix causes "Multiple entries matched". Use
+            the shortest unique prefix and fall back to the full entry.
+            """
+            entry = entries[idx]
+            for length in (80, 120, 160, 240, 320, len(entry)):
+                key = entry[: min(length, len(entry))]
+                if sum(1 for e in entries if key and key in e) == 1:
+                    return key
+            return entry
+
+        def _remove(idx: int) -> bool:
+            r = store.remove(target, _remove_key(idx))
+            if r.get("success"):
+                results["ok"].append((source, idx, "remove"))
+                removed_already.add(idx)
+                return True
+            results["fail"].append((source, idx, f"remove: {r.get('error', '')}"))
+            return False
+
+        def _add(content: str) -> bool:
+            r = store.add(target, content)
+            if r.get("success"):
+                results["ok"].append((source, -1, "add"))
+                return True
+            results["fail"].append((source, -1, f"add: {r.get('error', '')}"))
+            return False
+
+        # 1. Merge
+        for m in merge_list:
+            merged = m.get("合并为", "")
+            indices = m.get("indices", [])
+            if merged and _add(merged):
+                for j in indices:
+                    if j < len(entries):
+                        _remove(j)
+
+        # 2. Compress（先 add 再 remove，防止 add 失败导致数据丢失）
+        for c in compress_list:
+            idx = c.get("index", -1)
+            compressed = c.get("精简为", "")
+            if idx < 0 or idx >= len(entries) or not compressed:
+                continue
+            if _add(compressed):
+                if _remove(idx):
+                    results["ok"].append((source, idx, "compress"))
+                else:
+                    results["fail"].append((source, idx, "compress: remove failed after add"))
+
+        # 3+4. 收集 retain 任务（corrected + correct）
+        retain_tasks: list[tuple[int, str, str]] = []
+
+        for item in v2_corrected:
+            idx = item.get("index", -1)
+            corrected = item.get("corrected_text", "").strip()
+            if idx < 0 or idx >= len(entries):
+                continue
+            original = entries[idx]
+            orig_kw = set(re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z]{4,}", original))
+            corr_kw = set(re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z]{4,}", corrected))
+            kw_overlap = len(orig_kw & corr_kw) / max(len(orig_kw), 1) if corrected else 0
+            # 英文主导场景回退到字符级重叠
+            total_kw = max(len(orig_kw), len(corr_kw))
+            char_overlap = kw_overlap
+            if total_kw < 3 and corrected:
+                orig_chars = set(original.lower())
+                corr_chars = set(corrected.lower())
+                char_overlap = len(orig_chars & corr_chars) / max(len(orig_chars | corr_chars), 1)
+                effective_overlap = char_overlap
+            else:
+                effective_overlap = kw_overlap
+            has_real_fix = (
+                corrected
+                and len(corrected) > 10
+                and corrected != original[: len(corrected)]
+                and "修正" not in corrected[:20]
+                and "需补充" not in corrected[:20]
+                and effective_overlap > 0.2
+            )
+            retain_tasks.append((idx, corrected if has_real_fix else original, "corrected"))
+
+        for item in v2_correct:
+            idx = item.get("index", -1)
+            if idx < 0 or idx >= len(entries):
+                continue
+            retain_tasks.append((idx, entries[idx], "correct"))
+
+        # 并行 retain
+        print(f"\n  {source}: retain {len(retain_tasks)} 条（{self._config.max_workers} 线程并行）...", flush=True)
+        retain_ok: set[int] = set()
+        retain_fail: set[int] = set()
+
+        def _retain_worker(task: tuple[int, str, str]) -> tuple[int, bool, str]:
+            idx, content, label = task
+            ok = self._retain(content)
+            return idx, ok, label
+
+        with ThreadPoolExecutor(max_workers=self._config.max_workers) as pool:
+            future_to_task = {pool.submit(_retain_worker, t): t for t in retain_tasks}
+            for f in as_completed(future_to_task):
+                try:
+                    idx, ok, label = f.result(timeout=30)
+                    if ok:
+                        retain_ok.add(idx)
+                        results["ok"].append((source, idx, label))
+                    else:
+                        retain_fail.add(idx)
+                        results["fail"].append((source, idx, f"{label}: retain failed"))
+                except TimeoutError:
+                    idx, _, label = future_to_task[f]
+                    retain_fail.add(idx)
+                    results["fail"].append((source, idx, f"{label}: retain timeout (30s)"))
+
+        print(f"    retain: {len(retain_ok)} OK / {len(retain_fail)} 失败跳过", flush=True)
+
+        # 5. 串行 remove（只删 retain 成功的）
+        for idx in sorted(retain_ok):
+            _remove(idx)
+
+        # 6. Hindsight retain → remove（先 retain 再删，防止数据丢失）
+        if hindsight_list:
+            print(f"    hindsight: {len(hindsight_list)} 条 retain → remove...", flush=True)
+            for h in hindsight_list:
+                idx = h.get("index", -1)
+                if idx < 0 or idx >= len(entries):
+                    continue
+                if idx in removed_already:
+                    continue
+                if self._retain(entries[idx]):
+                    if _remove(idx):
+                        results["ok"].append((source, idx, "hindsight"))
+                    else:
+                        results["fail"].append((source, idx, "hindsight: remove failed after retain"))
+                else:
+                    logger.warning("hindsight [%d]: retain 失败，保留原始条目", idx)
+                    results["fail"].append((source, idx, "hindsight: retain failed"))
+
+        # 7. 直接删（空§/合并覆盖/清理自身记录）
+        skip_set = {i.get("index", -1) for i in v2_correct + v2_corrected}
+        keep_set = {i.get("index", -1) for i in v2_keep}
+
+        for r in remove_list:
+            idx = r.get("index", -1)
+            if idx < 0:
+                continue
+            if idx in skip_set or idx in keep_set or idx in removed_already:
+                continue
+            _remove(idx)
+
+        return results

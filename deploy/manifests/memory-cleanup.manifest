@@ -1,0 +1,23 @@
+# memory-cleanup 部署清单
+# 源:  scripts/memory-cleanup/
+# 标:  /root/.hermes/scripts/memory-cleanup/
+# 影响: 记忆分类清理脚本（手动触发）；无需重启服务
+#
+# 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
+
+# === Include ===
+src/memory_cleanup/**/*.py
+compat/**/*.py
+config/**/*.yaml
+pyproject.toml
+run.sh
+daily_dryrun.sh
+memory-classify-v6.py
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/.pytest_cache/**
+!**/*.egg-info/**
+!**/tests/**
+!**/test_*.py

@@ -1,0 +1,24 @@
+# knowledge-navigation 部署清单
+# 源:  plugins/knowledge-navigation/
+# 标:  /root/.hermes/plugins/knowledge-navigation/
+# 影响: Hermes 网关插件；部署完成后将自动重启 hermes-gateway.service
+#
+# 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
+
+# === Include ===
+__init__.py
+src/knowledge_navigation/**/*.py
+scripts/**/*.py
+config/**/*.yaml
+config/**/*.json
+plugin.yaml
+pyproject.toml
+README.md
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/.pytest_cache/**
+!**/*.egg-info/**
+!**/tests/**
+!**/test_*.py

@@ -1,0 +1,9 @@
+# skillopt-runner.manifest — 部署清单
+# 格式：每行一个匹配模式，!开头表示排除
+# 注意：显式列出文件，避免 globstar/extglob 在 subshell 中失效的问题
+
+skillopt_runner.py
+config.yaml
+!__pycache__/**
+!state.json
+!allowlist.yaml

@@ -1,0 +1,19 @@
+# drawio-generator 部署清单
+# 源:  scripts/drawio-generator/
+# 标:  /root/.hermes/scripts/drawio-generator/
+# 影响: draw.io / SVG 矢量图生成脚本；无需重启服务
+#
+# 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
+
+# === Include ===
+src/drawio_generator/**/*.py
+config/**/*.yaml
+pyproject.toml
+run.sh
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/.pytest_cache/**
+!**/*.egg-info/**
+!**/tests/**
