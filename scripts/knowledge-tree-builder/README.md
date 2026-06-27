@@ -211,15 +211,17 @@ knowledge-tree-builder consolidate run --no-merge-domains
 knowledge-tree-builder consolidate process-timeouts
 ```
 
-`consolidate run` 自动执行：
+`consolidate run` 自动执行（带 7 步骤进度标记，可精确定位卡住步骤）：
 
-| 阶段 | 动作 | 条件 |
+| 步骤 | 动作 | 条件 |
 |------|------|------|
-| 1 | 碎片 domain 合并 | 子节点 < 5 的 domain 合并到最近的大 domain |
-| 2 | 子科目拆分（HDBSCAN聚类） | 子节点 > 50 |
-| 3 | confidence 更新 | 有使用日志 |
-| 4 | 跨科建边 | 共现率 > 80% |
-| 5 | 超时审查项处理 | review_queue 有超时 |
+| 1/7 | 加载使用日志 | — |
+| 2/7 | 加载 confidence 记录 | — |
+| 3/7 | 批量更新 confidence | 有使用日志 |
+| 4/7 | 碎片 domain 合并 | 子节点 < 配置阈值 |
+| 5/7 | 子科目拆分（HDBSCAN 聚类，60s 超时保护） | 子节点 > 50 |
+| 6/7 | 处理超时审查项 | review_queue 有超时 |
+| 7/7 | 构建 KP 级关联边 | 默认开启 |
 
 ## 配置
 

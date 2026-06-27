@@ -1,10 +1,11 @@
 """Hermes Hook 实现。
 
-每次 LLM 调用前自动 recall Hindsight + 知识树，融合两个分域后注入。
+每次 LLM 调用前自动执行：三层门控 → LLM Router {h,kt,s} mask → 按 mask 条件执行 HS/KT/SK → 后处理注入。
 使用 Hindsight trace 模式获取 rerank_score 做精度过滤，日志记录监控。
 知识树 recall 通过 knowledge-tree-plugin 公共 API 调用。
 
 因果链数据由 build-causal-links.py 一次性补齐，Hook 只做读取。
+Router（core/router.py）替代了旧版 _classify_intent 规则分类，基于 need analysis 做三路决策。
 """
 
 import json
@@ -646,7 +647,7 @@ def _candidate_score(result: dict[str, Any]) -> float:
 
 
 def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
-    """每次 LLM 调用前自动 recall Hindsight，过滤低分噪声，记录质量探针。"""
+    """每次 LLM 调用前自动执行：三层门控 → LLM Router → 三路 mask 条件执行 → 后处理注入。"""
     # 第一道门：非用户平台（curator/cron/子代理等）→ 无条件跳过
     if skip_non_user(kwargs.get("platform", "")):
         logger.debug(
