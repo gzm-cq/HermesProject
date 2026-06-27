@@ -1,0 +1,78 @@
+{
+  "title": "精读笔记：SE-Agent 自进化智能体",
+  "path": "test_articles/se-agent.md",
+  "atomics": [
+    {
+      "text": "Revision 算子通过分析失败轨迹来修改代码，从而从错误中学习正确的实现方式。",
+      "type": "principle",
+      "claims_count": 1,
+      "source_candidate_index": 0,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "Revision 算子维护一个失败模式库，每次失败后提取关键模式并匹配解决方案。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 1,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "Recombination 算子将已有功能模块重新组合来解决新问题。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 2,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "Refinement 算子在成功基础上进行微调优化，不需要失败触发。",
+      "type": "principle",
+      "claims_count": 1,
+      "source_candidate_index": 3,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "Refinement 算子适合逐步改进已有功能。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 4,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "SE-Agent 的三个进化算子按优先级执行，从高到低为 Revision、Refinement、Recombination。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 5,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "Revision 在失败后触发，Refinement 在成功后触发，Recombination 在遇到全新问题时触发。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 6,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "相比传统手动调参，SE-Agent 的自动进化机制在复杂任务上的成功率提升了约 35%。",
+      "type": "conclusion",
+      "claims_count": 1,
+      "source_candidate_index": 7,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "相比传统手动调参，SE-Agent 的收敛速度较慢，需要更多的迭代次数。",
+      "type": "conclusion",
+      "claims_count": 1,
+      "source_candidate_index": 8,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    },
+    {
+      "text": "SE-Agent 适用于需要持续优化的长期任务。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 9,
+      "source_title": "精读笔记：SE-Agent 自进化智能体"
+    }
+  ],
+  "count": 10,
+  "extracted_at": "2026-06-15 08:34:45"
+}

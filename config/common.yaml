@@ -1,0 +1,5 @@
+# Global shared config for all Hermes scripts
+
+bank_id: "hermes"
+llm_api_url: "http://127.0.0.1:4142/v1/chat/completions"
+embed_base_url: "https://api.siliconflow.cn/v1"

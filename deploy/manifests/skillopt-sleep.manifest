@@ -1,0 +1,31 @@
+# skillopt-sleep.manifest — 部署清单
+# 源:  scripts/skillopt-sleep/
+# 标:  /root/.hermes/skillopt-sleep/
+# 格式：每行一个匹配模式，!开头表示排除
+
+# === Include ===
+**/*.py
+**/*.md
+**/*.yaml
+**/*.yml
+**/*.toml
+**/*.txt
+**/*.svg
+**/*.png
+**/*.html
+**/*.json
+**/*.sh
+LICENSE
+SECURITY.md
+CONTRIBUTING.md
+README.md
+pyproject.toml
+requirements.txt
+index.html
+mkdocs.yml
+skillopt.html
+
+# === Exclude ===
+!**/__pycache__/**
+!**/.git/**
+!**/data/**

@@ -1,0 +1,802 @@
+[
+  {
+    "query_id": "gen_001",
+    "query": "测试验证我来做，具体代码由qoder实现对吗？",
+    "expected_ids": [
+      "0ae728e6-97f6-4075-833b-a1fd043416a5"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_002",
+    "query": "之前T22完整计划放在self-evolving/docs/plans/目录里了吗？",
+    "expected_ids": [
+      "a9494cea-07a2-4a82-a5eb-a8081473bf9e"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_003",
+    "query": "Agent系统如何实现规模化与持续进化？",
+    "expected_ids": [
+      "83d4e7e4-a862-4248-929f-6be829bf631d"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_004",
+    "query": "P1级修复里C-P0-1检查方法更新成可编程验证了吗？",
+    "expected_ids": [
+      "dbf57982-9626-446b-b8b6-41c423b672c6"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_005",
+    "query": "零开发成本的三个任务具体是什么？",
+    "expected_ids": [
+      "c436482b-8f60-4edb-87c4-a0dfec19b8a8"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_006",
+    "query": "聚类脚本的日志记录功能实现了吗？",
+    "expected_ids": [
+      "2b54d546-a2c8-470c-96d2-843586e96462"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_007",
+    "query": "T-P1-1和E-P2-2的pre_tool_call插件共存策略该如何解决？",
+    "expected_ids": [
+      "10ea6324-4360-45d5-8e3b-0019271f288b"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_008",
+    "query": "HDBSCAN大簇被跳过导致死循环，无实体记忆丢失怎么修复？",
+    "expected_ids": [
+      "49129714-b41e-441d-8374-d58cf7e70f26"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_009",
+    "query": "Context Engineering 的六项任务优先级是怎样的？",
+    "expected_ids": [
+      "09b1950e-5995-4ad7-89b1-b7f86732ddd8"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_010",
+    "query": "之前的基线评测80条手工查询只命中5%，为什么？",
+    "expected_ids": [
+      "44982f65-d620-49a0-987d-f37a01b0665f"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_011",
+    "query": "Hermes Agent 把开发方案发到飞书的文件名是什么？",
+    "expected_ids": [
+      "51a0e615-37e6-4d6c-8f37-6c6c75544551"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_012",
+    "query": "我的RAG系统总共有多少条数据？之前抽取的样本量是多少？",
+    "expected_ids": [
+      "ec3e6706-a632-4b56-8fc0-4042278903c0"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_013",
+    "query": "工具生态化降低接入成本，但",
+    "expected_ids": [
+      "13cce300-2892-4cfa-935f-99899f6d0013"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_014",
+    "query": "忘记信号的定期重评估机制是怎么实现的？",
+    "expected_ids": [
+      "5f53eceb-a10b-4b4f-8f28-df2e7ab4be63"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_015",
+    "query": "T22 Agent的Context Engineering和Evaluation笔记链接补全了吗？",
+    "expected_ids": [
+      "bca737e8-02b7-4aeb-a16b-e9d2221b6825"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_016",
+    "query": "Manus的语境工程有哪些产品化实践方法？",
+    "expected_ids": [
+      "4f260d96-2c81-42f2-8bda-932786024957"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_017",
+    "query": "之前发现的聚类代码bug有哪些？",
+    "expected_ids": [
+      "cd694617-ac34-45dd-9a58-dbc136ea9504"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_018",
+    "query": "插件功能分析中，Compaction和TaskTracker的日志盲点怎么解决？",
+    "expected_ids": [
+      "98337225-558d-4963-abb2-51be6cc817a7"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_019",
+    "query": "审计发现的那几个P1技术问题现在有结论了吗？",
+    "expected_ids": [
+      "61e72259-47cb-4c3a-9c88-d0f93c89597a"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_020",
+    "query": "Manus的上下文工程有哪些核心技巧？",
+    "expected_ids": [
+      "f6fdd1f3-fa17-415e-878f-1ea35e20468a"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_021",
+    "query": "这两个 MD 和 HTML 文件内容一样吗？",
+    "expected_ids": [
+      "448895c1-3844-4a6b-b3f0-c3d02ac5e759"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_022",
+    "query": "3.8.0 版本修复了 print_report 路径和字段名的问题吗？",
+    "expected_ids": [
+      "68365a80-f8a4-4e73-85ea-c298568c217b"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_023",
+    "query": "如何判断 LLM 调用是否正常没有错误或超时？",
+    "expected_ids": [
+      "8e20e77e-3626-4d0f-9a2c-02a3339bb79e"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_024",
+    "query": "HDBSCAN的层次树如何自动选择不同密度的簇？",
+    "expected_ids": [
+      "d269ef9a-cd59-456a-ba1e-dafd938dce80"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_025",
+    "query": "MCP巡检系统的健康检查和Wiki索引检查状态如何？",
+    "expected_ids": [
+      "bcf390b1-6e7c-4a67-9556-7e50b1011b42"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_026",
+    "query": "数据飞轮的核心闭环有哪些关键步骤？",
+    "expected_ids": [
+      "c32b64c7-f76b-4060-95db-5a8acc7c5566"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_027",
+    "query": "上次用MCP让Axiom Wiki自行修正后，只需运行update_index？",
+    "expected_ids": [
+      "b38ed930-b841-4ac3-9a82-0113e479dc80"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_028",
+    "query": "审计发现的逻辑数字一致性矛盾具体是什么？",
+    "expected_ids": [
+      "6e62b025-aef6-494e-8251-edbc0ad64cad"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_029",
+    "query": "代码修改项的分类情况是怎样的？",
+    "expected_ids": [
+      "3dabdc2b-88f0-48f2-b8ec-43b5d20db745"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_030",
+    "query": "为什么不推荐使用Superpowers、Maestro等工具？",
+    "expected_ids": [
+      "cec490b6-a5c0-45b2-bf5b-cefe1b9f94f3"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_031",
+    "query": "第二阶段自进化前沿方法精读的具体安排是什么？",
+    "expected_ids": [
+      "08f53677-62d1-4fab-8620-e27e85fcfe09"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_032",
+    "query": "自动Skill生成模块的S-P2-2计划进展如何？",
+    "expected_ids": [
+      "63ed134b-42ba-46a4-a4d3-42271f86ab54"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_033",
+    "query": "我们之前讨论的bootstrap置信区间替代基线替换的方案是怎么考虑的？",
+    "expected_ids": [
+      "b869005c-2b80-4d26-96a6-1f8f5304be99"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_034",
+    "query": "修复建议的优先级排序具体是什么？",
+    "expected_ids": [
+      "f94cc659-32f3-4d70-b2ad-fc7d6cf863ec"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_035",
+    "query": "聚类脚本中cluster_count为什么显示的是实体数？",
+    "expected_ids": [
+      "5c00335c-ae00-4686-86b7-da7ec407e235"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_036",
+    "query": "实施前要不要先验证仓库提交日期并锁定版本？",
+    "expected_ids": [
+      "60c644ac-e74b-41a4-ae23-20fe2d06b0e5"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_037",
+    "query": "那13项任务是否涉及修改Hermes原生代码？",
+    "expected_ids": [
+      "04364555-0a2e-46ba-b69f-db1c8448a27d"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_038",
+    "query": "我之前说先不急着用cuML HDBSCAN，现在需要处理吗？",
+    "expected_ids": [
+      "336d1d47-1c06-4651-b077-b67a9f97fbd2"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_039",
+    "query": "Agent Engineering文献精读计划的阶段一和阶段二完成了吗？",
+    "expected_ids": [
+      "2e550981-36fa-414f-b2bd-7dc895530d2d"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_040",
+    "query": "MCP协议在权限、注入和供应链方面有什么挑战？",
+    "expected_ids": [
+      "3958f9da-d320-4f6c-b1db-c003e2b64646"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_041",
+    "query": "聚类cron任务是怎么新增的？依赖链怎么补充？",
+    "expected_ids": [
+      "2f3f7144-a846-4017-aaa8-28c58d5bf574"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_042",
+    "query": "如何将成功的Worker策略自动保存为Hermes skill？",
+    "expected_ids": [
+      "16f0ff42-ef4b-46db-86e1-fc5be02c862e"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_043",
+    "query": "Hermes不修改核心源码的任务有哪些？",
+    "expected_ids": [
+      "23fdb463-253e-4618-8ee5-1ea2a756ca5f"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_044",
+    "query": "当前任务计划的优先级和分类是什么？",
+    "expected_ids": [
+      "25560644-cdb7-45ec-9454-e000dd1b6411"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_045",
+    "query": "Hermes Agent的Hindsight Memory是如何存储跨会话上下文的？",
+    "expected_ids": [
+      "f238d8cd-fdba-4bb3-9cc6-bd82a69cb69f"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_046",
+    "query": "PG实体有多少个？有first_seen时间",
+    "expected_ids": [
+      "94647c1c-0401-483d-932b-b59aadefa26f"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_047",
+    "query": "总任务数到底是32项还是15项？",
+    "expected_ids": [
+      "8529bdde-bb85-453b-94c1-5e6c6094c9ff"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_048",
+    "query": "Kanban失败后的反思回路具体指什么？",
+    "expected_ids": [
+      "b6c98c82-8776-4994-99e5-5ea7a07cdd54"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_049",
+    "query": "C-P0-1检查方法是不是改成检测message末尾的<memory-context>标签了？",
+    "expected_ids": [
+      "56d51fd2-a024-40cd-8b6b-1289a47a7d56"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_050",
+    "query": "如何避免公开Benchmark失真？私有评测和回归测试有效吗？",
+    "expected_ids": [
+      "3f89186b-0772-49dc-a5f5-e63029d8f8dd"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_051",
+    "query": "“为什么只有少数簇达到了LLM调用门槛？”",
+    "expected_ids": [
+      "19764aa3-39e5-4b07-9243-f3447cad9034"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_052",
+    "query": "那些开源仓库的版本没有锁定的风险怎么解决？",
+    "expected_ids": [
+      "b6d96fd5-45ac-48c4-9fd3-a09507653ce6"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_053",
+    "query": "当前有哪些可执行的任务计划？",
+    "expected_ids": [
+      "31f248b7-54a3-4eee-8100-84ca74042241"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_054",
+    "query": "当前AI开发中workflow和agent的行业共识是什么？",
+    "expected_ids": [
+      "2e6829f5-62f7-47c2-a56e-ff03f940d24d"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_055",
+    "query": "那个AI开发流水线评估报告的8个环节集成度结论是什么",
+    "expected_ids": [
+      "8233703f-c7c6-42d2-9393-a60fc7252c8f"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_056",
+    "query": "技术可行性维度的四个问题是什么？",
+    "expected_ids": [
+      "43922a0c-902f-483d-b1b1-74069592e2d9"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_057",
+    "query": "Hermes Agent 确认的五个功能都实现了吗？",
+    "expected_ids": [
+      "b4a3e38f-012d-4aed-81c1-8ad4c806636d"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_058",
+    "query": "聚类效果跟踪需要添加新日志吗？",
+    "expected_ids": [
+      "c2a2feb6-5729-4d19-878d-73fba606b384"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_059",
+    "query": "T-P1-1和E-P2-2的插件合并方案确定了没？",
+    "expected_ids": [
+      "9668c3a5-8358-430c-9087-33800d05da6b"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_060",
+    "query": "评测查询命中率只有5%，为什么这么低？",
+    "expected_ids": [
+      "2099b73f-8f41-43e4-963c-11f5329086dc"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_061",
+    "query": "审计的四个维度评估结果如何？P0项需要确认哪些？",
+    "expected_ids": [
+      "2d4a4b02-663c-4acd-8bae-bf995962b62a"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_062",
+    "query": "部署步骤缺失导致recall@k闭环",
+    "expected_ids": [
+      "a82256ee-3dac-4530-b968-09ab379cdd04"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_063",
+    "query": "验证器显示一个文件未改，为什么和描述矛盾？",
+    "expected_ids": [
+      "bc8e8948-0040-460f-8dcd-1f0f2f37370b"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_064",
+    "query": "Hermes Agent部署了哪五个插件功能？",
+    "expected_ids": [
+      "b51eaf9a-847a-4398-8487-be9b4d94fae1"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_065",
+    "query": "因果链增强后新增了多少条因果链？",
+    "expected_ids": [
+      "fdad19bf-acda-407d-a7e4-5714e34b8854"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_066",
+    "query": "如何在WSL2中配置Hermes虚拟环境？",
+    "expected_ids": [
+      "1d2fe827-a553-4346-bb27-89d0f4294089"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_067",
+    "query": "干跑测试的聚类结果如何，生成了多少新实体？",
+    "expected_ids": [
+      "9c018216-19fa-4863-b5ff-4f8b77f52c1e"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_068",
+    "query": "未来18个月的技术方向优先级是什么？",
+    "expected_ids": [
+      "ec7db979-f092-4b4f-a2d1-d6bc328cf38e"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_069",
+    "query": "hdbscan_cluster_count变量未定义是什么原因？",
+    "expected_ids": [
+      "56c6a352-54eb-4a56-a045-48024a0e7890"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_070",
+    "query": "统计显著性和文本富化泛化性的细节有哪些？",
+    "expected_ids": [
+      "dd33d403-c701-4047-88b8-6e4006e0818a"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_071",
+    "query": "hdbscan_cluster_count未定义会导致NameError吗？",
+    "expected_ids": [
+      "a233a2ff-2018-4cc4-b280-ebc0c5a27a27"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_072",
+    "query": "反思回路的实现进度和交付时间安排是怎样的？",
+    "expected_ids": [
+      "1c8c3e64-0bd8-4154-8bd4-bf6008ee0db6"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_073",
+    "query": "T22计划的三阶段和依赖关系是什么？",
+    "expected_ids": [
+      "8581ec0d-f453-47ad-ae08-6fa0feb96957"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_074",
+    "query": "现有数据为什么无法支持聚类和实体质量评估？",
+    "expected_ids": [
+      "0a6a4077-c1e2-4557-a90b-015e27a43b7c"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_075",
+    "query": "当前任务计划中P0级有哪些任务？",
+    "expected_ids": [
+      "17c67da2-4c56-466e-8aed-e12246ca39ba"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_076",
+    "query": "因果链提取用LLM还是开源库更靠谱？",
+    "expected_ids": [
+      "4884fd07-2637-41c8-a215-e35248b07ccd"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_077",
+    "query": "记忆系统的聚类脚本需要cron定期运行吗？",
+    "expected_ids": [
+      "f3abcd59-7aab-45fd-9211-c10f905b069e"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_078",
+    "query": "我们之前讨论的统计显著性验证和文本泛化性细节是什么？",
+    "expected_ids": [
+      "ea5c9084-724c-4e56-8cad-748153bb9854"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_079",
+    "query": "HDBSCAN的cluster_count和Silhouette负值问题怎么解决？",
+    "expected_ids": [
+      "9303cb8f-c81a-4c7e-b532-2ad1c2d331bf"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_080",
+    "query": "那个 compaction 任务改成 pip 安装库了？",
+    "expected_ids": [
+      "517de14c-0424-4cf2-8c55-4df7c2db36f7"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_081",
+    "query": "我们的计划里是不是漏掉了聚类脚本和记忆清理？",
+    "expected_ids": [
+      "6a59aa27-6453-4137-92e4-3e830fed1a14"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_082",
+    "query": "P0和P1任务计划中哪些需要优先执行？",
+    "expected_ids": [
+      "c365c731-57fd-47f4-ac31-9a94f1b0c8f0"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_083",
+    "query": "怎么只引用rtk-hermes的pre_tool_call hook，不装RTK？",
+    "expected_ids": [
+      "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_084",
+    "query": "上次审计的P0问题需要先确认吗？",
+    "expected_ids": [
+      "645f44cf-629a-4b08-bc75-e03b574f106b"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_085",
+    "query": "6月4日系统全量运行的数据统计结果是什么？",
+    "expected_ids": [
+      "1da2634b-3198-4a86-9f5f-b86ff0660161"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_086",
+    "query": "我们之前讨论的每个领域两个表格具体是什么？",
+    "expected_ids": [
+      "e163424d-724a-48df-9f2f-75825d43ee28"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_087",
+    "query": "之前修复的四个bug，重新测试结果都通过了吗？",
+    "expected_ids": [
+      "0bb3dafb-f794-4473-807a-cc4e0c2fa16b"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_088",
+    "query": "之前四个代码bug修复了吗？Batch_embed的None是API问题？",
+    "expected_ids": [
+      "3538d714-9911-4c12-83b1-6ff27579cc96"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_089",
+    "query": "Hermes对AgentBench的失败模式分析中TLE占比多少？",
+    "expected_ids": [
+      "99d94fd0-aaa3-4af2-9f20-26cd9a99353e"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_090",
+    "query": "不需要修改Hermes源码的任务有哪些？",
+    "expected_ids": [
+      "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_091",
+    "query": "这些开源仓库的依赖版本没锁定，会有API变更风险吗？",
+    "expected_ids": [
+      "e2835b58-1d7f-4a71-afa3-420cc07e34a4"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_092",
+    "query": "Agent Eval的失败类型有哪些？",
+    "expected_ids": [
+      "f77dd07c-a0a9-4d78-91d7-51dc10f11d7e"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_093",
+    "query": "检查SE-Agent对Layer 2的Revision算子覆盖情况如何？",
+    "expected_ids": [
+      "2832dffc-dd48-4a8c-8203-2f6338379cee"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_094",
+    "query": "上次的自进化能力分级图和缺口建议是什么？",
+    "expected_ids": [
+      "2e5da6de-6c0a-4891-9755-69417ecb36e8"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_095",
+    "query": "知识导航插件和聚类脚本算不算Hermes核心源码？",
+    "expected_ids": [
+      "dd247527-4bc8-40c6-b350-1702d94ea250"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_096",
+    "query": "如何判断哪些是有效实体，哪些是噪声？",
+    "expected_ids": [
+      "3ee7366b-dd31-4c1a-9a34-3959ded61a79"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_097",
+    "query": "T22计划的P1、P2、P3之间具体依赖关系是什么？",
+    "expected_ids": [
+      "2a35c996-12c8-4760-a6ae-8bce30908e14"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_098",
+    "query": "你更新任务计划时提到的HDBSCAN替换方案是什么？",
+    "expected_ids": [
+      "ceddef2b-2485-4e5c-90c7-78d1860fbe58"
+    ],
+    "fact_type": "experience"
+  },
+  {
+    "query_id": "gen_099",
+    "query": "开源仓库不锁定版本会导致哪些API变更风险？",
+    "expected_ids": [
+      "775ef321-f50c-4856-aca0-9c986fae6b22"
+    ],
+    "fact_type": "world"
+  },
+  {
+    "query_id": "gen_100",
+    "query": "PG entities库有多少实体？有质量标签吗？",
+    "expected_ids": [
+      "1156cb05-e86f-4ba2-a4a4-1a864627d824"
+    ],
+    "fact_type": "experience"
+  }
+]

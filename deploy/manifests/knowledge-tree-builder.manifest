@@ -1,0 +1,22 @@
+# knowledge-tree-builder 部署清单
+# 源:  scripts/knowledge-tree-builder/
+# 标:  /root/.hermes/scripts/knowledge-tree-builder/
+# 影响: 知识树建树管线（手动触发）；无需重启服务
+#
+# 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
+
+# === Include ===
+src/knowledge_tree_builder/**/*.py
+config/**/*.yaml
+pyproject.toml
+README.md
+scripts/**/*.sh
+skills/**/SKILL.md
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/.pytest_cache/**
+!**/*.egg-info/**
+!**/tests/**
+!**/test_*.py

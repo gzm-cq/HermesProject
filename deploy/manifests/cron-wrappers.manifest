@@ -1,0 +1,15 @@
+# cron-wrappers 部署清单
+# 源:  scripts/cron-wrappers/
+# 标:  /root/.hermes/scripts/
+# 影响: 所有 Hermes 内置 cron 定时任务入口脚本
+#
+# 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
+
+# === Include ===
+**/*.sh
+**/README.md
+cron-jobs-config.md
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc

@@ -1,0 +1,23 @@
+# SkillOpt-Runner Configuration
+# =================================
+
+# Configure LLM backend
+# Use current Hermes main model via LiteLLM gateway
+backend: "litellm"
+model: "s-deepseek-v4-flash"
+
+# 精排参数：每晚从所有 eligible 技能中选出 top-K 最值得优化的
+top_k: 5
+
+# Runner-only filters: exclude third-party skill bundles by prefix.
+denylist_patterns:
+  - "lark-"
+  - "sn-"
+  - "gstack-"
+
+# SkillOpt 内置默认参数（可直接覆盖）：
+# edit_budget: 4           # 每晚最多编辑几个技能
+batch_size: 100
+sleep_workers: 5             # replay 并行度（多线程调 LLM）
+# gate_mode: "on"            # 验证门控开启
+

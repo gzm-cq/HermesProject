@@ -1,0 +1,9 @@
+# system-health-check 部署清单
+# 源: scripts/system-health-check/
+# 标: /root/.hermes/scripts/
+
+health-check-all.py
+health-check-run.py
+
+!**/__pycache__/**
+!**/*.pyc

@@ -1,0 +1,19 @@
+# knowledge-tree-plugin 部署清单
+# 源:  plugins/knowledge-tree-plugin/
+# 目:  /root/.hermes/plugins/knowledge-tree-plugin/
+# 影响: Hermes 网关插件；部署完成后将重启 hermes-gateway.service
+
+# === Include ===
+__init__.py
+src/knowledge_tree_plugin/**/*.py
+config/**/*.yaml
+plugin.yaml
+pyproject.toml
+skills/**/*.md
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/.pytest_cache/**
+!**/*.egg-info/**
+!**/tests/**

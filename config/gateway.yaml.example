@@ -1,0 +1,20 @@
+# Hermes Gateway Configuration Example
+# Save as ~/.hermes/config/gateway.yaml to enable plugins & routes
+
+# Enable plugins by name (must match entry-point key in pyproject.toml)
+plugins:
+  - template  # ← enables hermes-plugin-template
+  # - slack    # ← uncomment to enable Slack plugin when ready
+
+# Route configuration (if your plugin defines handlers)
+routes:
+  - path: "/webhook/template"
+    plugin: "template"
+    method: "POST"
+    enabled: true
+
+# Global gateway settings
+settings:
+  port: 8000
+  host: "0.0.0.0"
+  debug: false

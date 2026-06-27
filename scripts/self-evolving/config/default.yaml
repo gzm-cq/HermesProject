@@ -1,0 +1,46 @@
+# 反思回路默认配置
+common:
+  llm_api_url: "http://127.0.0.1:4142/v1/chat/completions"
+  llm_model: "s-deepseek-v4-flash"
+  llm_timeout: 60
+
+kanban_reflection:
+  llm_api_url: "http://127.0.0.1:4142/v1/chat/completions"
+  llm_model: "s-deepseek-v4-flash"
+  llm_timeout: 60
+  max_trace_lines: 5
+  max_input_length: 4000
+  confidence_threshold: 0.6
+  max_retries: 3
+  log_level: "INFO"
+  trace_log_path: "trace.log"
+
+revision:
+  reflection_depth: 2
+  generate_alternatives: true
+  alternative_count: 2
+  confidence_threshold: 0.6
+  max_input_length: 8000
+  llm_timeout: 60
+
+recombination:
+  selection_criteria: "quality"
+  max_components: 5
+  detect_conflicts: true
+  conflict_severity_threshold: 0.5
+  semantic_similarity_threshold: 0.7
+  max_input_length: 16000
+  jaccard_threshold_low: 0.3
+  jaccard_threshold_high: 0.7
+
+refinement:
+  risk_threshold: 0.3
+  optimization_budget: 3
+  compress_output: true
+  target_reduction_ratio: 0.5
+  max_input_length: 12000
+  risk_scanning:
+    enabled: true
+    scan_depth: "full"
+    include_failure_patterns: true
+  llm_timeout: 60

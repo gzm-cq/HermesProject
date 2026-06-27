@@ -1,0 +1,22 @@
+# drawio-generator 默认配置
+# 最后更新：2026-06-02
+
+# 默认渲染格式: drawio 或 svg
+default_format: drawio
+
+# 默认画布尺寸
+default_width: 1000
+default_height: 800
+
+# 默认配色方案
+default_palette: academic
+
+# 节点默认样式
+node:
+  default_width: 160
+  default_height: 60
+  horizontal_gap: 60
+  vertical_gap: 120
+
+# 输出目录（留空则输出到当前目录）
+output_dir: ""

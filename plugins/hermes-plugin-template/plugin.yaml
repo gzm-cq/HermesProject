@@ -1,0 +1,8 @@
+name: hermes-plugin-template
+version: "0.1.0"
+description: "官方推荐的 Hermes 插件开发模板（Python）"
+hooks:
+  # 示例钩子配置
+  # pre_llm_call:
+  #   callback: pre_llm_call
+  #   enabled: true

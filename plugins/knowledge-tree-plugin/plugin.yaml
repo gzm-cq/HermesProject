@@ -1,0 +1,19 @@
+name: knowledge-tree-plugin
+version: 0.1.0
+description: 知识树在线插件 — post_llm_call 增量学习（pre_llm_call 由 knowledge-navigation 统一负责）
+author: Hermes Team
+license: MIT
+hooks:
+  post_llm_call:
+    callback: post_llm_call
+    description: 在每次 LLM 调用后，分析对话提取新知识点并存入知识树
+    enabled: true
+dependencies:
+  - requests>=2.25.0
+  - typer>=0.9.0
+  - numpy>=1.24.0
+  - psycopg2-binary>=2.9.0
+  - pgvector
+  - PyYAML>=6.0
+optional_dependencies:
+  - knowledge-navigation>=1.1.0   # turn_gate 门控函数；不可用时降级为全放行

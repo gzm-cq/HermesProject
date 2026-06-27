@@ -1,0 +1,71 @@
+{
+  "title": "Knowledge Tree Builder — 知识分域建树管线",
+  "path": "test_articles/knowledge-tree-builder-readme.md",
+  "atomics": [
+    {
+      "text": "Knowledge Tree Builder的Step 1是LLM知识点提取，每篇文章提取3-8个关键知识点。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 0,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder的Step 1.5是规则准入过滤，基于长度/模糊概括规则进行兜底过滤。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 1,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder的Step 2是HDBSCAN递归聚类，采用自底向上聚类并生成建树报告，支持自动干跑。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 2,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder的Step 3是LLM结构校验，用于判断子簇关系（平行或上下位）。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 3,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder的Step 4是LLM节点命名，生成科目名或知识点名。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 4,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder的Step 5是写入PG，包括树写入、去重和矛盾检测。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 5,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder项目包含incremental模块，实现增量放置和Q/K向量管理。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 6,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder项目包含consolidation模块，实现纠错回路。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 7,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    },
+    {
+      "text": "Knowledge Tree Builder项目包含embeddings模块，用于Embedding API调用。",
+      "type": "key_point",
+      "claims_count": 1,
+      "source_candidate_index": 8,
+      "source_title": "Knowledge Tree Builder — 知识分域建树管线"
+    }
+  ],
+  "count": 9,
+  "extracted_at": "2026-06-15 08:34:22"
+}
