@@ -1,9 +1,12 @@
 # 知识导航优化 — SPEC 实施计划
 
-**目标**：合并上下文标签化和 Memory 分级两个计划，对 knowledge-navigation 插件做两处核心优化
-**架构**：纯规则 intent 分类 + 语义标签化上下文注入，只改 hooks.py，不涉及 Hindsight/KT 核心
-**技术栈**：Python 3.10+, re, html
-**来源**：context-tagging-plan.md + memory-level-plan.md
+> ⚠️ **已废弃**：本实施计划描述的规则式 `_classify_intent` 方案已被 LLM Router 方案替代。
+> 参见 [SPEC-router.md](../plans/SPEC-router.md)
+>
+> **目标**：合并上下文标签化和 Memory 分级两个计划，对 knowledge-navigation 插件做两处核心优化
+> **架构**：纯规则 intent 分类 + 语义标签化上下文注入，只改 hooks.py，不涉及 Hindsight/KT 核心
+> **技术栈**：Python 3.10+, re, html
+> **来源**：context-tagging-plan.md + memory-level-plan.md
 
 ---
 

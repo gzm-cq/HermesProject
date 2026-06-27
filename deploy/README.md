@@ -12,13 +12,33 @@ deploy/
 ├── projects/
 │   ├── ai-report-system.sh      # AI 报告生成系统配置
 │   ├── clustering-analysis-v3.sh# 聚类分析配置
+│   ├── cron-common.sh           # cron 公共库配置
+│   ├── cron-wrappers.sh         # cron wrapper 集合配置
+│   ├── daily-learn.sh           # 每日在线学习配置
+│   ├── drawio-generator.sh      # Draw.io 生成器配置
 │   ├── knowledge-navigation.sh  # 知识导航插件配置
-│   └── memory-cleanup.sh        # 记忆清理配置
+│   ├── knowledge-tree-builder.sh# 知识树构建器配置
+│   ├── knowledge-tree-plugin.sh # 知识树在线插件配置
+│   ├── memory-cleanup.sh        # 记忆清理配置
+│   ├── self-evolving.sh         # 自我进化研究配置
+│   ├── skillopt-runner.sh       # SkillOpt Runner 配置
+│   ├── skillopt-sleep.sh        # SkillOpt Sleep 配置
+│   └── system-health-check.sh   # 系统健康巡检配置
 └── manifests/                   # 部署清单（glob 模式，各项目独立）
     ├── ai-report-system.manifest
     ├── clustering-analysis-v3.manifest
+    ├── cron-common.manifest
+    ├── cron-wrappers.manifest
+    ├── daily-learn.manifest
+    ├── drawio-generator.manifest
     ├── knowledge-navigation.manifest
-    └── memory-cleanup.manifest
+    ├── knowledge-tree-builder.manifest
+    ├── knowledge-tree-plugin.manifest
+    ├── memory-cleanup.manifest
+    ├── self-evolving.manifest
+    ├── skillopt-runner.manifest
+    ├── skillopt-sleep.manifest
+    └── system-health-check.manifest
 ```
 
 ## 项目映射
@@ -27,8 +47,18 @@ deploy/
 |------|------|------|---------|----------|
 | `ai-report-system` | `scripts/ai-report-system/` | `/root/.hermes/scripts/ai-report-system/` | `skills/` → `/root/.hermes/skills/` | — |
 | `clustering-analysis-v3` | `scripts/clustering-analysis-v3/` | `/root/.hermes/scripts/clustering-analysis-v3/` | `skills/` → `/root/.hermes/skills/` | — |
+| `cron-common` | — | — | — | — |
+| `cron-wrappers` | `scripts/cron-wrappers/` | `/root/.hermes/scripts/cron-wrappers/` | — | — |
+| `daily-learn` | `scripts/daily-learn/` | `/root/.hermes/scripts/daily-learn/` | — | — |
+| `drawio-generator` | `scripts/drawio-generator/` | `/root/.hermes/scripts/drawio-generator/` | `skills/` → `/root/.hermes/skills/` | — |
 | `knowledge-navigation` | `plugins/knowledge-navigation/` | `/root/.hermes/plugins/knowledge-navigation/` | `skills/` → `/root/.hermes/skills/` | `hermes-gateway.service` |
+| `knowledge-tree-builder` | `scripts/knowledge-tree-builder/` | `/root/.hermes/scripts/knowledge-tree-builder/` | `skills/` → `/root/.hermes/skills/` | — |
+| `knowledge-tree-plugin` | `plugins/knowledge-tree-plugin/` | `/root/.hermes/plugins/knowledge-tree-plugin/` | — | `hermes-gateway.service` |
 | `memory-cleanup` | `scripts/memory-cleanup/` | `/root/.hermes/scripts/memory-cleanup/` | `skills/` → `/root/.hermes/skills/` | — |
+| `self-evolving` | `scripts/self-evolving/` | `/root/.hermes/scripts/self-evolving/` | `skills/` → `/root/.hermes/skills/` | — |
+| `skillopt-runner` | `scripts/skillopt-runner/` | `/root/.hermes/scripts/skillopt-runner/` | — | — |
+| `skillopt-sleep` | `scripts/skillopt-sleep/` | `/root/.hermes/scripts/skillopt-sleep/` | — | — |
+| `system-health-check` | `scripts/system-health-check/` | `/root/.hermes/scripts/system-health-check/` | — | — |
 
 ## 子命令
 

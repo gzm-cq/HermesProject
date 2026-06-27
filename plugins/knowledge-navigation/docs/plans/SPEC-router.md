@@ -1,8 +1,10 @@
 # Router 注入：LLM 驱动的三路开关
 
-**Goal**：用 LLM Router 替代当前 turn_gate + _classify_intent 规则体系，由 Router 决策 Hindsight/KT/Skill 三路是否注入，各路内部检索策略自治。
-**Architecture**：pre_llm_call 入口保留来源门控 + 系统提示词门控（零成本预检），之后调用 LLM Router 输出 {h, kt, s} mask，只执行 mask 激活的路径。
-**Tech Stack**：Python, LiteLLM (through local gateway), sensenova-6.7-flash-lite
+> ✅ **已完成**：本方案已于 2026-06-27 实施完成，代码已合入。
+>
+> **Goal**：用 LLM Router 替代当前 turn_gate + _classify_intent 规则体系，由 Router 决策 Hindsight/KT/Skill 三路是否注入，各路内部检索策略自治。
+> **Architecture**：pre_llm_call 入口保留来源门控 + 系统提示词门控（零成本预检），之后调用 LLM Router 输出 {h, kt, s} mask，只执行 mask 激活的路径。
+> **Tech Stack**：Python, LiteLLM (through local gateway), sensenova-6.7-flash-lite
 ---
 
 ## 当前状态

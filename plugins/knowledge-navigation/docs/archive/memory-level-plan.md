@@ -1,5 +1,8 @@
 # Memory 分级应用 — 实现方案
 
+> ⚠️ **已废弃**：本方案描述的规则式 `_classify_intent` 三级分类已被 LLM Router 方案替代。
+> 参见 [SPEC-router.md](../plans/SPEC-router.md)
+>
 > 参考来源：`asgeirtj/system_prompts_leaks` → Claude Fable 5 memory 分级策略
 > 目标：按消息类型决定 recall 深度，减少不必要的 LLM 调用和 token 开销
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledge-navigation"
-version = "1.1.0"
-description = "知识导航 — 自动 recall Hindsight 注入上下文（优化版）"
+version = "1.2.0"
+description = "知识导航插件 — LLM Router 三路注入，自动召回 Hindsight 经验 + 知识树 + Skill"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -25,6 +25,7 @@ classifiers = [
 keywords = ["hermes", "hindsight", "llm", "memory", "plugin"]
 dependencies = [
     "requests>=2.25.0,<3.0.0",
+    "httpx>=0.24.0",
     "typer>=0.9.0",
     "psycopg2-binary>=2.9.0",           # PG 连接（因果链查询用）
 ]
