@@ -1,5 +1,7 @@
 # 上下文语义标签化 — 实现方案
 
+> ✅ **已完成**：本方案已实施完成，代码已合入。
+>
 > 参考来源：`asgeirtj/system_prompts_leaks` → Cursor system prompt 的 `<user_query>` / `<context>` / `<metadata>` 标签分隔
 > 目标：用 XML 标签包装不同来源的上下文，让 LLM 清晰区分"用户说的" vs "插件自动注入的"
 

@@ -23,7 +23,7 @@
 - Hermes 运行环境已安装 `requests>=2.25.0` 和 `httpx`
 
 ### 2. 安装插件
-将本插件目录（`plugins/knowledge_navigation/`）置于 Hermes 的插件加载路径下即可，Hermes 启动时会自动发现并加载。
+将本插件目录（`plugins/knowledge-navigation/`）置于 Hermes 的插件加载路径下即可，Hermes 启动时会自动发现并加载。
 
 ### 3. 启用插件
 确保 `plugin.yaml` 中的 hook 已注册（默认已启用）：

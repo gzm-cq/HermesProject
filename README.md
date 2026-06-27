@@ -8,7 +8,7 @@ HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 10+ 独�
 
 | # | 项目 | 路径 | 类型 | 简介 |
 |---|------|------|------|------|
-| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | 融合 Hindsight 记忆 + 知识树双域，pre_llm_call 注入，LLM 语义选 skill |
+| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | LLM Router 三路注入（Hindsight 经验 + 知识树 + Skill），pre_llm_call 智能召回 |
 | 2 | **知识树在线插件** | `plugins/knowledge-tree-plugin/` | 插件 | 知识树 pre_llm_call recall + post_llm_call 增量学习 |
 | 3 | **SkillOpt 增量优化** | `scripts/skillopt-runner/` | Cron | 基于对话负反馈自动优化 skill 文档 |
 | 4 | **系统健康巡检** | `scripts/system-health-check/` | Cron | 3-tier 架构每日巡检组件状态，异常飞书告警 |
@@ -41,7 +41,7 @@ Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 +
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Hermes Gateway                                                               │
 │                                                                              │
-│ 用户消息 ──→ 知识导航 (Hook pre_llm_call) ──→ 三路并行 recall ──→ 融合组装 ──→ LLM 调用 ──→ 响应 │
+│ 用户消息 ──→ 知识导航 (Hook pre_llm_call) ──→ LLM Router 决策 ──→ 按 mask 条件执行 ──→ 融合组装 ──→ LLM 调用 ──→ 响应 │
 │                            │                         │             ↑               │
 │                    ┌───────┴───────┐                  │             │               │
 │                    ▼               ▼                  │             │               │
@@ -307,13 +307,14 @@ LLM 驱动的智能记忆管理（MEMORY.md + USER.md）：
 - Step 5：PG 写入（含增量去重 + 矛盾检测）
 - 用户命令：`add` / `ingest` / `tree` / `find` / `move` / `edit` / `remove` / `merge`
 
-### 6. 知识导航插件（双域融合）
-在每次 LLM 调用前自动触发：
-- 从 Hindsight 召回相关记忆（经验域）
-- 通过 `knowledge-tree-plugin` 公共 API 召回知识树（知识域）
-- 融合两个分域的结果后注入 LLM 上下文
-- 熔断器 + 飞书告警
-- 注入去重、Compaction、HitCounter、时态衰减
+### 6. 知识导航插件（LLM Router 三路注入）
+在每次 LLM 调用前通过 LLM Router 智能决策注入路径：
+- **H（经验域）**：从 Hindsight 召回相关记忆
+- **KT（知识域）**：通过 knowledge-tree-plugin 召回知识树
+- **S（能力域）**：Skill 匹配并自动注入
+- 动态执行：≥2 路并行，1 路串行
+- 熔断器 + 飞书告警 + Router 异常 fallback 全开
+- 注入去重、Compaction、HitCounter、时态衰减、跨域去重
 
 ### 7. 知识树在线插件
 增量学习，在 LLM 响应后自动补充知识：
