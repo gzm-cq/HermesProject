@@ -1,0 +1,767 @@
+$ git diff HEAD -- scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py
+[exit 0]
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py
+index 3502733..3d2bdeb 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py
+@@ -4,7 +4,9 @@ import json
+ import logging
+ import os
+ import sys
++import threading
+ import time
++from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime, timezone
+ from functools import partial
+ from pathlib import Path
+@@ -16,13 +18,14 @@ import numpy as np
+ 
+ from knowledge_tree_builder.config import AppConfig, load_config
+ from knowledge_tree_builder.adapters.database import DatabaseAdapter
+-from knowledge_tree_builder.core.extractor import extract_knowledge_points
+-from knowledge_tree_builder.core.admission import filter_knowledge_points
+-from knowledge_tree_builder.core.clustering import build_tree, auto_dry_run
+-from knowledge_tree_builder.core.embeddings import batch_embed
+-from knowledge_tree_builder.core.validator import validate_tree
+-from knowledge_tree_builder.core.namer import name_tree
+-from knowledge_tree_builder.core.writer import write_tree
++from knowledge_tree_builder.core.embeddings import batch_embed, cosine_similarity
++
++# 新管线 phase 模块
++from knowledge_tree_builder.phase.scan import scan_input_dir
++from knowledge_tree_builder.phase.analyze import analyze_article
++from knowledge_tree_builder.phase.split import process_candidates as split_candidates
++from knowledge_tree_builder.phase.admit import admit_knowledge
++from knowledge_tree_builder.place import place_knowledge
+ 
+ 
+ # ========== JSON Logger ==========
+@@ -179,6 +182,394 @@ def add(
+ 
+ 
+ 
++# ========== Run (新管线) ==========
++
++@app.command()
++def run(
++    input_dir: str = typer.Option("references", "--input-dir", help="输入文章目录"),
++    phase: str = typer.Option("all", "--phase", help="运行阶段: scan|analyze|split|admit|place|all"),
++    config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
++    dry_run: bool = typer.Option(True, "--dry-run", help="仅预览不写 PG"),
++    apply: bool = typer.Option(False, "--apply", help="实际写入 PG（覆盖 --dry-run）"),
++    merged: bool = typer.Option(False, "--merged", help="阶段1+2 合并为单次 LLM 调用（更快，跳过 claims_count 校验）"),
++    concurrent: int = typer.Option(1, "--concurrent", "-j", help="并行提取线程数（默认 1=串行）"),
++    verbose: bool = typer.Option(False, "--verbose", "-v", help="详细输出"),
++) -> None:
++    """新管线：scan → analyze → split → admit → place。"""
++    from knowledge_tree_builder.config import AppConfig
++
++    if apply:
++        dry_run = False
++
++    # 确保 API key 从环境变量注入（load_config 只读取 YAML + 已设置的 os.environ）
++    import os as _os
++    _os.environ.setdefault("LITELLM_MASTER_KEY", "")
++    _os.environ.setdefault("KT_DB_URL", "")
++
++    config_dict = load_config(config_path)
++    config = AppConfig.from_dict(config_dict)
++    phases = ["all"] if phase == "all" else [phase]
++
++    # 非 dry-run 时建立 DB 连接（供 Phase 3、4 使用）
++    _db: Any = None
++    if not dry_run:
++        db_url = config_dict.get("db_url", "")
++        if db_url:
++            try:
++                from knowledge_tree_builder.adapters.database import DatabaseAdapter
++                _db = DatabaseAdapter(db_url)
++                print("   ✅ DB 已连接")
++            except Exception as e:
++                print(f"   ⚠️ DB 连接失败（降级为 dry-run）: {e}")
++                dry_run = True
++
++    # 跨阶段状态容器（各 if 分支写入，后续分支读取）
++    _scan_result: Any = None
++    _all_reports: list[Any] = []
++    _all_atomics: list[Any] = []
++    _admit_result: Any = None
++
++    # Pre-phase: Scan
++    if "all" in phases or "scan" in phases:
++        print("\n📂 Pre-phase: 扫描输入目录...")
++        scan_result = scan_input_dir(input_dir)
++        print(f"   入列 {len(scan_result['admitted_files'])} 篇，跳过 {len(scan_result['skipped'])} 篇")
++        if scan_result["empty_dir"] or not scan_result["admitted_files"]:
++            print("   ❌ 无入列文件，管线终止")
++            raise typer.Exit(0)
++
++    # 合并模式（--merged）：分析+拆解一次 LLM 调用，跳过 claims_count 校验
++    if merged and ("all" in phases or "analyze" in phases or "split" in phases):
++        print("\n⚡ 合并模式: 分析+拆解（单次 LLM 调用）...")
++        from knowledge_tree_builder.phase.merged import analyze_and_split as _merged
++        from knowledge_tree_builder.manifest import Manifest, ManifestItem, STATUS_EXTRACTED
++
++        # 创建/续传清单
++        _manifest = Manifest(f".kb_manifest_{Path(input_dir).name}.json")
++        _has_ckpt = _manifest.load()
++
++        if not _has_ckpt:
++            _manifest.init(scan_result["admitted_files"])
++
++        # 逐篇提取（并发）
++        need = _manifest.need_extract()
++        if need:
++            _extract_lock = threading.Lock()
++            def _extract_one(item: ManifestItem) -> None:
++                try:
++                    text = Path(item.path).read_text(encoding="utf-8")
++                    atomics, summary = _merged(text, item.title, config=config)
++                    with _extract_lock:
++                        _manifest.save_atomics(item, [dict(a) for a in atomics])
++                        _all_reports.append({"article_title": item.title, "analysis": {"content_summary": summary}})
++                    print(f"   ✅ {item.title[:35]}: {len(atomics)} 条")
++                except Exception as e:
++                    with _extract_lock:
++                        _manifest.mark_failed(item, str(e))
++                    print(f"   ❌ {item.title[:35]}: {e}")
++
++            print(f"   待提取: {len(need)} 篇（并发 {concurrent} 路）")
++            if concurrent <= 1:
++                for item in need:
++                    _extract_one(item)
++            else:
++                from concurrent.futures import ThreadPoolExecutor, as_completed
++                with ThreadPoolExecutor(max_workers=concurrent) as pool:
++                    futures = [pool.submit(_extract_one, item) for item in need]
++                    for f in as_completed(futures):
++                        pass  # 异常在 _extract_one 内部处理
++            print()
++
++        # 加载所有已提取的 atomics
++        _all_atomics = _manifest.load_all_atomics()
++        print(f"   加载 {len(_all_atomics)} 条原子知识")
++
++        if not _all_atomics:
++            print("   ❌ 无原子知识产出")
++            raise typer.Exit(0)
++
++        # 已提取条目补充到 _all_reports（确保 Phase 4 有 content_summary）
++        for item in _manifest.items:
++            already = any(r.get("article_title") == item.title for r in _all_reports)
++            if item.status == STATUS_EXTRACTED and not already:
++                _all_reports.append({"article_title": item.title, "analysis": {"content_summary": ""}})
++
++        _analyze_or_split_done = True
++    else:
++        _analyze_or_split_done = False
++
++    # Phase 1: Analyze（仅非合并模式）
++    if not _analyze_or_split_done and ("all" in phases or "analyze" in phases):
++        print("\n📝 阶段1: 分析文章...")
++        _all_reports = []
++        for f in scan_result["admitted_files"]:
++            title = f["title"]
++            fpath = f["path"]
++            try:
++                text = Path(fpath).read_text(encoding="utf-8")
++            except Exception as e:
++                print(f"   ⚠️ 读取失败 {fpath}: {e}")
++                continue
++            report = analyze_article(text, title, config=config)
++            candidates = report.get("candidates", [])
++            print(f"   📄 {title}: {len(candidates)} 条候选")
++            _all_reports.append(report)
++        if not _all_reports:
++            print("   ❌ 所有文章分析失败")
++            raise typer.Exit(0)
++
++    # Phase 2: Split（仅非合并模式）
++    if "all" in phases or "split" in phases:
++        if _analyze_or_split_done:
++            print("   ⏭️  已由合并模式产出，跳过独立拆解")
++            _all_reviews = []
++        else:
++            print("\n✂️  阶段2: 拆解与质量评估...")
++            _all_atomics = []
++            _all_reviews: list[Any] = []
++            for report in _all_reports:
++                split_result = split_candidates(report, config=config)
++                atomics = split_result.get("atomic_knowledge", [])
++                reviews = split_result.get("review_queue_items", [])
++                stats = split_result.get("stats", {})
++                print(f"   📄 {report['article_title']}: 拆出 {len(atomics)} 条原子，"
++                      f"{stats.get('review', 0)} 条入审查队列")
++                _all_atomics.extend(atomics)
++                _all_reviews.extend(reviews)
++            if not _all_atomics:
++                print("   ❌ 无原子知识通过拆解")
++                raise typer.Exit(0)
++            if _all_reviews and verbose:
++                print(f"   ⚠️ 审查队列新增 {len(_all_reviews)} 条")
++
++    # Phase 3: Admit
++    if "all" in phases or "admit" in phases:
++        print("\n🔍 阶段3: 准入与去重...")
++
++        # 加载已有知识向量用于去重对比
++        existing_vectors: list[dict[str, Any]] = []
++        cold_start = True
++        if _db is not None:
++            try:
++                existing_vectors = _db.get_leaf_nodes()
++                if len(existing_vectors) >= config_dict.get("cold_start_text_dedup_count", 50):
++                    cold_start = False
++            except Exception as e:
++                print(f"   ⚠️ 加载已有知识失败（走冷启动）: {e}")
++
++        _embed_fn = partial(
++            batch_embed,
++            base_url=config_dict.get("embed_base_url", "https://api.siliconflow.cn/v1"),
++            model=config_dict.get("embed_model", "BAAI/bge-m3"),
++            api_key=config_dict.get("embed_api_key", ""),
++            batch_size=config_dict.get("embed_batch_size", 20),
++        )
++        _admit_result = admit_knowledge(
++            _all_atomics,
++            existing_vectors=existing_vectors,
++            embed_fn=_embed_fn,
++            cosine_sim_fn=cosine_similarity,
++            threshold_direct=config_dict.get("dedup_threshold_direct", 0.95),
++            threshold_llm=config_dict.get("dedup_threshold_llm", 0.90),
++            cold_start_text_dedup=cold_start,
++        )
++        print(f"   通过 {_admit_result.stats['passed']} 条，"
++              f"去重合并 {_admit_result.stats['dedup_merged']} 条，"
++              f"矛盾 {_admit_result.stats['conflicts']} 条")
++
++    # Phase 4: Place
++    if "all" in phases or "place" in phases:
++        print("\n🌲 阶段4: 树定位...")
++
++        if _admit_result is None or not _admit_result.passed:
++            if _all_atomics and not _admit_result:
++                print("   ⚠️ 无 Phase 3 结果，需先运行全管线或 --phase admit")
++                print("   ⏭️  跳过 Phase 4")
++                raise typer.Exit(0)
++
++        from knowledge_tree_builder.place import place_knowledge as _place
++        from knowledge_tree_builder.llm.client import call_llm_json as _call_llm_json
++
++        # ===== 加载 Phase 4 缓存（断点续跑） =====
++        _p4_cache_path = f".kb_phase4_{Path(input_dir).name}.json"
++        _p4_domains: dict[str, str] = {}
++        _p4_placed: set[str] = set()
++        _p4_records: list[dict[str, Any]] = []
++        _p4_dirty = False
++        if os.path.exists(_p4_cache_path):
++            try:
++                with open(_p4_cache_path) as _f:
++                    _ckpt = json.load(_f)
++                _p4_domains = _ckpt.get("domains", {})
++                _p4_placed = set(_ckpt.get("placed_titles", []))
++                _p4_records = _ckpt.get("records", [])
++                print(f"   📦 Phase 4 缓存: {len(_p4_domains)} 个领域, {len(_p4_placed)} 篇已定位")
++            except Exception as _e:
++                print(f"   ⚠️ 缓存读取失败: {_e}")
++
++        def _phase4_save_cache() -> None:
++            try:
++                with open(_p4_cache_path, "w") as _f:
++                    json.dump({
++                        "domains": _p4_domains,
++                        "placed_titles": list(_p4_placed),
++                        "records": _p4_records,
++                    }, _f, ensure_ascii=False, indent=2)
++            except Exception:
++                pass  # 缓存写入失败不阻塞管线
++
++        # ===== LLM 领域判断函数 =====
++        def _llm_domain(title_summary: str, existing_domains: list[str]) -> str:
++            prompt = f"判断以下文章最合适的知识领域。已有领域：{existing_domains or '无'}。文章：{title_summary[:500]}"
++            sys_prompt = "从已有领域中选择一个，或提出新的领域名。只返回JSON：{\"domain\": \"领域路径\"}"
++            result = _call_llm_json(
++                prompt, system_prompt=sys_prompt,
++                temperature=0,
++                api_url=config_dict.get("llm_api_url", ""),
++                api_key=config_dict.get("llm_api_key", ""),
++                model=config_dict.get("llm_model", "s-deepseek-v4-flash"),
++            )
++            if "error" in result:
++                # 兜底：如果 LLM 返回了纯文本而非 JSON（历史兼容），仍尝试使用
++                err_msg = result.get("error", "")
++                if "parse_failed:" in err_msg:
++                    raw = err_msg.split("parse_failed:", 1)[1].strip().strip("'\"")
++                    if raw and raw not in ("general", "无"):
++                        return raw
++                return "general"
++            return str(result.get("domain", "general"))
++
++        # ===== 第一轮：领域判断 + 收集 records（并发） =====
++        # 每篇文章的 LLM 领域判断相互独立，可以并发
++        if concurrent <= 1:
++            # 串行（保持原有缓存逐篇保存逻辑）
++            for report in _all_reports:
++                title = report["article_title"]
++                if title in _p4_placed:
++                    continue
++
++                summary = report.get("analysis", {}).get("content_summary", "")
++                admitted = [a for a in (_admit_result.passed if _admit_result else [])
++                           if a.get("source_title") == title]
++                if not admitted:
++                    _p4_placed.add(title)
++                    _p4_dirty = True
++                    continue
++
++                # 领域判断
++                if title not in _p4_domains:
++                    _p4_domains[title] = _llm_domain(
++                        (title[:80] + " " + (summary or "")[:200]).strip(),
++                        list(_p4_domains.values()),
++                    )
++                    _p4_dirty = True
++
++                domain = _p4_domains[title]
++                try:
++                    _pr = _place(admitted, title, summary,
++                        db_adapter=_db, embed_fn=_embed_fn,
++                        cosine_sim_fn=cosine_similarity,
++                        llm_domain_fn=lambda _ts, _ed: domain, write_db=False)
++                    for r in _pr.records:
++                        r["_article_title"] = title
++                    _p4_records.extend(_pr.records)
++                    _p4_placed.add(title)
++                    _p4_dirty = True
++                    print(f"   📄 {title}: {_pr.stats['placed']} 条")
++                except Exception as e:
++                    print(f"   ⚠️ 定位失败 {title}: {e}")
++
++                if _p4_dirty:
++                    _phase4_save_cache()
++                    _p4_dirty = False
++        else:
++            # 并发模式：ThreadPoolExecutor，线程安全地写入共享状态
++            print(f"   领域判断（并发 {concurrent} 路）...")
++            _p4_lock = threading.Lock()
++
++            def _process_one(report: dict[str, Any]) -> bool:
++                """处理一篇文章：领域判断 + placement records。返回 True 表示有产出。"""
++                title = report["article_title"]
++                summary = report.get("analysis", {}).get("content_summary", "")
++                admitted = [a for a in (_admit_result.passed if _admit_result else [])
++                           if a.get("source_title") == title]
++
++                with _p4_lock:
++                    if title in _p4_placed:
++                        return False
++                    if not admitted:
++                        _p4_placed.add(title)
++                        return False
++                    # 需要 LLM 判断领域
++                    domain = _p4_domains.get(title)
++                    if domain is None:
++                        domain = _llm_domain(
++                            (title[:80] + " " + (summary or "")[:200]).strip(),
++                            list(_p4_domains.values()),
++                        )
++                        _p4_domains[title] = domain
++
++                try:
++                    _pr = _place(admitted, title, summary,
++                        db_adapter=_db, embed_fn=_embed_fn,
++                        cosine_sim_fn=cosine_similarity,
++                        llm_domain_fn=lambda _ts, _ed: domain, write_db=False)
++                    with _p4_lock:
++                        for r in _pr.records:
++                            r["_article_title"] = title
++                        _p4_records.extend(_pr.records)
++                        _p4_placed.add(title)
++                    print(f"   📄 {title}: {_pr.stats['placed']} 条")
++                    return True
++                except Exception as e:
++                    print(f"   ⚠️ 定位失败 {title}: {e}")
++                    return False
++
++            with ThreadPoolExecutor(max_workers=concurrent) as pool:
++                pool.map(_process_one, _all_reports)
++            # 并发结束后统一保存缓存
++            _phase4_save_cache()
++
++        # ===== 第二轮：批量写入 PG（按领域分组） =====
++        if _db and _p4_records and not dry_run:
++            from knowledge_tree_builder.place import _write_to_db
++            print(f"\n   💾 批量写入 PG: {len(_p4_records)} 条记录...")
++            _domain_groups: dict[str, list[dict[str, Any]]] = {}
++            for r in _p4_records:
++                d = r.get("domain", "general")
++                _domain_groups.setdefault(d, []).append(r)
++            for d, records in _domain_groups.items():
++                try:
++                    _write_to_db(records, d, _db)
++                    print(f"     📂 {d}: {len(records)} 条")
++                except Exception as e:
++                    print(f"     ❌ {d} 写入失败: {e}")
++
++            # 写入成功 → 清理缓存
++            try:
++                os.remove(_p4_cache_path)
++            except Exception:
++                pass
++
++        _new_subjects = len({r.get("subject", "") for r in _p4_records})
++        print(f"   📊 定位 {len(_p4_records)} 条, {_new_subjects} 个科目")
++
++    # 合并模式下标记已写入（在 admit + place 成功后）
++    if not dry_run and merged and '_manifest' in dir():
++        try:
++            for item in _manifest.items:
++                if item.status == 'extracted':
++                    _manifest.mark_written(item)
++            _manifest.summary()
++        except Exception:
++            pass
++
++    if _db is not None:
++        _db.close()
++
++    print("\n✅ 管线完成")
++
++
+ # ========== Ingest ==========
+ 
+ @app.command()
+@@ -657,11 +1048,12 @@ def merge(
+ 
+ @app.command()
+ def extract(
+-    input_dir: str = typer.Option("references", "--input-dir", help="输入文章目录"),
++    input_dir: str = typer.Option("references", "--input-dir", help="[废弃] 输入文章目录"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+-    output: str = typer.Option("", "--output", "-o", help="输出 JSON 文件路径（默认打印到终端）"),
++    output: str = typer.Option("", "--output", "-o", help="[废弃] 输出 JSON 文件路径"),
+ ) -> None:
+-    """Step 1: 从文章中提取知识点"""
++    """[已废弃] Step 1: 从文章中提取知识点 — 请使用新管线: knowledge-tree-builder run --merged"""
++    print("⚠️  extract 已废弃，请使用: knowledge-tree-builder run --merged")
+     config = load_config(config_path)
+     cfg = AppConfig.from_dict(config)
+ 
+@@ -715,13 +1107,14 @@ def extract(
+ 
+ @app.command()
+ def cluster(
+-    input_json: str = typer.Option(..., "--input", "-i", help="extract 产出的 JSON 文件路径"),
++    input_json: str = typer.Option(..., "--input", "-i", help="[废弃] extract 产出的 JSON 文件路径"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+-    output: str = typer.Option("", "--output", "-o", help="输出 JSON 文件路径"),
++    output: str = typer.Option("", "--output", "-o", help="[废弃] 输出 JSON 文件路径"),
+     dry_run: bool = typer.Option(True, "--dry-run/--apply", help="自动干跑（默认开启）"),
+     min_cluster_size: int = typer.Option(5, "--min-cluster-size", help="HDBSCAN 最小簇大小"),
+ ) -> None:
+-    """Step 2: 对知识点做 HDBSCAN 聚类 + 建树报告"""
++    """[已废弃] HDBSCAN 聚类 — 请使用新管线: knowledge-tree-builder run --merged"""
++    print("⚠️  cluster 已废弃，请使用: knowledge-tree-builder run --merged")
+     config = load_config(config_path)
+     cfg = AppConfig.from_dict(config)
+ 
+@@ -841,11 +1234,12 @@ def _print_tree_node(node: dict[str, Any], prefix: str = "", index: int | None =
+ 
+ @app.command()
+ def validate(
+-    input_json: str = typer.Option(..., "--input", "-i", help="cluster 产出的 JSON 文件路径"),
++    input_json: str = typer.Option(..., "--input", "-i", help="[废弃] cluster 产出的 JSON 文件路径"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+-    output: str = typer.Option("", "--output", "-o", help="输出 JSON 文件路径"),
++    output: str = typer.Option("", "--output", "-o", help="[废弃] 输出 JSON 文件路径"),
+ ) -> None:
+-    """Step 3: LLM 结构校验（判断子簇关系）"""
++    """[已废弃] LLM 结构校验 — 请使用新管线: knowledge-tree-builder run --merged"""
++    print("⚠️  validate 已废弃，请使用: knowledge-tree-builder run --merged")
+     config = load_config(config_path)
+     cfg = AppConfig.from_dict(config)
+ 
+@@ -908,11 +1302,12 @@ def _count_structure(tree: list[dict[str, Any]], target: str) -> int:
+ 
+ @app.command()
+ def name(
+-    input_json: str = typer.Option(..., "--input", "-i", help="validate 产出的 JSON 文件路径"),
++    input_json: str = typer.Option(..., "--input", "-i", help="[废弃] validate 产出的 JSON 文件路径"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+-    output: str = typer.Option("", "--output", "-o", help="输出 JSON 文件路径"),
++    output: str = typer.Option("", "--output", "-o", help="[废弃] 输出 JSON 文件路径"),
+ ) -> None:
+-    """Step 4: LLM 节点命名"""
++    """[已废弃] LLM 节点命名 — 请使用新管线: knowledge-tree-builder run --merged"""
++    print("⚠️  name 已废弃，请使用: knowledge-tree-builder run --merged")
+     config = load_config(config_path)
+     cfg = AppConfig.from_dict(config)
+ 
+@@ -952,11 +1347,12 @@ def name(
+ 
+ @app.command()
+ def write(
+-    input_json: str = typer.Option(..., "--input", "-i", help="name 产出的 JSON 文件路径"),
++    input_json: str = typer.Option(..., "--input", "-i", help="[废弃] name 产出的 JSON 文件路径"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+     apply: bool = typer.Option(False, "--apply", help="实际写入 PG（默认 dry-run）"),
+ ) -> None:
+-    """Step 5: 将命名后的树写入 PG"""
++    """[已废弃] 写入 PG — 请使用新管线: knowledge-tree-builder run --merged --apply"""
++    print("⚠️  write 已废弃，请使用: knowledge-tree-builder run --merged --apply")
+     config = load_config(config_path)
+     cfg = AppConfig.from_dict(config)
+ 
+@@ -1012,19 +1408,18 @@ def _collect_all_nodes(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
+ 
+ 
+ @app.command()
+-def run(
+-    input_dir: str = typer.Option("references", "--input-dir", help="输入文章目录"),
+-    output_dir: str = typer.Option("output", "--output-dir", help="中间产物输出目录"),
++def run_old(
++    input_dir: str = typer.Option("references", "--input-dir", help="[废弃] 输入文章目录"),
++    output_dir: str = typer.Option("output", "--output-dir", help="[废弃] 中间产物输出目录"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+     apply: bool = typer.Option(False, "--apply", help="实际写入 PG（默认 dry-run）"),
+     dry_run: bool = typer.Option(False, "--dry-run", help="试运行模式（不写 PG）"),
+     min_cluster_size: int = typer.Option(5, "--min-cluster-size", help="HDBSCAN 最小簇大小"),
+     skip_extract: bool = typer.Option(False, "--skip-extract", help="跳过 Step 1 提取，从已有中间文件恢复"),
+ ) -> None:
+-    """执行完整建树管线：提取→聚类→校验→命名→写入
+-
+-    分步执行，每步产出中间 JSON 文件，可中断恢复。
+-    """
++    """[废弃] 旧管线 run 命令，已被新管线替代"""
++    print("⚠️  旧管线 run 命令已废弃，请使用新管线：knowledge-tree-builder run --help")
++    print("   回退到旧管线逻辑...")
+     if dry_run:
+         apply = False
+ 
+@@ -1267,9 +1662,10 @@ def init_db(
+ 
+ @app.command()
+ def report(
+-    input_json: str = typer.Option(..., "--input", "-i", help="cluster 产出的 JSON 文件路径"),
++    input_json: str = typer.Option(..., "--input", "-i", help="[废弃] cluster 产出的 JSON 文件路径"),
+ ) -> None:
+-    """查看建树报告"""
++    """[已废弃] 查看建树报告"""
++    print("⚠️  report 已废弃")
+     in_path = Path(input_json)
+     if not in_path.exists():
+         print(f"   ❌ 输入文件不存在: {input_json}")
+@@ -1291,6 +1687,373 @@ def report(
+             print(f"   {key}: {value}")
+ 
+ 
++# ========== Review Queue CLI ==========
++
++@app.command()
++def review(
++    action: str = typer.Argument(..., help="操作: list | accept | reject"),
++    review_id: int = typer.Option(0, "--id", help="审查项 ID（accept/reject 时需要）"),
++    review_type: str = typer.Option("", "--type", help="筛选类型（list 时可选）"),
++    config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
++) -> None:
++    """审查队列操作：列出/接受/拒绝审查项。"""
++    from knowledge_tree_builder.config import load_config as _load_cfg
++    from knowledge_tree_builder.consolidate.review import list_reviews as _list
++    from knowledge_tree_builder.consolidate.review import accept_review as _accept
++    from knowledge_tree_builder.consolidate.review import reject_review as _reject
++
++    config = _load_cfg(config_path)
++    db_url = config.get("db_url", "")
++    if not db_url:
++        print("   ❌ 未配置 db_url")
++        raise typer.Exit(1)
++
++    try:
++        from knowledge_tree_builder.adapters.database import DatabaseAdapter
++        adapter = DatabaseAdapter(db_url)
++
++        if action == "list":
++            items = _list(adapter, review_type=review_type or None)
++            if not items:
++                print("   审查队列为空")
++                return
++            print(f"\n📋 审查队列 ({len(items)} 条):")
++            for item in items:
++                icon = {"contradiction": "⚡", "orphan": "📭", "move_suggestion": "🔄",
++                        "consistency_warning": "⚠️", "incomplete_split": "✂️",
++                        "obsolete": "🗑️"}.get(item.get("type", ""), "📌")
++                print(f"   {icon} ID={item['id']} [{item['type']}] {item.get('new_text', '')[:60]}")
++                print(f"       状态: {item.get('status', 'pending')} | 来源: {item.get('existing_text', '')[:40]}")
++
++        elif action == "accept":
++            if review_id <= 0:
++                print("   ❌ 请指定 --id")
++                return
++            if _accept(review_id, adapter):
++                print(f"   ✅ 已接受审查项 ID={review_id}")
++            else:
++                print(f"   ❌ 接受失败 ID={review_id}")
++
++        elif action == "reject":
++            if review_id <= 0:
++                print("   ❌ 请指定 --id")
++                return
++            if _reject(review_id, adapter):
++                print(f"   ✅ 已拒绝审查项 ID={review_id}")
++            else:
++                print(f"   ❌ 拒绝失败 ID={review_id}")
++
++        else:
++            print(f"   ❌ 未知操作: {action}，可选 list/accept/reject")
++
++        adapter.close()
++
++    except Exception as e:
++        print(f"   ❌ 操作失败: {e}")
++
++
++def _load_subjects_for_consolidation(adapter: Any) -> list[dict[str, Any]]:
++    """从 PG 加载科目数据供 ConsolidationEngine.run() 使用。
++
++    返回每个非叶子 subject 的：
++    - id, name, point_count
++    - points: 子节点文本列表
++    - embeddings: 子节点 k_vector 矩阵 (np.ndarray)
++    - children_embeddings, sibling_embeddings: 局部偏移计算用
++    """
++    import numpy as np
++
++    cursor = adapter.cursor
++    cursor.execute(
++        "SELECT id, name FROM knowledge_tree "
++        "WHERE parent_id IS NULL AND node_type = 'subject' "
++        "ORDER BY id"
++    )
++    subjects = []
++
++    for domain_id, domain_name in cursor.fetchall():
++        cursor.execute(
++            "SELECT kt.id, kpt.text, kt.k_vector "
++            "FROM knowledge_tree kt "
++            "LEFT JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id "
++            "WHERE kt.parent_id = %s AND kt.k_vector IS NOT NULL",
++            (domain_id,),
++        )
++        rows = cursor.fetchall()
++        if not rows:
++            continue
++
++        points = []
++        embeddings = []
++        for r in rows:
++            text = r[1] or ""
++            k_vec = r[2]
++            if k_vec is not None:
++                points.append(text)
++                embeddings.append(list(k_vec))
++
++        if len(points) < 3:
++            continue  # 节点太少，无需拆分
++
++        subjects.append({
++            "id": domain_id,
++            "name": domain_name,
++            "point_count": len(points),
++            "points": points,
++            "embeddings": np.array(embeddings, dtype=np.float32),
++            "placement_delta": 0,
++            "k_vector_change": 0,
++            "days_since_review": 30,
++            "recall_count_decayed": 0,
++        })
++
++    return subjects
++
++
++# ========== Consolidate (纠错回路) ==========
++
++@app.command()
++def consolidate(
++    action: str = typer.Argument("run", help="操作: run | process-timeouts"),
++    config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
++    dry_run: bool = typer.Option(True, "--dry-run", help="仅预览"),
++    merge_domains: bool = typer.Option(False, "--merge-domains", help="启用碎片 domain 合并"),
++    min_domain_nodes: int = typer.Option(5, "--min-domain-nodes", help="domain 合并阈值"),
++    domain_merge_threshold: float = typer.Option(0.3, "--domain-merge-threshold", help="余弦相似度阈值"),
++) -> None:
++    """纠错回路：更新 confidence + 处理超时审查项 + 碎片 domain 合并。
++
++    - run: 从使用日志更新所有知识的 confidence
++    - process-timeouts: 处理 review_queue 中超时的审查项
++
++    domain 合并(--merge-domains):
++      子节点 < min-domain-nodes 的碎片 domain 合并到最近的大 domain。
++      整合在 consolidate 中，无需独立命令。
++    """
++    from knowledge_tree_builder.config import load_config as _load_cfg
++    from knowledge_tree_builder.consolidate.review import process_timeouts as _process_timeouts
++
++    config = _load_cfg(config_path)
++    db_url = config.get("db_url", "")
++    if not db_url:
++        print("   ❌ 未配置 db_url")
++        raise typer.Exit(1)
++
++    try:
++        from knowledge_tree_builder.adapters.database import DatabaseAdapter
++        adapter = DatabaseAdapter(db_url)
++
++        if action == "process-timeouts":
++            print("\n⏰ 处理超时审查项...")
++            processed = _process_timeouts(adapter)
++            print(f"   已处理 {processed} 条超时审查项")
++            if not dry_run:
++                adapter.conn.commit()
++
++        elif action == "run":
++            print("\n🔄 执行纠错回路...")
++
++            # 1. 从使用日志加载事件
++            try:
++                use_logs = adapter.get_recent_use_logs(days=30)
++            except Exception:
++                use_logs = []
++            print(f"   加载 {len(use_logs)} 条使用日志")
++
++            # 2. 获取当前所有知识的 confidence
++            try:
++                nodes = adapter.get_all_nodes_with_confidence()
++            except Exception:
++                nodes = []
++            current_conf = {str(n["id"]): n.get("retrieval_confidence", 1.0) for n in nodes}
++            print(f"   当前 {len(current_conf)} 条知识有 confidence 记录")
++
++            # 3. 批量更新 confidence
++            if use_logs and current_conf:
++                from knowledge_tree_builder.consolidate.confidence import batch_update_from_logs
++                results = batch_update_from_logs(use_logs, current_conf)
++                print(f"   更新 {len(results)} 条知识 confidence")
++
++                if not dry_run:
++                    updated = 0
++                    for kid_str, (new_conf, action) in results.items():
++                        try:
++                            adapter.update_retrieval_confidence(int(kid_str), new_conf)
++                            updated += 1
++                        except Exception:
++                            pass
++                    adapter.conn.commit()
++                    print(f"   已写入 {updated} 条更新")
++                else:
++                    # dry-run: 只展示需要关注的知识
++                    needs_attention = {k: v for k, v in results.items() if v[1] in ("review", "remove")}
++                    if needs_attention:
++                        print(f"\n   ⚠️  需关注的知识 ({len(needs_attention)} 条):")
++                        for kid, (conf, action) in list(needs_attention.items())[:10]:
++                            print(f"      ID={kid} confidence={conf:.3f} → {action}")
++
++            # 4. 碎片 domain 合并（--merge-domains 启用）
++            if merge_domains:
++                print(f"\n�
+
+[… truncated 5775 chars …]

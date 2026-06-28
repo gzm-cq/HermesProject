@@ -1,0 +1,648 @@
+$ wsl bash -c "cd /mnt/d/HermesProject && git diff -- plugins/knowledge-navigation/README.md plugins/knowledge-navigation/skills/software-development/knowledge-navigation/SKILL.md plugins/knowledge-navigation/src/knowledge_navigation/config.py plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py plugins/knowledge-navigation/tests/test_hooks.py"
+[exit 0]
+diff --git a/plugins/knowledge-navigation/README.md b/plugins/knowledge-navigation/README.md
+index 27ee5f3..41599bd 100644
+--- a/plugins/knowledge-navigation/README.md
++++ b/plugins/knowledge-navigation/README.md
+@@ -1,98 +1,114 @@
+-# 知识导航插件（knowledge-navigation）
+-
+-> 自动 recall Hindsight 记忆，智能注入上下文，提升 LLM 回答质量
+-
+-## ✨ 插件简介
+-
+-知识导航插件是 Hermes 平台的核心增强组件，专为提升大语言模型（LLM）的上下文感知能力而设计。它在每次 LLM 调用前自动触发，从 Hindsight 记忆库中召回与当前用户问题最相关的记忆片段，并以结构化方式注入到请求上下文中，从而显著提升回答的准确性、连贯性和专业性。
+-
+-**核心特性**：
+-- 🔍 **智能召回**：基于语义相似度与 rerank_score 精度过滤
+-- ⚡ **高性能**：内置连接池、超时控制与重试机制
+-- 📊 **可观测性**：结构化 JSON 日志，支持监控与调试
+-- 🛡️ **高可靠**：线程安全、资源自动释放、错误隔离
+-- 🧩 **易集成**：零侵入式 Hook 注册，开箱即用
+-
+----
+-
+-## 🚀 快速开始
+-
+-### 1. 前置条件
+-- 已部署并运行 Hindsight 服务（默认监听 `http://localhost:9177`）
+-- Hermes 运行环境已安装 `requests>=2.25.0`
+-
+-### 2. 安装插件
+-将本插件目录（`plugins/knowledge-navigation/`）置于 Hermes 的插件加载路径下即可，Hermes 启动时会自动发现并加载。
+-
+-### 3. 启用插件
+-确保 `plugin.yaml` 中的 hook 已注册（默认已启用）：
+-```yaml
+-hooks:
+-  pre_llm_call:
+-    callback: pre_llm_call
+-```
+-
+----
+-
+-## ⚙️ 配置说明
+-
+-所有配置项均位于 `config.py`，支持按需调整：
+-
+-| 配置项 | 类型 | 默认值 | 说明 | 推荐范围 |
+-|---------|------|--------|------|-----------|
+-| `HINDSIGHT_API` | str | `"http://localhost:9177/v1/default/banks/hermes/memories/recall"` | Hindsight API 地址 | 根据实际部署修改 |
+-| `DEFAULT_TIMEOUT` | int | `10` | 单次请求超时（秒） | `5-30` |
+-| `MAX_RETRIES` | int | `3` | 最大重试次数 | `0-5` |
+-| `MIN_SCORE` | float | `0.6` | 最低接受分数（rerank_score） | `0.4-0.8` |
+-| `MAX_RESULTS` | int | `3` | 最多注入记忆条数 | `1-10` |
+-| `MAX_TEXT_LENGTH` | int | `200` | 每条记忆截断长度（字符） | `100-500` |
+-| `TRACE_LOG` | str | `"trace.log"` | 日志文件路径 | 绝对路径更佳 |
+-
+-> 💡 **提示**：修改配置后需重启 Hermes 服务生效。
+-
+----
+-
+-## ▶️ 使用示例
+-
+-### 命令行测试（开发/调试用）
+-```bash
+-# 测试 recall 功能（需在 plugins/knowledge-navigation 目录下执行）
+-python -m knowledge-navigation "如何配置知识导航插件？"
+-
+-# 列出支持的钩子
+-python -m knowledge-navigation --list-hooks
+-```
+-
+-### 日志查看
+-插件日志默认写入 `plugins/knowledge-navigation/trace.log`，格式为 JSON：
+-```json
+-{
+-  "timestamp": "2026-05-24T15:30:45.123Z",
+-  "session_id": "abc123de",
+-  "query": "如何配置知识导航插件？",
+-  "event": "recall_success",
+-  "total_results": 12,
+-  "kept_results": 3,
+-  "score_stats": {"min": 0.62, "max": 0.78, "avg": 0.71, "count": 3},
+-  "latency_ms": 427
+-}
+-```
+-
+----
+-
+-## 🛠️ 故障排查
+-
+-| 现象 | 可能原因 | 解决方案 |
+-|------|----------|-----------|
+-| `recall_empty` 日志频繁出现 | Hindsight 服务未运行 / 查询无匹配记忆 | 检查 `HINDSIGHT_API` 地址；确认记忆库已填充数据 |
+-| `recall_error` 且报 `ConnectionError` | 网络不通或端口被占用 | `curl -v http://localhost:9177/health` 检查服务状态 |
+-| `recall_success` 但 `kept_results=0` | `MIN_SCORE` 设置过高 | 临时调低至 `0.4` 观察效果 |
+-| 日志文件无限增长 | `_TRACE_LINES_MAX` 未生效 | 检查 `logger.py` 中锁机制是否正常工作 |
+-
+----
+-
+-## 📜 许可证
+-MIT License — 详见 `plugin.yaml` 元数据
+-
+----
+-*版本：1.1.0 | 最后更新：2026-05-24*
+\ No newline at end of file
++# 知识导航插件（knowledge-navigation）
++
++> 自动 recall Hindsight 记忆，智能注入上下文，提升 LLM 回答质量
++
++## ✨ 插件简介
++
++知识导航插件是 Hermes 平台的核心增强组件，专为提升大语言模型（LLM）的上下文感知能力而设计。它在每次 LLM 调用前自动触发，从 Hindsight 记忆库中召回与当前用户问题最相关的记忆片段，并以结构化方式注入到请求上下文中，从而显著提升回答的准确性、连贯性和专业性。
++
++**核心特性**：
++- 🔍 **智能召回**：基于语义相似度与 rerank_score 精度过滤
++- ⚡ **高性能**：内置连接池、超时控制与熔断器
++- 📊 **可观测性**：结构化 JSON 日志，支持监控与调试
++- 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知
++- 🧩 **易集成**：零侵入式 Hook 注册，开箱即用
++
++---
++
++## 🚀 快速开始
++
++### 1. 前置条件
++- 已部署并运行 Hindsight 服务（默认监听 `http://localhost:9177`）
++- Hermes 运行环境已安装 `requests>=2.25.0`
++
++### 2. 安装插件
++将本插件目录（`plugins/knowledge-navigation/`）置于 Hermes 的插件加载路径下即可，Hermes 启动时会自动发现并加载。
++
++### 3. 启用插件
++确保 `plugin.yaml` 中的 hook 已注册（默认已启用）：
++```yaml
++hooks:
++  pre_llm_call:
++    callback: pre_llm_call
++```
++
++---
++
++## ⚙️ 配置说明
++
++所有配置项均位于 `config.py`，支持通过环境变量覆盖：
++
++| 配置项 | 环境变量 | 默认值 | 说明 |
++|--------|---------|--------|------|
++| `hindsight_api_url` | `KN_HINDSIGHT_URL` | `http://localhost:9177/v1/...` | Hindsight API 地址 |
++| `timeout_seconds` | `KN_TIMEOUT_SECONDS` | `25` | 单次请求超时（秒） |
++| `max_retries` | `KN_MAX_RETRIES` | `0` | HTTP 重试次数（0=不重试，依赖熔断器） |
++| `min_score` | `KN_MIN_SCORE` | `0.6` | 最低接受分数（rerank_score） |
++| `max_results` | `KN_MAX_RESULTS` | `3` | 最多注入记忆条数 |
++| `max_text_length` | `KN_MAX_TEXT_LENGTH` | `200` | 每条记忆截断长度（字符） |
++| `trace_log_path` | `KN_TRACE_LOG_PATH` | `trace.log` | 日志文件路径 |
++| `circuit_breaker_threshold` | `KN_CB_THRESHOLD` | `3` | 熔断器阈值（连续失败次数） |
++| `circuit_breaker_cooldown` | `KN_CB_COOLDOWN` | `120` | 熔断冷却时间（秒） |
++| `feishu_webhook_url` | `KN_FEISHU_WEBHOOK_URL` | `""` | 飞书机器人 Webhook（熔断时告警） |
++| `enable_temporal` | `KN_ENABLE_TEMPORAL` | `false` | 是否启用时态衰减排序 |
++| `eval_queries_path` | `KN_EVAL_QUERIES_PATH` | `""` | 评测查询 JSON 路径 |
++
++---
++
++## ▶️ 使用示例
++
++### 命令行测试（开发/调试用）
++```bash
++# 测试 recall 功能（需在 plugins/knowledge-navigation 目录下执行）
++python -m knowledge-navigation "如何配置知识导航插件？"
++
++# 列出支持的钩子
++python -m knowledge-navigation --list-hooks
++```
++
++### 日志查看
++插件日志默认写入 `plugins/knowledge-navigation/trace.log`，格式为 JSON：
++```json
++{
++  "timestamp": "2026-05-24T15:30:45.123Z",
++  "session_id": "abc123de",
++  "query": "如何配置知识导航插件？",
++  "event": "recall_success",
++  "total_results": 12,
++  "kept_results": 3,
++  "score_stats": {"min": 0.62, "max": 0.78, "avg": 0.71, "count": 3},
++  "latency_ms": 427
++}
++```
++
++---
++
++## 🛠️ 故障排查
++
++| `recall_empty` / `service_error` 日志频繁出现 | Hindsight 服务未运行 / 返回空响应 | 检查 `KN_HINDSIGHT_URL` 地址；检查服务状态 `curl http://localhost:9177/health` |
++| `recall_error` 且报 `ConnectionError` | 网络不通或端口被占用 | `curl -v http://localhost:9177/health` 检查服务状态 |
++| `recall_success` 但 `kept_results=0` | `MIN_SCORE` 设置过高 | 临时调低至 `0.4` 观察效果 |
++| 飞书未收到熔断告警 | 未配置 `KN_FEISHU_WEBHOOK_URL` | 在 WSL 中设置环境变量后重启服务 |
++| 熔断器频繁触发 | Hindsight 服务不稳定 | 检查服务日志；考虑上调 `KN_CB_THRESHOLD` |
++
++## 🔔 熔断与告警
++
++插件内置**熔断器**（Circuit Breaker），防止 Hindsight 服务异常时反复重试拖慢 LLM 响应：
++
++- 连续 3 次 recall 失败 → **熔断打开**，跳过 recall 120 秒
++- 冷却期后自动半开，下一次成功调用即完全恢复
++- 所有失败按类型分类追踪（未预期异常 / 服务返回空 / 无匹配结果）
++
++配置 `KN_FEISHU_WEBHOOK_URL` 环境变量后，熔断打开时会自动发送飞书卡片告警（限频 5 分钟一次）：
++
++```bash
++export KN_FEISHU_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"
++```
++
++---
++
++## 📜 许可证
++MIT License — 详见 `plugin.yaml` 元数据
++
++---
++*版本：1.2.0 | 最后更新：2026-06-06*
+\ No newline at end of file
+diff --git a/plugins/knowledge-navigation/skills/software-development/knowledge-navigation/SKILL.md b/plugins/knowledge-navigation/skills/software-development/knowledge-navigation/SKILL.md
+index 92b64ca..1083549 100644
+--- a/plugins/knowledge-navigation/skills/software-development/knowledge-navigation/SKILL.md
++++ b/plugins/knowledge-navigation/skills/software-development/knowledge-navigation/SKILL.md
+@@ -1,15 +1,15 @@
+ ---
+ name: knowledge-navigation
+ description: 知识导航系统 — agent 处理任务前自动增强 Hindsight recall 结果的精度过滤 + 排除标记记忆 + 时态衰减排序 + 轻量 Compaction + 高频记忆 boost + 定期任务回述，标记工具由聚类项目维护
+-version: 3.8.0
++version: 3.9.0
+ related_skills: [hindsight-memory, clustering-analysis]
+ ---
+ 
+ # 知识导航系统 — Knowledge Navigation Protocol
+ 
+-> **版本：V3.8.0 · 2026-06-04** — Phase 1 (因果链补齐) + Phase 2 (Hook 插件 **已上线启用**) + Phase 3 (trace 精度过滤 **已上线**) + **记忆标记排除 + 时态衰减排序 + 评估基线 + XML 格式 + Compaction + HitCounter + TaskTracker + LLM 合成评测查询 + recall@k 评估 + LLM relevance judge 已上线**
++> **版本：V3.9.0 · 2026-06-06** — Phase 1 (因果链补齐) + Phase 2 (Hook 插件 **已上线启用**) + Phase 3 (trace 精度过滤 **已上线**) + **记忆标记排除 + 时态衰减排序 + 评估基线 + XML 格式 + Compaction + HitCounter + TaskTracker + LLM 合成评测查询 + recall@k 评估 + LLM relevance judge + 熔断器 + 飞书告警 已上线**
+ >
+-> **核心工作流**：pre_llm_call Hook → recall → 排除已标记记忆 → HitCounter boost → Compaction 限流 → 分数过滤（可选时态融合）→ TaskTracker 摘要 → XML 格式化注入 → **recall@k 日志 + eval_query_id 打点（有 expected_ids 时计算 recall_hit）**
++> **核心工作流**：pre_llm_call Hook → 熔断器检查 → recall → 失败分类计数 · 连续失败熔断 → 排除已标记记忆 → HitCounter boost → Compaction 限流 → 分数过滤（可选时态融合）→ TaskTracker 摘要 → XML 格式化注入 → **recall@k 日志 + eval_query_id 打点（有 expected_ids 时计算 recall_hit）**
+ 
+ ## 一、当前管线流程
+ 
+@@ -18,8 +18,15 @@ pre_llm_call Hook 每次 LLM 调用前自动执行：
+ ```
+ 用户消息
+   ↓
++[熔断器检查] ──熔断打开?──→ return None（跳过 recall）
++  ↓ 正常
+ Hindsight recall(query, trace=true)
+   ↓
++recall 失败? ──→ _circuit_record_failure(类别)
++  │               └─ 连续 3 次 → 熔断打开 + 飞书告警
++  ↓ 成功
++_circuit_record_success() 重置熔断计数
++  ↓
+ exclude_marked() —— 排除 [标记: 错误/作废/可疑] 等
+   ↓
+ _HitCounter.boost_scores() —— 高频记忆 rerank_score 提升，最大 2x
+@@ -44,8 +51,11 @@ _TaskTracker —— 每 5 轮注射 [任务状态摘要]，防长对话目标漂
+ | `min_score` | 0.6 | rerank_score 最低阈值 |
+ | `max_results` | 3 | 最大注入条数（Compaction 超 20 轮后降为 1）|
+ | `max_text_length` | 200 | 单条截断字符数 |
+-| `timeout_seconds` | 10 | Hindsight API 超时 |
+-| `max_retries` | 2 | API 重试次数 |
++| `timeout_seconds` | 25 | Hindsight API 超时 |
++| `max_retries` | 0 | API 重试次数（0=不重试，依赖熔断器）|
++| `circuit_breaker_threshold` | 3 | 熔断阈值（连续失败次数）|
++| `circuit_breaker_cooldown` | 120 | 熔断冷却秒数 |
++| `feishu_webhook_url` | "" | 飞书机器人 Webhook URL（可空，空时不告警）|
+ | `enable_temporal` | false | 是否启用时态融合排序 |
+ | `eval_queries_path` | "" | 评估查询 JSON 文件路径（支持 `eval_queries_auto.json` 自动生成版） |
+ | `eval_min_score` | 0.35 | 关键词匹配阈值 |
+@@ -279,7 +289,7 @@ CLUSTERING_DB_URL="postgresql://..." \
+ │   ├── config.py                # 配置 + JSONFormatter + setup_logging
+ │   ├── core/
+ │   │   ├── filtering.py         # 过滤逻辑（标记排除 + 分数过滤 + 时态衰减 + 去重 + XML 格式化）
+-│   │   └── hooks.py             # pre_llm_call 实现 + Compaction/HitCounter/TaskTracker + eval_match + recall@k 日志
++│   │   └── hooks.py             # pre_llm_call 实现 + Compaction/HitCounter/TaskTracker + eval_match + recall@k 日志 + 熔断器 + 飞书告警
+ │   └── adapters/
+ │       └── hindsight.py         # Hindsight API 客户端（重试 + 超时）
+ ├── config/
+@@ -321,7 +331,61 @@ def register(ctx) -> None:
+ - 插件 Hook 回调不能调用 Hermes 工具/MCP 工具
+ - 替代方案：通过 `urllib.request` 调 Hindsight daemon HTTP API
+ 
+-## 五、重要约束
++## 五、熔断器与飞书告警（2026-06 上线）
++
++### 熔断器（Circuit Breaker）
++
++插件内置模块级全局状态熔断器，位于 `hooks.py`：
++
++| 变量 | 类型 | 说明 |
++|------|------|------|
++| `_circuit_failures` | int | 连续失败计数 |
++| `_circuit_open_until` | float | 熔断解锁时间戳（0=未熔断）|
++| `_circuit_failure_types` | Counter[str] | 各类失败出现次数 |
++| `_LAST_NOTIFICATION_TIME` | float | 上次告警时间戳（限频用）|
++
++**工作流程**：
++1. `pre_llm_call` 入口检查 `_circuit_is_open()` → 熔断中则直接 return None
++2. recall 异常 → `_circuit_record_failure("exception")`
++3. recall 返回空 → `_circuit_record_failure("service_error")`
++4. results 为空列表 → `_circuit_record_failure("empty_results")`
++5. 正常 → `_circuit_record_success()` 重置所有计数
++6. 连续失败 ≥ `CONFIG.circuit_breaker_threshold`（默认 3）→ 打开熔断 + 发送飞书告警
++
++**配置参数（config.py）**：
++
++| 配置 | 环境变量 | 默认值 | 说明 |
++|------|---------|--------|------|
++| `circuit_breaker_threshold` | `KN_CB_THRESHOLD` | 3 | 熔断阈值（连续失败次数）|
++| `circuit_breaker_cooldown` | `KN_CB_COOLDOWN` | 120 | 冷却秒数 |
++
++### 飞书卡片告警
++
++熔断打开时自动向配置的飞书 Webhook 发送 Interactive Card：
++
++**错误分类**：
++
++| 类别 | 标签 | 严重级别 |
++|------|------|----------|
++| `exception` | 🔴 未预期异常 | red（最高）|
++| `service_error` | 🟡 服务返回空 | yellow |
++| `empty_results` | 🟠 无匹配结果 | orange |
++
++**告警逻辑**：
++- 按最高严重级别选卡片颜色（exception→red > service_error→yellow > empty_results→orange）
++- 失败分布按次数倒序排列在卡片中
++- 同一进程至少间隔 5 分钟，防轰炸
++- 未配置 `KN_FEISHU_WEBHOOK_URL` 时静默跳过
++- 使用 `import requests as _req` 懒导入，不影响主流程
++
++**配置方式（WSL）**：
++```bash
++export KN_FEISHU_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"
++# 持久化到 ~/.bashrc
++echo 'export KN_FEISHU_WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"' >> ~/.bashrc
++```
++
++## 六、重要约束
+ 
+ ### fact_type 过滤（因果链局限）
+ 
+@@ -339,7 +403,7 @@ RRF_score(d) = Σ 1/(60 + rank_in_list(d))  for list ∈ {semantic, BM25, graph}
+ - graph 端点用 GET 不是 POST
+ - Cross-encoder 不 boost causal 结果
+ 
+-## 六、当前系统状态
++## 七、当前系统状态
+ 
+ | 子系统 | 状态 | 说明 |
+ |--------|------|------|
+@@ -358,5 +422,6 @@ RRF_score(d) = Σ 1/(60 + rank_in_list(d))  for list ∈ {semantic, BM25, graph}
+ | LLM 合成评测查询 | ✅ 代码就绪 | `generate_eval_queries.py` 从 PG 自动生成 |
+ | LLM relevance judge | ✅ 代码就绪 | `collect_baseline.py --judge` 离线批量评分 |
+ | 因果链补齐 | ✅ Phase 1 完成 | build-causal-links.py |
++| **熔断器（Cicuit Breaker）** | ✅ **已上线** | 连续 3 次失败熔断 120 秒，飞书卡片告警（限频 5 分钟） |
+ | 文本富化 | ✅ 已上线 | 聚类 Phase 3 合并 text UPDATE |
+ | 全量聚类 | ✅ 已上线 | 增量运行，永不删除 |
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/config.py b/plugins/knowledge-navigation/src/knowledge_navigation/config.py
+index 561a598..f0f6111 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/config.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/config.py
+@@ -90,6 +90,11 @@ class KnowledgeNavigationConfig:
+     eval_log_path: str = field(default="")
+     eval_min_score: float = field(default=0.35)
+ 
++    # Notification (Feishu Open API)
++    feishu_app_id: str = field(default="")
++    feishu_app_secret: str = field(default="")
++    feishu_home_channel: str = field(default="")
++
+     @classmethod
+     def from_env(cls, defaults: dict | None = None) -> "KnowledgeNavigationConfig":
+         """从环境变量加载配置，覆盖默认值。
+@@ -129,6 +134,12 @@ class KnowledgeNavigationConfig:
+             values["circuit_breaker_threshold"] = int(env_cb_threshold)
+         if env_cb_cooldown := os.getenv("KN_CB_COOLDOWN"):
+             values["circuit_breaker_cooldown"] = int(env_cb_cooldown)
++        if env_app_id := os.getenv("FEISHU_APP_ID"):
++            values["feishu_app_id"] = env_app_id
++        if env_app_secret := os.getenv("FEISHU_APP_SECRET"):
++            values["feishu_app_secret"] = env_app_secret
++        if env_channel := os.getenv("FEISHU_HOME_CHANNEL"):
++            values["feishu_home_channel"] = env_channel
+         return cls(**values)
+ 
+ 
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py b/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
+index 9295fe2..234ec19 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
+@@ -11,7 +11,7 @@ import logging
+ import os
+ import re
+ import time
+-from collections import defaultdict
++from collections import Counter, defaultdict
+ from logging.handlers import RotatingFileHandler
+ from typing import Any
+ 
+@@ -103,6 +103,7 @@ _task_tracker = _TaskTracker()
+ 
+ _circuit_failures: int = 0
+ _circuit_open_until: float = 0.0
++_circuit_failure_types: Counter[str] = Counter()
+ 
+ 
+ def _circuit_is_open() -> bool:
+@@ -118,23 +119,185 @@ def _circuit_is_open() -> bool:
+     return False
+ 
+ 
+-def _circuit_record_failure() -> None:
+-    """记录一次失败，必要时触发熔断。"""
+-    global _circuit_failures, _circuit_open_until
++def _circuit_record_failure(category: str = "unknown") -> None:
++    """记录一次失败，必要时触发熔断并发送飞书通知。
++
++    Args:
++        category: 失败类别（exception / service_error / empty_results）。
++    """
++    global _circuit_failures, _circuit_open_until, _circuit_failure_types
+     _circuit_failures += 1
++    _circuit_failure_types[category] += 1
+     if _circuit_failures >= CONFIG.circuit_breaker_threshold:
+         _circuit_open_until = time.time() + CONFIG.circuit_breaker_cooldown
+         logger.warning(
+             "熔断器开启：连续 %d 次 recall 失败，跳过 %d 秒",
+             _circuit_failures, CONFIG.circuit_breaker_cooldown,
+         )
++        _notify_feishu_circuit_open(dict(_circuit_failure_types))
++        _circuit_failure_types.clear()
+ 
+ 
+ def _circuit_record_success() -> None:
+     """成功调用后重置熔断器。"""
+-    global _circuit_failures, _circuit_open_until
++    global _circuit_failures, _circuit_open_until, _circuit_failure_types
+     _circuit_failures = 0
+     _circuit_open_until = 0.0
++    _circuit_failure_types.clear()
++
++
++_CATEGORY_LABELS: dict[str, str] = {
++    "exception": "🔴 未预期异常",
++    "service_error": "🟡 服务返回空",
++    "empty_results": "🟠 无匹配结果",
++}
++
++
++_CATEGORY_LEVELS: dict[str, str] = {
++    "exception": "red",
++    "service_error": "yellow",
++    "empty_results": "orange",
++}
++
++
++_LAST_NOTIFICATION_TIME: float = 0.0
++_NOTIFICATION_MIN_INTERVAL: float = 300.0  # 同一 session 至少间隔 5 分钟
++
++# 飞书 tenant_access_token 缓存
++_FEISHU_TOKEN: str = ""
++_FEISHU_TOKEN_EXPIRES_AT: float = 0.0
++_FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
++_FEISHU_MESSAGE_URL = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
++
++
++
++def _get_feishu_token() -> str:
++    """获取飞书 tenant_access_token，带 2 小时缓存。
++
++    使用 CONFIG.feishu_app_id / feishu_app_secret 调用内部应用 API。
++    返回空字符串表示获取失败。
++    """
++    global _FEISHU_TOKEN, _FEISHU_TOKEN_EXPIRES_AT
++    now = time.time()
++    if _FEISHU_TOKEN and now < _FEISHU_TOKEN_EXPIRES_AT:
++        return _FEISHU_TOKEN
++
++    app_id = CONFIG.feishu_app_id
++    app_secret = CONFIG.feishu_app_secret
++    if not app_id or not app_secret:
++        return ""
++
++    try:
++        import requests as _req
++        resp = _req.post(
++            _FEISHU_TOKEN_URL,
++            json={"app_id": app_id, "app_secret": app_secret},
++            timeout=10,
++        )
++        data = resp.json()
++        if resp.status_code != 200 or "tenant_access_token" not in data:
++            logger.warning("获取飞书 token 失败：HTTP %s", resp.status_code)
++            return ""
++        _FEISHU_TOKEN = data["tenant_access_token"]
++        expires_in = data.get("expire", 7200)  # 默认 7200 秒
++        # 提前 60 秒过期，防边界情况
++        _FEISHU_TOKEN_EXPIRES_AT = now + max(expires_in - 60, 60)
++        logger.info("飞书 token 刷新成功（过期 %d 秒）", expires_in)
++        return _FEISHU_TOKEN
++    except Exception as e:
++        logger.warning("获取飞书 token 异常：%s", e)
++        return ""
++
++
++def _notify_feishu_circuit_open(failure_types: dict[str, int]) -> None:
++    """熔断器打开时通过飞书 Open API 发送消息（限频 5 分钟一次）。"""
++    global _LAST_NOTIFICATION_TIME
++    now = time.time()
++    if now - _LAST_NOTIFICATION_TIME < _NOTIFICATION_MIN_INTERVAL:
++        logger.info("飞书通知跳过：距上次通知不足 5 分钟")
++        return
++
++    app_id = CONFIG.feishu_app_id
++    app_secret = CONFIG.feishu_app_secret
++    channel = CONFIG.feishu_home_channel
++    if not app_id or not app_secret or not channel:
++        logger.info("飞书通知跳过：未配置 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_HOME_CHANNEL")
++        return
++
++    token = _get_feishu_token()
++    if not token:
++        logger.warning("飞书通知跳过：无法获取 tenant_access_token")
++        return
++
++    # 构建失败分布描述
++    lines: list[str] = []
++    for cat, count in sorted(failure_types.items(), key=lambda x: -x[1]):
++        label = _CATEGORY_LABELS.get(cat, cat)
++        lines.append(f"- {label}：{count} 次")
++    dist_text = "\n".join(lines) if lines else "- 未知"
++
++    # 取最高严重级别作为卡片模板色
++    top_cat = max(failure_types, key=failure_types.get)
++    template = _CATEGORY_LEVELS.get(top_cat, "red")
++
++    card_body = {
++        "header": {
++            "title": {
++                "tag": "plain_text",
++                "content": "\u26a0\ufe0f Hindsight Recall \u6545\u969c",
++            },
++            "template": template,
++        },
++        "elements": [
++            {
++                "tag": "div",
++                "text": {
++                    "tag": "lark_md",
++                    "content": (
++                        f"**\u7194\u65ad\u5668\u5df2\u5f00\u542f**\n"
++                        f"\u8fde\u7eed {CONFIG.circuit_breaker_threshold} \u6b21 recall \u5931\u8d25\uff0c"
++                        f"\u8df3\u8fc7 {CONFIG.circuit_breaker_cooldown} \u79d2\n\n"
++                        f"**\u5931\u8d25\u5206\u5e03\uff1a**\n{dist_text}\n\n"
++                        f"**\u65f6\u95f4\uff1a**{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
++                        f"**\u76ee\u6807\u670d\u52a1\uff1a**localhost:9177"
++                    ),
++                },
++            },
++            {
++                "tag": "hr",
++            },
++            {
++                "tag": "note",
++                "elements": [
++                    {
++                        "tag": "plain_text",
++                        "content": "knowledge-navigation plugin \u00b7 \u51b7\u5374\u671f\u540e\u5c06\u81ea\u52a8\u6062\u590d",
++                    }
++                ],
++            },
++        ],
++    }
++
++    _LAST_NOTIFICATION_TIME = now
++    try:
++        import requests as _req
++        payload = {
++            "receive_id": channel,
++            "msg_type": "interactive",
++            "content": json.dumps(card_body, ensure_ascii=False),
++        }
++        resp = _req.post(
++            _FEISHU_MESSAGE_URL,
++            json=payload,
++            headers={"Authorization": f"Bearer {token}"},
++            timeout=10,
++        )
++        if resp.status_code != 200:
++            logger.warning("飞书通知失败：HTTP %s, body=%s", resp.status_code, resp.text[:200])
++        else:
++            logger.info("飞书通知已发送（类别分布：%s）", failure_types)
++    except Exception as e:
++        logger.warning("飞书通知异常：%s", e)
+ 
+ 
+ # 评测日志（独立文件，用于评估灵活匹配效果）
+@@ -330,7 +493,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+     try:
+         result = client.recall(user_message)
+     except Exception as e:
+-        _circuit_record_failure()
++        _circuit_record_failure("exception")
+         logger.error(
+             "recall error",
+             extra={
+@@ -345,7 +508,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+         client.close()
+ 
+     if not result:
+-        _circuit_record_failure()
++        _circuit_record_failure("service_error")
+         logger.info(
+             "recall empty",
+             extra={
+@@ -361,7 +524,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+     raw_results = result.get("results", [])
+ 
+     if not raw_results:
+-        _circuit_record_failure()
++        _circuit_record_failure("empty_results")
+         logger.info(
+             "recall empty results",
+             extra={
+diff --git a/plugins/knowledge-navigation/tests/test_hooks.py b/plugins/knowledge-navigation/tests/test_hooks.py
+index e1ed40c..922b1b0 100644
+--- a/plugins/knowledge-navigation/tests/test_hooks.py
++++ b/plugins/knowledge-navigation/tests/test_hooks.py
+@@ -17,9 +17,13 @@ from knowledge_navigation.core.hooks import _CJK_STOP_CHARS, _extract_keywords
+ 
+ @pytest.fixture(autouse=True)
+ def _reset_circuit_breaker() -> None:
+-    """每个测试前重置熔断器状态，防止跨测试泄漏。"""
++    """每个测试前重置熔断器状态和飞书 token 缓存，防止跨测试泄漏。"""
+     nav_hooks._circuit_failures = 0
+     nav_hooks._circuit_open_until = 0.0
++    nav_hooks._circuit_failure_types.clear()
++    nav_hooks._LAST_NOTIFICATION_TIME = 0.0
++    nav_hooks._FEISHU_TOKEN = ""
++    nav_hooks._FEISHU_TOKEN_EXPIRES_AT = 0.0
+ 
+ 
+ class TestRegister:

@@ -1,0 +1,4814 @@
+{
+  "entity_08": {
+    "total_requests": 8,
+    "dimension": "entity",
+    "avg_kept_results": 2.88,
+    "kept_ci_95": [
+      2.62,
+      3.0
+    ],
+    "avg_score": 0.7394,
+    "score_ci_95": [
+      0.7138,
+      0.7621
+    ],
+    "avg_latency_ms": 13147.0,
+    "latency_ci_95": [
+      7961.0,
+      19616.0
+    ],
+    "avg_total_results": 14.5,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 2.9,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-01T01:52:48.732481+00:00",
+        "total_results": 4,
+        "kept_results": 3,
+        "avg_score": 0.7646809494579941,
+        "excluded_marked": 0,
+        "latency_ms": 16132,
+        "total_chars": 531,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "开始了知识导航插件的时间衰减排序，现在测试下效果，并看看基线独立日志是否记录正常"
+      },
+      {
+        "timestamp": "2026-06-01T02:01:11.678276+00:00",
+        "total_results": 12,
+        "kept_results": 3,
+        "avg_score": 0.7101457365255949,
+        "excluded_marked": 0,
+        "latency_ms": 6200,
+        "total_chars": 309,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "网关也重启了，知识导航的时间衰减排序启用了吧"
+      },
+      {
+        "timestamp": "2026-06-01T03:31:21.663380+00:00",
+        "total_results": 18,
+        "kept_results": 3,
+        "avg_score": 0.7353604618727942,
+        "excluded_marked": 0,
+        "latency_ms": 6935,
+        "total_chars": 332,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "评估下最近聚类修正（2万多全跑，不再是限制7千多）和知识导航评价体现的改变，是否需要揉入这个论文，还是在下个自进化里面来"
+      },
+      {
+        "timestamp": "2026-06-03T09:50:14.586717+00:00",
+        "total_results": 46,
+        "kept_results": 3,
+        "avg_score": 0.7569096055697951,
+        "excluded_marked": 0,
+        "latency_ms": 5974,
+        "total_chars": 632,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "里面的track_log是不是我们的知识导航插件的日志？\n我们的知识导航、聚类脚本这些不是hermes源码"
+      },
+      {
+        "timestamp": "2026-06-04T06:31:46.125523+00:00",
+        "total_results": 5,
+        "kept_results": 3,
+        "avg_score": 0.7112131729613391,
+        "excluded_marked": 0,
+        "latency_ms": 19636,
+        "total_chars": 410,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "读一下知识导航skill，干跑一次基线，只报bug"
+      },
+      {
+        "timestamp": "2026-06-04T06:59:00.826532+00:00",
+        "total_results": 2,
+        "kept_results": 2,
+        "avg_score": 0.6756313469360793,
+        "excluded_marked": 0,
+        "latency_ms": 32796,
+        "total_chars": 424,
+        "injected_count": 2,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "知识导航做了设计上的修正，你先加载skill，再看看实现，是否现在跑基线的方式变了？"
+      },
+      {
+        "timestamp": "2026-06-04T07:01:48.875915+00:00",
+        "total_results": 14,
+        "kept_results": 3,
+        "avg_score": 0.7810456148159416,
+        "excluded_marked": 0,
+        "latency_ms": 8900,
+        "total_chars": 368,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "知识导航插件现在运行正常不，新的改动是否引入了新的bug？只报bug，不改代码"
+      },
+      {
+        "timestamp": "2026-06-04T07:33:27.957034+00:00",
+        "total_results": 15,
+        "kept_results": 3,
+        "avg_score": 0.7800537505376468,
+        "excluded_marked": 0,
+        "latency_ms": 8601,
+        "total_chars": 368,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "知识导航插件现在运行正常不，新的改动是否引入了新的bug？只报bug，不改代码"
+      }
+    ]
+  },
+  "conflict_07": {
+    "total_requests": 1,
+    "dimension": "conflict",
+    "avg_kept_results": 1,
+    "kept_ci_95": [
+      1,
+      1
+    ],
+    "avg_score": 0.5856,
+    "score_ci_95": [
+      0.5856,
+      0.5856
+    ],
+    "avg_latency_ms": 5664,
+    "latency_ci_95": [
+      5664,
+      5664
+    ],
+    "avg_total_results": 6.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 1.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-01T03:49:02.025150+00:00",
+        "total_results": 6,
+        "kept_results": 1,
+        "avg_score": 0.5856435606093618,
+        "excluded_marked": 0,
+        "latency_ms": 5664,
+        "total_chars": 132,
+        "injected_count": 1,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "不用，我单纯看看trace日志的数据和以前记忆中的对比数据进行分析下，看看是不是有明细效果"
+      }
+    ]
+  },
+  "semantic_03": {
+    "total_requests": 1,
+    "dimension": "semantic",
+    "avg_kept_results": 0,
+    "kept_ci_95": [
+      0,
+      0
+    ],
+    "avg_score": 0.575,
+    "score_ci_95": [
+      0.575,
+      0.575
+    ],
+    "avg_latency_ms": 8685,
+    "latency_ci_95": [
+      8685,
+      8685
+    ],
+    "avg_total_results": 2.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 0.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-01T06:31:02.852644+00:00",
+        "total_results": 2,
+        "kept_results": 0,
+        "avg_score": 0.5750103637727657,
+        "excluded_marked": 0,
+        "latency_ms": 8685,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "他们分别推荐的模型是什么"
+      }
+    ]
+  },
+  "entity_07": {
+    "total_requests": 4,
+    "dimension": "entity",
+    "avg_kept_results": 2.25,
+    "kept_ci_95": [
+      2.0,
+      2.75
+    ],
+    "avg_score": 0.7371,
+    "score_ci_95": [
+      0.7133,
+      0.7609
+    ],
+    "avg_latency_ms": 7554.0,
+    "latency_ci_95": [
+      6764.0,
+      9000.0
+    ],
+    "avg_total_results": 7.5,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 2.2,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-03T10:13:22.289337+00:00",
+        "total_results": 2,
+        "kept_results": 2,
+        "avg_score": 0.7567958309570735,
+        "excluded_marked": 0,
+        "latency_ms": 6947,
+        "total_chars": 314,
+        "injected_count": 2,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "这些任务没有和聚类脚本、记忆清理相关的任务？"
+      },
+      {
+        "timestamp": "2026-06-03T11:00:43.400435+00:00",
+        "total_results": 2,
+        "kept_results": 2,
+        "avg_score": 0.7649968950205472,
+        "excluded_marked": 0,
+        "latency_ms": 6772,
+        "total_chars": 376,
+        "injected_count": 2,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "问问，我们聚类脚本中的三层聚类改成一层？"
+      },
+      {
+        "timestamp": "2026-06-03T12:40:30.191098+00:00",
+        "total_results": 24,
+        "kept_results": 3,
+        "avg_score": 0.7137305038530267,
+        "excluded_marked": 0,
+        "latency_ms": 6757,
+        "total_chars": 597,
+        "injected_count": 3,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "聚类脚本不需要cron定期跑？"
+      },
+      {
+        "timestamp": "2026-06-04T06:21:49.813489+00:00",
+        "total_results": 2,
+        "kept_results": 2,
+        "avg_score": 0.7128733873362161,
+        "excluded_marked": 0,
+        "latency_ms": 9742,
+        "total_chars": 322,
+        "injected_count": 2,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "你评估下这个聚类脚本跑的频率"
+      }
+    ]
+  },
+  "gen_006": {
+    "total_requests": 3,
+    "dimension": "gen",
+    "avg_kept_results": 4.67,
+    "kept_ci_95": [
+      3.0,
+      7.0
+    ],
+    "avg_score": 0.7815,
+    "score_ci_95": [
+      0.7235,
+      0.8182
+    ],
+    "avg_latency_ms": 4355.0,
+    "latency_ci_95": [
+      3154.0,
+      6230.0
+    ],
+    "avg_total_results": 26.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.7,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-04T07:57:15.907881+00:00",
+        "total_results": 53,
+        "kept_results": 3,
+        "avg_score": 0.7234827989293068,
+        "excluded_marked": 0,
+        "latency_ms": 6230,
+        "total_chars": 706,
+        "injected_count": 5,
+        "recalled_ids": [
+          "d3460880-4cb7-4165-b6cc-b0cb59e87856",
+          "61db9642-d25a-45d7-97c6-187e57e3db44",
+          "2e64ec71-a171-4a8d-9527-834502cca4f3"
+        ],
+        "eval_expected_ids": [
+          "2b54d546-a2c8-470c-96d2-843586e96462"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类脚本的日志记录功能实现了吗？"
+      },
+      {
+        "timestamp": "2026-06-12T10:24:25.125346+00:00",
+        "total_results": 9,
+        "kept_results": 7,
+        "avg_score": 0.8029135529588938,
+        "excluded_marked": 0,
+        "latency_ms": 3680,
+        "total_chars": 1112,
+        "injected_count": 9,
+        "recalled_ids": [
+          "4184cea8-81cf-4f9f-9da1-4919ad1387ab",
+          "154311af-fedf-4bd8-a374-d611baf83b8c",
+          "3024",
+          "3046",
+          "1406",
+          "3037",
+          "3106"
+        ],
+        "eval_expected_ids": [
+          "2b54d546-a2c8-470c-96d2-843586e96462"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类项目Phase 3.5 自动标记 tuple index out of range，功能降级跳过，已修复\n飞书发送功"
+      },
+      {
+        "timestamp": "2026-06-12T11:42:21.773959+00:00",
+        "total_results": 16,
+        "kept_results": 4,
+        "avg_score": 0.8182060041419286,
+        "excluded_marked": 0,
+        "latency_ms": 3154,
+        "total_chars": 693,
+        "injected_count": 6,
+        "recalled_ids": [
+          "1a19e00a-6b0e-4ab4-bf3e-3a32d5a8b51c",
+          "4aa5e3c5-4f23-417f-b039-0ca1140adec5",
+          "3097",
+          "3087"
+        ],
+        "eval_expected_ids": [
+          "2b54d546-a2c8-470c-96d2-843586e96462"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "[Note: model was just switched from s-deepseek-v4-flash to d"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_081": {
+    "total_requests": 9,
+    "dimension": "gen",
+    "avg_kept_results": 3.44,
+    "kept_ci_95": [
+      2.33,
+      4.56
+    ],
+    "avg_score": 0.666,
+    "score_ci_95": [
+      0.3411,
+      0.9662
+    ],
+    "avg_latency_ms": 3901.0,
+    "latency_ci_95": [
+      2766.0,
+      5192.0
+    ],
+    "avg_total_results": 17.1,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 5.7,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-04T14:49:47.869441+00:00",
+        "total_results": 1,
+        "kept_results": 1,
+        "avg_score": 1.131315607937543,
+        "excluded_marked": 0,
+        "latency_ms": 2655,
+        "total_chars": 208,
+        "injected_count": 3,
+        "recalled_ids": [
+          "52c9151d-451b-46c5-841b-f582b20f9b66"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "是不是，我们跑了聚类和记忆清理，插入太多记录引起的？"
+      },
+      {
+        "timestamp": "2026-06-04T22:38:19.928019+00:00",
+        "total_results": 38,
+        "kept_results": 1,
+        "avg_score": 0.8215757523097452,
+        "excluded_marked": 0,
+        "latency_ms": 7511,
+        "total_chars": 270,
+        "injected_count": 4,
+        "recalled_ids": [
+          "07b60d78-7cef-4f42-9da3-bd4a0827fcd2"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "还是不对，我们聚类不会增加记忆，只有记忆清理会，昨天的记忆清理插入了1万多条？"
+      },
+      {
+        "timestamp": "2026-06-06T02:52:37.011527+00:00",
+        "total_results": 4,
+        "kept_results": 3,
+        "avg_score": 1.2603558443567442,
+        "excluded_marked": 0,
+        "latency_ms": 2670,
+        "total_chars": 778,
+        "injected_count": 5,
+        "recalled_ids": [
+          "95710912-7bc1-4121-8a23-9292f009a386",
+          "9c6fb4b2-2567-48f6-bed4-e8f8b74618ce",
+          "52c9151d-451b-46c5-841b-f582b20f9b66"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "评估片面了，聚类和记忆清理脚本里面会用到大量llm，llm都出问题了还跑个啥"
+      },
+      {
+        "timestamp": "2026-06-09T17:04:26.674728+00:00",
+        "total_results": 1,
+        "kept_results": 6,
+        "avg_score": 1.1240481552555335,
+        "excluded_marked": 0,
+        "latency_ms": 874,
+        "total_chars": 873,
+        "injected_count": 8,
+        "recalled_ids": [
+          "cea0c14e-8178-48fb-8abf-e7c183b166fe",
+          "2352",
+          "1131",
+          "1112",
+          "1009",
+          "2344"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "如果有这个，我们的聚类脚本是不是就不需要了"
+      },
+      {
+        "timestamp": "2026-06-11T00:55:09.150790+00:00",
+        "total_results": 40,
+        "kept_results": 3,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 4716,
+        "total_chars": 360,
+        "injected_count": 6,
+        "recalled_ids": [
+          "2595",
+          "2594",
+          "2596"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "插入件事，我们的数据中台和ai通用垂域建设，对科研生产赋能，一句话总结ppt用，给高层汇报，注意措辞，不要吹牛"
+      },
+      {
+        "timestamp": "2026-06-11T04:53:52.828364+00:00",
+        "total_results": 10,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 5209,
+        "total_chars": 626,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2503",
+          "2504",
+          "2743",
+          "2685",
+          "2552"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "这是hindsight的源码，不是我们的，你来改"
+      },
+      {
+        "timestamp": "2026-06-12T00:52:42.481298+00:00",
+        "total_results": 13,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2545,
+        "total_chars": 573,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1929",
+          "1924",
+          "3098",
+          "3106",
+          "1433"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "Mental Model和我们的聚类作用类似，而我们的聚类还不限定主题，这个可以有但需要想清楚"
+      },
+      {
+        "timestamp": "2026-06-12T01:00:33.538082+00:00",
+        "total_results": 17,
+        "kept_results": 5,
+        "avg_score": 0.8068397451408229,
+        "excluded_marked": 0,
+        "latency_ms": 5484,
+        "total_chars": 908,
+        "injected_count": 7,
+        "recalled_ids": [
+          "48835ba2-eeb3-4912-938b-31bbabc8549c",
+          "9c76e121-b870-447a-9993-e9d1108f29be",
+          "0716ceb2-feca-476d-afa6-34b9c3166dff",
+          "3031",
+          "3023"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "1.hindsight没有清理能力，只能依赖sql删源，但删除的同时我们需要清理聚类和因果链的数据，observatio"
+      },
+      {
+        "timestamp": "2026-06-12T07:44:41.547493+00:00",
+        "total_results": 30,
+        "kept_results": 2,
+        "avg_score": 0.8501593085438107,
+        "excluded_marked": 0,
+        "latency_ms": 3446,
+        "total_chars": 397,
+        "injected_count": 4,
+        "recalled_ids": [
+          "27c6786c-2777-4177-9583-d19d734f872e",
+          "7d2010e1-8c2b-4d61-ab13-759bece264c1"
+        ],
+        "eval_expected_ids": [
+          "6a59aa27-6453-4137-92e4-3e830fed1a14"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "部署完成。 cron_wrapper.sh  管线顺序已对齐方案：                           "
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_017": {
+    "total_requests": 9,
+    "dimension": "gen",
+    "avg_kept_results": 3.44,
+    "kept_ci_95": [
+      3.11,
+      3.89
+    ],
+    "avg_score": 1.0225,
+    "score_ci_95": [
+      0.7196,
+      1.2448
+    ],
+    "avg_latency_ms": 3658.0,
+    "latency_ci_95": [
+      2279.0,
+      5411.0
+    ],
+    "avg_total_results": 9.3,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 5.6,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-05T01:54:44.628660+00:00",
+        "total_results": 4,
+        "kept_results": 3,
+        "avg_score": 1.097042438468726,
+        "excluded_marked": 0,
+        "latency_ms": 2408,
+        "total_chars": 589,
+        "injected_count": 5,
+        "recalled_ids": [
+          "b33b1fb9-fc52-4d9b-b8df-45c00935974e",
+          "d532f43c-4720-4b3f-ae27-fedfe30df11d",
+          "e5b2d811-794a-4bb0-85d3-fcde21b0aa44"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类代码重新部署了，新增了一个记忆修正的skill，根据这个skill测试一次，只报bug，不改代码"
+      },
+      {
+        "timestamp": "2026-06-05T02:04:43.984341+00:00",
+        "total_results": 7,
+        "kept_results": 3,
+        "avg_score": 1.1559790383735056,
+        "excluded_marked": 0,
+        "latency_ms": 3029,
+        "total_chars": 630,
+        "injected_count": 6,
+        "recalled_ids": [
+          "b33b1fb9-fc52-4d9b-b8df-45c00935974e",
+          "d532f43c-4720-4b3f-ae27-fedfe30df11d",
+          "e5b2d811-794a-4bb0-85d3-fcde21b0aa44"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类代码重新部署了，根据记忆修正skill测试一次，只报bug，不改代码"
+      },
+      {
+        "timestamp": "2026-06-05T02:13:25.450342+00:00",
+        "total_results": 7,
+        "kept_results": 3,
+        "avg_score": 1.2647300949853615,
+        "excluded_marked": 0,
+        "latency_ms": 2399,
+        "total_chars": 589,
+        "injected_count": 5,
+        "recalled_ids": [
+          "b33b1fb9-fc52-4d9b-b8df-45c00935974e",
+          "d532f43c-4720-4b3f-ae27-fedfe30df11d",
+          "e5b2d811-794a-4bb0-85d3-fcde21b0aa44"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类代码重新部署了，根据记忆修正skill测试一次，只报bug，不改代码"
+      },
+      {
+        "timestamp": "2026-06-05T02:17:25.974830+00:00",
+        "total_results": 8,
+        "kept_results": 3,
+        "avg_score": 1.3365092222889017,
+        "excluded_marked": 0,
+        "latency_ms": 1569,
+        "total_chars": 560,
+        "injected_count": 5,
+        "recalled_ids": [
+          "b33b1fb9-fc52-4d9b-b8df-45c00935974e",
+          "d532f43c-4720-4b3f-ae27-fedfe30df11d",
+          "97aa5f97-86eb-4e70-905a-dce496587601"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类代码重新部署了，根据记忆修正skill测试一次，只报bug，不改代码"
+      },
+      {
+        "timestamp": "2026-06-05T02:20:00.046853+00:00",
+        "total_results": 5,
+        "kept_results": 3,
+        "avg_score": 1.509971076381228,
+        "excluded_marked": 0,
+        "latency_ms": 2031,
+        "total_chars": 560,
+        "injected_count": 5,
+        "recalled_ids": [
+          "b33b1fb9-fc52-4d9b-b8df-45c00935974e",
+          "d532f43c-4720-4b3f-ae27-fedfe30df11d",
+          "97aa5f97-86eb-4e70-905a-dce496587601"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类代码重新部署了，根据记忆修正skill测试一次，只报bug，不改代码"
+      },
+      {
+        "timestamp": "2026-06-05T03:27:51.132322+00:00",
+        "total_results": 5,
+        "kept_results": 3,
+        "avg_score": 1.094818885746665,
+        "excluded_marked": 0,
+        "latency_ms": 9513,
+        "total_chars": 585,
+        "injected_count": 5,
+        "recalled_ids": [
+          "97aa5f97-86eb-4e70-905a-dce496587601",
+          "cabfc970-69be-4135-a14c-92117d0a67a3",
+          "b33b1fb9-fc52-4d9b-b8df-45c00935974e"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类代码重新部署了，根据记忆修正skill测试一次，只报bug，不改代码"
+      },
+      {
+        "timestamp": "2026-06-11T05:08:25.113440+00:00",
+        "total_results": 13,
+        "kept_results": 4,
+        "avg_score": 0.8605060061900316,
+        "excluded_marked": 0,
+        "latency_ms": 6317,
+        "total_chars": 444,
+        "injected_count": 6,
+        "recalled_ids": [
+          "3039",
+          "3079",
+          "3026",
+          "3028"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "截取30k的代码还在不"
+      },
+      {
+        "timestamp": "2026-06-12T07:37:00.931605+00:00",
+        "total_results": 20,
+        "kept_results": 4,
+        "avg_score": 0.8832589833491363,
+        "excluded_marked": 0,
+        "latency_ms": 3420,
+        "total_chars": 738,
+        "injected_count": 6,
+        "recalled_ids": [
+          "f70b51b0-2818-4d5b-85be-4d29123c9697",
+          "d47b4fc6-62ec-4115-8585-7929d780095d",
+          "f88f7dec-8f3d-437a-824b-89bdfcc63bf7",
+          "3025"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "qoder已实现代码，部署到聚类项目里面，cron也更新了"
+      },
+      {
+        "timestamp": "2026-06-12T08:18:17.812346+00:00",
+        "total_results": 15,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2233,
+        "total_chars": 532,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1003",
+          "1685",
+          "962",
+          "2354",
+          "986"
+        ],
+        "eval_expected_ids": [
+          "cd694617-ac34-45dd-9a58-dbc136ea9504"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "你改正式环境代码有什么用，让你给方案"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_041": {
+    "total_requests": 5,
+    "dimension": "gen",
+    "avg_kept_results": 5.0,
+    "kept_ci_95": [
+      2.8,
+      7.0
+    ],
+    "avg_score": 0.5594,
+    "score_ci_95": [
+      0.1624,
+      0.9564
+    ],
+    "avg_latency_ms": 3363.0,
+    "latency_ci_95": [
+      1905.0,
+      5116.0
+    ],
+    "avg_total_results": 26.8,
+    "avg_excluded_marked": 1.2,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-05T11:41:27.753606+00:00",
+        "total_results": 1,
+        "kept_results": 1,
+        "avg_score": 1.1253783046722343,
+        "excluded_marked": 0,
+        "latency_ms": 1871,
+        "total_chars": 318,
+        "injected_count": 3,
+        "recalled_ids": [
+          "9c6fb4b2-2567-48f6-bed4-e8f8b74618ce"
+        ],
+        "eval_expected_ids": [
+          "2f3f7144-a846-4017-aaa8-28c58d5bf574"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "cron的聚类任务和记忆清理任务是真跑还是干跑？"
+      },
+      {
+        "timestamp": "2026-06-10T14:20:28.798490+00:00",
+        "total_results": 44,
+        "kept_results": 4,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 4748,
+        "total_chars": 432,
+        "injected_count": 6,
+        "recalled_ids": [
+          "2914",
+          "1099",
+          "2356",
+          "2909"
+        ],
+        "eval_expected_ids": [
+          "2f3f7144-a846-4017-aaa8-28c58d5bf574"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "3我们不是设置了cron任务吗，你核实下"
+      },
+      {
+        "timestamp": "2026-06-12T06:31:09.542905+00:00",
+        "total_results": 33,
+        "kept_results": 7,
+        "avg_score": 0.8595902007074208,
+        "excluded_marked": 0,
+        "latency_ms": 1908,
+        "total_chars": 1143,
+        "injected_count": 9,
+        "recalled_ids": [
+          "417dc415-d44c-4543-9311-51444bdde9ef",
+          "9bf294e5-07e7-4f48-8f5d-41ae919b5f95",
+          "3047",
+          "3024",
+          "3040",
+          "3043",
+          "3035"
+        ],
+        "eval_expected_ids": [
+          "2f3f7144-a846-4017-aaa8-28c58d5bf574"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "聚类是有cron任务的"
+      },
+      {
+        "timestamp": "2026-06-12T09:43:06.201993+00:00",
+        "total_results": 38,
+        "kept_results": 8,
+        "avg_score": 0.8121418179151348,
+        "excluded_marked": 0,
+        "latency_ms": 1967,
+        "total_chars": 1142,
+        "injected_count": 10,
+        "recalled_ids": [
+          "56fbca1b-dead-4456-bf36-fcd6c63082b2",
+          "b033113c-de15-4be4-8114-af39665975f5",
+          "f70b51b0-2818-4d5b-85be-4d29123c9697",
+          "2773",
+          "2925",
+          "2919",
+          "2920",
+          "2922"
+        ],
+        "eval_expected_ids": [
+          "2f3f7144-a846-4017-aaa8-28c58d5bf574"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我们聚类已经改成了数据质量处理，还没有端到端跑过，调用cron任务，完整跑一次"
+      },
+      {
+        "timestamp": "2026-06-12T11:26:26.971610+00:00",
+        "total_results": 18,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 6,
+        "latency_ms": 6321,
+        "total_chars": 604,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3047",
+          "3024",
+          "3035",
+          "3046",
+          "3043"
+        ],
+        "eval_expected_ids": [
+          "2f3f7144-a846-4017-aaa8-28c58d5bf574"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "检查cron任务，这个hindsight-memory-maintenance的任务，是不是和聚类任务重复了？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "eval-001": {
+    "total_requests": 4,
+    "dimension": "eval-001",
+    "avg_kept_results": 0.25,
+    "kept_ci_95": [
+      0.0,
+      0.75
+    ],
+    "avg_score": 0.9,
+    "score_ci_95": [
+      0.9,
+      0.9
+    ],
+    "avg_latency_ms": 0.0,
+    "latency_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_total_results": 1.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 0.8,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T10:19:40.814764+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "test eval query"
+      },
+      {
+        "timestamp": "2026-06-10T10:23:21.984985+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "test eval query"
+      },
+      {
+        "timestamp": "2026-06-10T10:29:30.328411+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "test eval query"
+      },
+      {
+        "timestamp": "2026-06-10T10:35:54.533098+00:00",
+        "total_results": 1,
+        "kept_results": 1,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 93,
+        "injected_count": 3,
+        "recalled_ids": [
+          "node1"
+        ],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "test eval query"
+      }
+    ]
+  },
+  "semantic_01": {
+    "total_requests": 4,
+    "dimension": "semantic",
+    "avg_kept_results": 0.25,
+    "kept_ci_95": [
+      0.0,
+      0.75
+    ],
+    "avg_score": 0.9,
+    "score_ci_95": [
+      0.9,
+      0.9
+    ],
+    "avg_latency_ms": 0.0,
+    "latency_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_total_results": 1.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 0.8,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T10:19:44.358257+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      },
+      {
+        "timestamp": "2026-06-10T10:23:25.331277+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      },
+      {
+        "timestamp": "2026-06-10T10:29:33.794420+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      },
+      {
+        "timestamp": "2026-06-10T10:35:57.679729+00:00",
+        "total_results": 1,
+        "kept_results": 1,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 93,
+        "injected_count": 3,
+        "recalled_ids": [
+          "node1"
+        ],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      }
+    ]
+  },
+  "exact-001": {
+    "total_requests": 8,
+    "dimension": "exact-001",
+    "avg_kept_results": 0.25,
+    "kept_ci_95": [
+      0.0,
+      0.62
+    ],
+    "avg_score": 0.9,
+    "score_ci_95": [
+      0.9,
+      0.9
+    ],
+    "avg_latency_ms": 0.0,
+    "latency_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_total_results": 1.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 0.8,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T10:19:45.100412+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "exact match query"
+      },
+      {
+        "timestamp": "2026-06-10T10:19:45.476394+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      },
+      {
+        "timestamp": "2026-06-10T10:23:26.101251+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "exact match query"
+      },
+      {
+        "timestamp": "2026-06-10T10:23:26.496985+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      },
+      {
+        "timestamp": "2026-06-10T10:29:34.540159+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "exact match query"
+      },
+      {
+        "timestamp": "2026-06-10T10:29:34.924403+00:00",
+        "total_results": 1,
+        "kept_results": 0,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      },
+      {
+        "timestamp": "2026-06-10T10:35:58.527807+00:00",
+        "total_results": 1,
+        "kept_results": 1,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 93,
+        "injected_count": 3,
+        "recalled_ids": [
+          "node1"
+        ],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "exact match query"
+      },
+      {
+        "timestamp": "2026-06-10T10:35:58.902542+00:00",
+        "total_results": 1,
+        "kept_results": 1,
+        "avg_score": 0.9,
+        "excluded_marked": 0,
+        "latency_ms": 0,
+        "total_chars": 93,
+        "injected_count": 3,
+        "recalled_ids": [
+          "node1"
+        ],
+        "eval_expected_ids": [],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 0,
+        "query_trunc": "LiteLLM 配置出问题了"
+      }
+    ]
+  },
+  "gen_057": {
+    "total_requests": 4,
+    "dimension": "gen",
+    "avg_kept_results": 4.5,
+    "kept_ci_95": [
+      3.5,
+      5.0
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 3839.0,
+    "latency_ci_95": [
+      1918.0,
+      5760.0
+    ],
+    "avg_total_results": 23.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.5,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T13:34:03.301461+00:00",
+        "total_results": 37,
+        "kept_results": 3,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 5288,
+        "total_chars": 322,
+        "injected_count": 5,
+        "recalled_ids": [
+          "3029",
+          "3039",
+          "3079"
+        ],
+        "eval_expected_ids": [
+          "b4a3e38f-012d-4aed-81c1-8ad4c806636d"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "本次优化的功能，是不是都真实验证完了？"
+      },
+      {
+        "timestamp": "2026-06-10T14:14:00.226796+00:00",
+        "total_results": 11,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6231,
+        "total_chars": 609,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1056",
+          "964",
+          "1057",
+          "1024",
+          "982"
+        ],
+        "eval_expected_ids": [
+          "b4a3e38f-012d-4aed-81c1-8ad4c806636d"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "补端到端功能测试"
+      },
+      {
+        "timestamp": "2026-06-11T12:54:25.456979+00:00",
+        "total_results": 19,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2077,
+        "total_chars": 480,
+        "injected_count": 7,
+        "recalled_ids": [
+          "4546",
+          "4549",
+          "4562",
+          "4548",
+          "4561"
+        ],
+        "eval_expected_ids": [
+          "b4a3e38f-012d-4aed-81c1-8ad4c806636d"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "还要确认cli的对话有来源吗？"
+      },
+      {
+        "timestamp": "2026-06-12T06:07:32.904976+00:00",
+        "total_results": 25,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1759,
+        "total_chars": 554,
+        "injected_count": 7,
+        "recalled_ids": [
+          "5289",
+          "5300",
+          "5282",
+          "5286",
+          "5298"
+        ],
+        "eval_expected_ids": [
+          "b4a3e38f-012d-4aed-81c1-8ad4c806636d"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "评估每个功能，给出roi，给出是否实施建议"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_092": {
+    "total_requests": 3,
+    "dimension": "gen",
+    "avg_kept_results": 3.33,
+    "kept_ci_95": [
+      2.0,
+      4.0
+    ],
+    "avg_score": 0.65,
+    "score_ci_95": [
+      0.0,
+      1.0182
+    ],
+    "avg_latency_ms": 4029.0,
+    "latency_ci_95": [
+      2165.0,
+      6222.0
+    ],
+    "avg_total_results": 15.3,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 5.3,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T13:46:39.943208+00:00",
+        "total_results": 18,
+        "kept_results": 4,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6222,
+        "total_chars": 469,
+        "injected_count": 6,
+        "recalled_ids": [
+          "1413",
+          "3052",
+          "3083",
+          "3050"
+        ],
+        "eval_expected_ids": [
+          "f77dd07c-a0a9-4d78-91d7-51dc10f11d7e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我们本次优化了哪些功能"
+      },
+      {
+        "timestamp": "2026-06-11T06:01:06.632590+00:00",
+        "total_results": 8,
+        "kept_results": 2,
+        "avg_score": 1.0182259913992378,
+        "excluded_marked": 0,
+        "latency_ms": 3699,
+        "total_chars": 280,
+        "injected_count": 4,
+        "recalled_ids": [
+          "1413",
+          "3098"
+        ],
+        "eval_expected_ids": [
+          "f77dd07c-a0a9-4d78-91d7-51dc10f11d7e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "既然都在hindsight里面，先看看有哪些参数可以提升性能的，别在1个参数上死磕"
+      },
+      {
+        "timestamp": "2026-06-11T06:26:27.101669+00:00",
+        "total_results": 20,
+        "kept_results": 4,
+        "avg_score": 0.9317059163714788,
+        "excluded_marked": 0,
+        "latency_ms": 2165,
+        "total_chars": 778,
+        "injected_count": 6,
+        "recalled_ids": [
+          "81206bcd-5fe5-4a94-8e90-3544d5cec82e",
+          "3bc2e869-60bc-4354-9d38-3f6c90437e3e",
+          "1389",
+          "1393"
+        ],
+        "eval_expected_ids": [
+          "f77dd07c-a0a9-4d78-91d7-51dc10f11d7e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "mcp服务全失败？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_021": {
+    "total_requests": 5,
+    "dimension": "gen",
+    "avg_kept_results": 6.2,
+    "kept_ci_95": [
+      5.4,
+      7.2
+    ],
+    "avg_score": 0.6639,
+    "score_ci_95": [
+      0.3234,
+      0.8623
+    ],
+    "avg_latency_ms": 3504.0,
+    "latency_ci_95": [
+      2177.0,
+      4871.0
+    ],
+    "avg_total_results": 14.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 8.6,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T14:07:04.121566+00:00",
+        "total_results": 5,
+        "kept_results": 6,
+        "avg_score": 0.8062118026140146,
+        "excluded_marked": 0,
+        "latency_ms": 6521,
+        "total_chars": 826,
+        "injected_count": 9,
+        "recalled_ids": [
+          "438cbb53-729b-41d5-a291-9c895fee563a",
+          "1546",
+          "3032",
+          "3098",
+          "3097",
+          "1491"
+        ],
+        "eval_expected_ids": [
+          "448895c1-3844-4a6b-b3f0-c3d02ac5e759"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "读下phase-a-optimization-design.md这个设计文件"
+      },
+      {
+        "timestamp": "2026-06-11T06:21:29.183562+00:00",
+        "total_results": 6,
+        "kept_results": 6,
+        "avg_score": 0.8023018657044826,
+        "excluded_marked": 0,
+        "latency_ms": 2330,
+        "total_chars": 901,
+        "injected_count": 9,
+        "recalled_ids": [
+          "4b5f5b37-dc08-4f92-b901-4f69d302a065",
+          "2296",
+          "2309",
+          "2293",
+          "2317",
+          "2281"
+        ],
+        "eval_expected_ids": [
+          "448895c1-3844-4a6b-b3f0-c3d02ac5e759"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "D:\\HermesProject下读readme.md文件"
+      },
+      {
+        "timestamp": "2026-06-11T10:42:55.162263+00:00",
+        "total_results": 3,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2397,
+        "total_chars": 609,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2356",
+          "1140",
+          "959",
+          "1142",
+          "1099"
+        ],
+        "eval_expected_ids": [
+          "448895c1-3844-4a6b-b3f0-c3d02ac5e759"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "不18.19是我手动命令，让他去读d盘的文件引起的"
+      },
+      {
+        "timestamp": "2026-06-11T11:38:43.841814+00:00",
+        "total_results": 40,
+        "kept_results": 8,
+        "avg_score": 0.8997674706701502,
+        "excluded_marked": 0,
+        "latency_ms": 1915,
+        "total_chars": 1340,
+        "injected_count": 10,
+        "recalled_ids": [
+          "4b5f5b37-dc08-4f92-b901-4f69d302a065",
+          "7a2165df-56d4-4506-89f8-2808a569e057",
+          "c723c228-0670-42e1-a4ee-23624f9d8d99",
+          "2296",
+          "2309",
+          "2302",
+          "2293",
+          "2317"
+        ],
+        "eval_expected_ids": [
+          "448895c1-3844-4a6b-b3f0-c3d02ac5e759"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "读下D盘hermesproject目录下的readme.md文件"
+      },
+      {
+        "timestamp": "2026-06-12T05:57:59.534298+00:00",
+        "total_results": 16,
+        "kept_results": 6,
+        "avg_score": 0.8110349638371614,
+        "excluded_marked": 0,
+        "latency_ms": 4357,
+        "total_chars": 926,
+        "injected_count": 8,
+        "recalled_ids": [
+          "46b9f58c-1774-42f7-9764-4834d835f132",
+          "3024",
+          "3055",
+          "3046",
+          "3031",
+          "3056"
+        ],
+        "eval_expected_ids": [
+          "448895c1-3844-4a6b-b3f0-c3d02ac5e759"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "USER.md 中两条重复的\"proxy toolchain\"描述（idx=4和idx=10）因内容高度相似，调用mem"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_004": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 2,
+    "kept_ci_95": [
+      2,
+      2
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 10969,
+    "latency_ci_95": [
+      10969,
+      10969
+    ],
+    "avg_total_results": 18.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 4.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T14:10:15.072427+00:00",
+        "total_results": 18,
+        "kept_results": 2,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 10969,
+        "total_chars": 222,
+        "injected_count": 4,
+        "recalled_ids": [
+          "3030",
+          "3099"
+        ],
+        "eval_expected_ids": [
+          "dbf57982-9626-446b-b8b6-41c423b672c6"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "1，3，4实际验证了没"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_056": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 4.5,
+    "kept_ci_95": [
+      3.0,
+      6.0
+    ],
+    "avg_score": 0.8414,
+    "score_ci_95": [
+      0.8004,
+      0.8825
+    ],
+    "avg_latency_ms": 5160.0,
+    "latency_ci_95": [
+      3956.0,
+      6364.0
+    ],
+    "avg_total_results": 29.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.5,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T14:17:35.175135+00:00",
+        "total_results": 45,
+        "kept_results": 6,
+        "avg_score": 0.800418617929212,
+        "excluded_marked": 0,
+        "latency_ms": 3956,
+        "total_chars": 907,
+        "injected_count": 8,
+        "recalled_ids": [
+          "2f7ef38b-c758-448e-9e97-a73bf92de629",
+          "1083",
+          "1140",
+          "1107",
+          "2331",
+          "1015"
+        ],
+        "eval_expected_ids": [
+          "43922a0c-902f-483d-b1b1-74069592e2d9"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "还有什么遗漏的问题没"
+      },
+      {
+        "timestamp": "2026-06-11T05:51:58.938335+00:00",
+        "total_results": 13,
+        "kept_results": 3,
+        "avg_score": 0.8824674097133933,
+        "excluded_marked": 0,
+        "latency_ms": 6364,
+        "total_chars": 579,
+        "injected_count": 5,
+        "recalled_ids": [
+          "4a14f30f-1959-4dbe-bd9e-7ac28ff1b19e",
+          "2011",
+          "2680"
+        ],
+        "eval_expected_ids": [
+          "43922a0c-902f-483d-b1b1-74069592e2d9"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我有个问题，hindsight一升级改的不就没了，不到万不得已不改动hindsight源码，重新给建议"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_022": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 2,
+    "kept_ci_95": [
+      2,
+      2
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 4993,
+    "latency_ci_95": [
+      4993,
+      4993
+    ],
+    "avg_total_results": 2.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 5.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T14:22:29.344790+00:00",
+        "total_results": 2,
+        "kept_results": 2,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 4993,
+        "total_chars": 301,
+        "injected_count": 5,
+        "recalled_ids": [
+          "3037",
+          "3040"
+        ],
+        "eval_expected_ids": [
+          "68365a80-f8a4-4e73-85ea-c298568c217b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "p3，p4都修复了"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_090": {
+    "total_requests": 12,
+    "dimension": "gen",
+    "avg_kept_results": 4.75,
+    "kept_ci_95": [
+      4.17,
+      5.5
+    ],
+    "avg_score": 0.4233,
+    "score_ci_95": [
+      0.2022,
+      0.6507
+    ],
+    "avg_latency_ms": 2884.0,
+    "latency_ci_95": [
+      1914.0,
+      4309.0
+    ],
+    "avg_total_results": 20.9,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.8,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T14:37:19.313240+00:00",
+        "total_results": 17,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 5150,
+        "total_chars": 641,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1094",
+          "982",
+          "1685",
+          "2356",
+          "3009"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "修改后需要真实运行验证吗"
+      },
+      {
+        "timestamp": "2026-06-11T06:18:35.039813+00:00",
+        "total_results": 28,
+        "kept_results": 4,
+        "avg_score": 0.8904149460755574,
+        "excluded_marked": 0,
+        "latency_ms": 1561,
+        "total_chars": 680,
+        "injected_count": 6,
+        "recalled_ids": [
+          "5e7688af-1d52-4306-8f64-40a1542205dd",
+          "968",
+          "1126",
+          "981"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "先改源码，再部署"
+      },
+      {
+        "timestamp": "2026-06-11T06:19:38.460462+00:00",
+        "total_results": 42,
+        "kept_results": 4,
+        "avg_score": 0.8098700892792143,
+        "excluded_marked": 0,
+        "latency_ms": 1933,
+        "total_chars": 694,
+        "injected_count": 6,
+        "recalled_ids": [
+          "438cbb53-729b-41d5-a291-9c895fee563a",
+          "2805",
+          "2801",
+          "2807"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "源码在d/HermesProject里面"
+      },
+      {
+        "timestamp": "2026-06-11T10:37:26.096338+00:00",
+        "total_results": 4,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 9115,
+        "total_chars": 570,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1923",
+          "1663",
+          "1358",
+          "1697",
+          "982"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "18:23 之后没有新消息进来。那之前那条 \"读readme\" 的消息，是发给了上一个已经 crash 的 Hermes"
+      },
+      {
+        "timestamp": "2026-06-11T10:39:32.529266+00:00",
+        "total_results": 12,
+        "kept_results": 5,
+        "avg_score": 0.8093099180574569,
+        "excluded_marked": 0,
+        "latency_ms": 2785,
+        "total_chars": 628,
+        "injected_count": 7,
+        "recalled_ids": [
+          "51de717a-dbb9-4a7a-89a2-a60826770c37",
+          "966",
+          "1811",
+          "990",
+          "1526"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "wiki已经改成桥接了，不影响hermes进程"
+      },
+      {
+        "timestamp": "2026-06-11T10:58:10.204505+00:00",
+        "total_results": 15,
+        "kept_results": 3,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2227,
+        "total_chars": 420,
+        "injected_count": 5,
+        "recalled_ids": [
+          "1128",
+          "980",
+          "2352"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "提到一个方法用smb共享重新挂载需要操作的目录，不path里面的/mnt/d这种去掉，不再走9pio"
+      },
+      {
+        "timestamp": "2026-06-11T12:11:00.346255+00:00",
+        "total_results": 28,
+        "kept_results": 4,
+        "avg_score": 0.9580210198194536,
+        "excluded_marked": 0,
+        "latency_ms": 1767,
+        "total_chars": 508,
+        "injected_count": 6,
+        "recalled_ids": [
+          "819e680d-7e16-436b-9393-4abb25c65d9f",
+          "2316",
+          "2280",
+          "2285"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "你还知道我们的规则吗，先改源码，再部署，不直接改hermes的脚本"
+      },
+      {
+        "timestamp": "2026-06-11T12:24:39.983990+00:00",
+        "total_results": 32,
+        "kept_results": 8,
+        "avg_score": 0.8044437797727707,
+        "excluded_marked": 0,
+        "latency_ms": 1955,
+        "total_chars": 1293,
+        "injected_count": 10,
+        "recalled_ids": [
+          "4b5f5b37-dc08-4f92-b901-4f69d302a065",
+          "3d743b8e-503e-4ea1-a95a-c5fa2a89b452",
+          "5e7688af-1d52-4306-8f64-40a1542205dd",
+          "2302",
+          "2296",
+          "2309",
+          "2307",
+          "2295"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我们改完就部署，这样不行，需要review后，再部署，想把hermesproject目录中的readme.md文件的，把"
+      },
+      {
+        "timestamp": "2026-06-11T13:12:50.152780+00:00",
+        "total_results": 10,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1976,
+        "total_chars": 669,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2356",
+          "1142",
+          "1526",
+          "1108",
+          "1140"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "动源码一升级就没了，还是需要想其他方法来区分"
+      },
+      {
+        "timestamp": "2026-06-11T23:04:57.610530+00:00",
+        "total_results": 19,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2609,
+        "total_chars": 566,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2912",
+          "949",
+          "3009",
+          "1125",
+          "2909"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "cron任务有失败的没"
+      },
+      {
+        "timestamp": "2026-06-12T06:16:26.074870+00:00",
+        "total_results": 5,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2005,
+        "total_chars": 645,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3058",
+          "3062",
+          "3098",
+          "1413",
+          "3059"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "根据你的分析，修改方案"
+      },
+      {
+        "timestamp": "2026-06-12T10:27:26.592804+00:00",
+        "total_results": 39,
+        "kept_results": 4,
+        "avg_score": 0.8072186340812637,
+        "excluded_marked": 0,
+        "latency_ms": 1530,
+        "total_chars": 712,
+        "injected_count": 6,
+        "recalled_ids": [
+          "5e7688af-1d52-4306-8f64-40a1542205dd",
+          "0ac08e93-2d82-4036-a892-ddebda2b2065",
+          "2807",
+          "2809"
+        ],
+        "eval_expected_ids": [
+          "bc4d492b-e762-4075-9af2-03ad6b6228c8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "源码在d/HermesProject里面，你改了运行环境，一部署就没了，你先去d:/hermesproject里面看看r"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_079": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 3.0,
+    "kept_ci_95": [
+      1.0,
+      5.0
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 6238.0,
+    "latency_ci_95": [
+      5727.0,
+      6750.0
+    ],
+    "avg_total_results": 12.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 5.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T14:57:46.978763+00:00",
+        "total_results": 2,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 5727,
+        "total_chars": 742,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1140",
+          "1141",
+          "3008",
+          "2342",
+          "2331"
+        ],
+        "eval_expected_ids": [
+          "9303cb8f-c81a-4c7e-b532-2ad1c2d331bf"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "先解决litellm重复进程的问题"
+      },
+      {
+        "timestamp": "2026-06-11T05:49:37.821067+00:00",
+        "total_results": 22,
+        "kept_results": 1,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6750,
+        "total_chars": 183,
+        "injected_count": 3,
+        "recalled_ids": [
+          "980"
+        ],
+        "eval_expected_ids": [
+          "9303cb8f-c81a-4c7e-b532-2ad1c2d331bf"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "主瓶颈和超时问题，一件一件来，先看主瓶颈的问题"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_020": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 4,
+    "kept_ci_95": [
+      4,
+      4
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 6454,
+    "latency_ci_95": [
+      6454,
+      6454
+    ],
+    "avg_total_results": 14.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T15:16:22.993483+00:00",
+        "total_results": 14,
+        "kept_results": 4,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6454,
+        "total_chars": 451,
+        "injected_count": 6,
+        "recalled_ids": [
+          "1028",
+          "996",
+          "998",
+          "1129"
+        ],
+        "eval_expected_ids": [
+          "f6fdd1f3-fa17-415e-878f-1ea35e20468a"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "既然每次llm调用是替换不是追加，那么控制注入现在就够了，长对话，记住用户消息和llm回复，这才是关键，现在网上有很多上"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_045": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 5.0,
+    "kept_ci_95": [
+      5.0,
+      5.0
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 6622.0,
+    "latency_ci_95": [
+      6043.0,
+      7201.0
+    ],
+    "avg_total_results": 5.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-10T22:37:07.833199+00:00",
+        "total_results": 1,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 7201,
+        "total_chars": 549,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2301",
+          "2313",
+          "2314",
+          "2295",
+          "2279"
+        ],
+        "eval_expected_ids": [
+          "f238d8cd-fdba-4bb3-9cc6-bd82a69cb69f"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "再看看hermes怎么控制上下文的"
+      },
+      {
+        "timestamp": "2026-06-11T03:46:25.100886+00:00",
+        "total_results": 9,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6043,
+        "total_chars": 633,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1991",
+          "1283",
+          "1053",
+          "1892",
+          "1526"
+        ],
+        "eval_expected_ids": [
+          "f238d8cd-fdba-4bb3-9cc6-bd82a69cb69f"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "对话是临时的，不想进入Hindsight，而且hermes也在记，过于重复了"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_083": {
+    "total_requests": 8,
+    "dimension": "gen",
+    "avg_kept_results": 4.5,
+    "kept_ci_95": [
+      3.25,
+      5.75
+    ],
+    "avg_score": 0.3504,
+    "score_ci_95": [
+      0.1008,
+      0.6942
+    ],
+    "avg_latency_ms": 3483.0,
+    "latency_ci_95": [
+      2419.0,
+      4539.0
+    ],
+    "avg_total_results": 11.5,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.8,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T00:39:59.965298+00:00",
+        "total_results": 25,
+        "kept_results": 4,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 4954,
+        "total_chars": 471,
+        "injected_count": 6,
+        "recalled_ids": [
+          "1082",
+          "1053",
+          "1083",
+          "980"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我Windows端的obsidian怎么办？"
+      },
+      {
+        "timestamp": "2026-06-11T05:03:26.972408+00:00",
+        "total_results": 14,
+        "kept_results": 5,
+        "avg_score": 0.8587533631446419,
+        "excluded_marked": 0,
+        "latency_ms": 6279,
+        "total_chars": 1000,
+        "injected_count": 7,
+        "recalled_ids": [
+          "03d16642-5aaf-4df8-94c5-0937e6c20659",
+          "daa34472-da8d-4a9b-8dc7-5185b0421c31",
+          "b531001e-9683-44cf-929c-19e2d1fd2e09",
+          "3078",
+          "3077"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "用hindsight的recall来测试，不要用curl测"
+      },
+      {
+        "timestamp": "2026-06-11T06:14:51.828178+00:00",
+        "total_results": 14,
+        "kept_results": 3,
+        "avg_score": 1.1375282933650523,
+        "excluded_marked": 0,
+        "latency_ms": 4759,
+        "total_chars": 299,
+        "injected_count": 5,
+        "recalled_ids": [
+          "1406",
+          "3029",
+          "1458"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "后台 skill-review        | 26s×5次 = 130s         | ❌ 超时，但非用户感知"
+      },
+      {
+        "timestamp": "2026-06-11T06:57:20.711515+00:00",
+        "total_results": 15,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1511,
+        "total_chars": 643,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3046",
+          "3042",
+          "3045",
+          "3097",
+          "3041"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "以前是怎么用上的？"
+      },
+      {
+        "timestamp": "2026-06-11T06:58:39.833875+00:00",
+        "total_results": 1,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1981,
+        "total_chars": 557,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1024",
+          "1526",
+          "1056",
+          "1075",
+          "2916"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "不是，就是能用的"
+      },
+      {
+        "timestamp": "2026-06-11T10:47:22.134677+00:00",
+        "total_results": 10,
+        "kept_results": 1,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2062,
+        "total_chars": 272,
+        "injected_count": 4,
+        "recalled_ids": [
+          "2331"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我在想怎么避免这个bug"
+      },
+      {
+        "timestamp": "2026-06-12T00:48:05.224034+00:00",
+        "total_results": 3,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 3029,
+        "total_chars": 638,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1140",
+          "1142",
+          "2356",
+          "1083",
+          "1109"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "方案不要涉及源码，不能管住入那就不管，看看怎么修正方案"
+      },
+      {
+        "timestamp": "2026-06-12T08:12:15.709178+00:00",
+        "total_results": 10,
+        "kept_results": 8,
+        "avg_score": 0.8067126364491312,
+        "excluded_marked": 0,
+        "latency_ms": 3289,
+        "total_chars": 1471,
+        "injected_count": 11,
+        "recalled_ids": [
+          "8ae3116d-ee7a-4ece-9dce-6483f3f0919d",
+          "a14d0eb1-dc8f-4705-87be-568bf533bcf5",
+          "1d656d55-7a99-4573-8257-d7a8a3599f05",
+          "2920",
+          "2772",
+          "2794",
+          "2921",
+          "2773"
+        ],
+        "eval_expected_ids": [
+          "6d800fe6-5316-4bdf-a647-cc571bc4dcb7"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "entity/memory_link/unit_entity 三张关联表的清理，observation 的 source"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_069": {
+    "total_requests": 5,
+    "dimension": "gen",
+    "avg_kept_results": 4.4,
+    "kept_ci_95": [
+      3.4,
+      5.4
+    ],
+    "avg_score": 0.5052,
+    "score_ci_95": [
+      0.1604,
+      0.8499
+    ],
+    "avg_latency_ms": 4817.0,
+    "latency_ci_95": [
+      2745.0,
+      6893.0
+    ],
+    "avg_total_results": 16.2,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.8,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T01:01:17.352555+00:00",
+        "total_results": 23,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6126,
+        "total_chars": 547,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3032",
+          "1565",
+          "3029",
+          "3030",
+          "3055"
+        ],
+        "eval_expected_ids": [
+          "56c6a352-54eb-4a56-a045-48024a0e7890"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "赋能了什么？没体现出来"
+      },
+      {
+        "timestamp": "2026-06-11T05:30:54.508066+00:00",
+        "total_results": 11,
+        "kept_results": 3,
+        "avg_score": 0.9165316859673059,
+        "excluded_marked": 0,
+        "latency_ms": 8356,
+        "total_chars": 390,
+        "injected_count": 6,
+        "recalled_ids": [
+          "964",
+          "1082",
+          "1923"
+        ],
+        "eval_expected_ids": [
+          "56c6a352-54eb-4a56-a045-48024a0e7890"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "慢的原因没找到，你自己也可以多测试几次看"
+      },
+      {
+        "timestamp": "2026-06-11T06:37:16.707698+00:00",
+        "total_results": 22,
+        "kept_results": 6,
+        "avg_score": 0.802100463401519,
+        "excluded_marked": 0,
+        "latency_ms": 2061,
+        "total_chars": 1075,
+        "injected_count": 9,
+        "recalled_ids": [
+          "fb075619-5577-4326-a6d4-bfdfd8437cf6",
+          "2805",
+          "2812",
+          "2809",
+          "2808",
+          "2807"
+        ],
+        "eval_expected_ids": [
+          "56c6a352-54eb-4a56-a045-48024a0e7890"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "什么是端点路径，openclaw的安装目录是D:\\npm-global"
+      },
+      {
+        "timestamp": "2026-06-11T23:07:38.018587+00:00",
+        "total_results": 24,
+        "kept_results": 3,
+        "avg_score": 0.807160362390544,
+        "excluded_marked": 0,
+        "latency_ms": 2042,
+        "total_chars": 561,
+        "injected_count": 5,
+        "recalled_ids": [
+          "f563640c-bf70-4634-adf5-aa42adfa613b",
+          "d91a45c2-98e5-4724-bf4b-892eafc6230e",
+          "c055b523-3f33-444e-9d1a-19e143647ce8"
+        ],
+        "eval_expected_ids": [
+          "56c6a352-54eb-4a56-a045-48024a0e7890"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "昨天的在线学习学了什么知识"
+      },
+      {
+        "timestamp": "2026-06-12T10:49:37.859213+00:00",
+        "total_results": 1,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 5501,
+        "total_chars": 572,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3038",
+          "1458",
+          "1406",
+          "3046",
+          "3024"
+        ],
+        "eval_expected_ids": [
+          "56c6a352-54eb-4a56-a045-48024a0e7890"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "Phase 3.5：成功，标记 1004 条，做什么标记？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_027": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 4.0,
+    "kept_ci_95": [
+      3.0,
+      5.0
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 4364.0,
+    "latency_ci_95": [
+      2770.0,
+      5958.0
+    ],
+    "avg_total_results": 13.5,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T01:09:22.500249+00:00",
+        "total_results": 20,
+        "kept_results": 3,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 5958,
+        "total_chars": 292,
+        "injected_count": 5,
+        "recalled_ids": [
+          "1358",
+          "1141",
+          "1390"
+        ],
+        "eval_expected_ids": [
+          "b38ed930-b841-4ac3-9a82-0113e479dc80"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "好了，我们回到wiki修正9p问题上"
+      },
+      {
+        "timestamp": "2026-06-12T01:29:21.236482+00:00",
+        "total_results": 7,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2770,
+        "total_chars": 592,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1413",
+          "3079",
+          "3062",
+          "3065",
+          "3098"
+        ],
+        "eval_expected_ids": [
+          "b38ed930-b841-4ac3-9a82-0113e479dc80"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "你把修正后的框架给我看看"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_019": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 5.0,
+    "kept_ci_95": [
+      5.0,
+      5.0
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 10237.0,
+    "latency_ci_95": [
+      8459.0,
+      12015.0
+    ],
+    "avg_total_results": 8.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T03:26:29.168965+00:00",
+        "total_results": 12,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 8459,
+        "total_chars": 597,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1137",
+          "966",
+          "1004",
+          "915",
+          "978"
+        ],
+        "eval_expected_ids": [
+          "61e72259-47cb-4c3a-9c88-d0f93c89597a"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我们改过了wiki模式，现在有几个wiki进程？"
+      },
+      {
+        "timestamp": "2026-06-11T11:25:08.593446+00:00",
+        "total_results": 4,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 12015,
+        "total_chars": 508,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2584",
+          "2586",
+          "2583",
+          "2585",
+          "2582"
+        ],
+        "eval_expected_ids": [
+          "61e72259-47cb-4c3a-9c88-d0f93c89597a"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "[System note: Your previous turn was interrupted before you "
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_058": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 6,
+    "kept_ci_95": [
+      6,
+      6
+    ],
+    "avg_score": 0.8132,
+    "score_ci_95": [
+      0.8132,
+      0.8132
+    ],
+    "avg_latency_ms": 8397,
+    "latency_ci_95": [
+      8397,
+      8397
+    ],
+    "avg_total_results": 13.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 8.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T04:51:13.305526+00:00",
+        "total_results": 13,
+        "kept_results": 6,
+        "avg_score": 0.8132364379418509,
+        "excluded_marked": 0,
+        "latency_ms": 8397,
+        "total_chars": 1155,
+        "injected_count": 8,
+        "recalled_ids": [
+          "cfd780ef-51d2-4bfe-a3c5-5f7b4d466709",
+          "55055bc7-b671-4fef-b2da-f59435aa4957",
+          "3059",
+          "3056",
+          "3024",
+          "3066"
+        ],
+        "eval_expected_ids": [
+          "c2a2feb6-5729-4d19-878d-73fba606b384"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "Qwen/Qwen3-Reranker-0.6B这个是32k，但需要添加instruction参数，你看看文档"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_029": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 1,
+    "kept_ci_95": [
+      1,
+      1
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 6206,
+    "latency_ci_95": [
+      6206,
+      6206
+    ],
+    "avg_total_results": 4.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 3.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T05:06:27.703830+00:00",
+        "total_results": 4,
+        "kept_results": 1,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6206,
+        "total_chars": 140,
+        "injected_count": 3,
+        "recalled_ids": [
+          "962"
+        ],
+        "eval_expected_ids": [
+          "3dabdc2b-88f0-48f2-b8ec-43b5d20db745"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "把配置和代码做个确认，是不是这样的"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_047": {
+    "total_requests": 4,
+    "dimension": "gen",
+    "avg_kept_results": 6.0,
+    "kept_ci_95": [
+      5.25,
+      6.75
+    ],
+    "avg_score": 0.8092,
+    "score_ci_95": [
+      0.8036,
+      0.8149
+    ],
+    "avg_latency_ms": 3261.0,
+    "latency_ci_95": [
+      2096.0,
+      5200.0
+    ],
+    "avg_total_results": 24.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 8.5,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T05:09:48.814104+00:00",
+        "total_results": 22,
+        "kept_results": 6,
+        "avg_score": 0.8177403836169804,
+        "excluded_marked": 0,
+        "latency_ms": 6111,
+        "total_chars": 1232,
+        "injected_count": 8,
+        "recalled_ids": [
+          "823e3c42-057d-461c-b9b9-d0e409365086",
+          "7cd43f6c-4b4e-4768-9889-adaf20fa576f",
+          "5f887ffe-3ed2-4b59-94c5-915a1ca91cb4",
+          "3008",
+          "929",
+          "937"
+        ],
+        "eval_expected_ids": [
+          "8529bdde-bb85-453b-94c1-5e6c6094c9ff"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "好，现在对话还是慢，再找找原因"
+      },
+      {
+        "timestamp": "2026-06-11T14:32:42.526587+00:00",
+        "total_results": 28,
+        "kept_results": 5,
+        "avg_score": 0.8051226005922536,
+        "excluded_marked": 0,
+        "latency_ms": 1960,
+        "total_chars": 618,
+        "injected_count": 7,
+        "recalled_ids": [
+          "8b0c8fa4-22e4-480c-abd6-81967be5886a",
+          "915",
+          "3008",
+          "2344",
+          "1015"
+        ],
+        "eval_expected_ids": [
+          "8529bdde-bb85-453b-94c1-5e6c6094c9ff"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "还是要想办法把cron，子代理，review给挡下来"
+      },
+      {
+        "timestamp": "2026-06-12T06:26:36.694314+00:00",
+        "total_results": 30,
+        "kept_results": 6,
+        "avg_score": 0.8020168886133687,
+        "excluded_marked": 0,
+        "latency_ms": 2506,
+        "total_chars": 871,
+        "injected_count": 9,
+        "recalled_ids": [
+          "b1d9c684-ae93-43f9-a998-97d907df0887",
+          "3082",
+          "3023",
+          "3031",
+          "3045",
+          "3055"
+        ],
+        "eval_expected_ids": [
+          "8529bdde-bb85-453b-94c1-5e6c6094c9ff"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "MinHash LSH 跨条目去重在聚类前面做还是后面做？"
+      },
+      {
+        "timestamp": "2026-06-12T07:54:43.724234+00:00",
+        "total_results": 16,
+        "kept_results": 7,
+        "avg_score": 0.8120582871507801,
+        "excluded_marked": 0,
+        "latency_ms": 2468,
+        "total_chars": 1057,
+        "injected_count": 10,
+        "recalled_ids": [
+          "c531346d-da53-40a5-bbb2-88fb42f56867",
+          "9c075185-f3d7-4c32-8930-d14c8ffd52b3",
+          "48607624-d78c-49cf-ba0a-2b19e90de550",
+          "3037",
+          "3072",
+          "3056",
+          "3048"
+        ],
+        "eval_expected_ids": [
+          "8529bdde-bb85-453b-94c1-5e6c6094c9ff"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "168 条超长记忆，consolidation failed 复位，LSH 去重都做了没，还是验证只是干跑的？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_059": {
+    "total_requests": 7,
+    "dimension": "gen",
+    "avg_kept_results": 3.43,
+    "kept_ci_95": [
+      2.29,
+      4.57
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 2977.0,
+    "latency_ci_95": [
+      2286.0,
+      3999.0
+    ],
+    "avg_total_results": 14.9,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 5.7,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T05:56:58.761254+00:00",
+        "total_results": 26,
+        "kept_results": 1,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 6006,
+        "total_chars": 184,
+        "injected_count": 4,
+        "recalled_ids": [
+          "3030"
+        ],
+        "eval_expected_ids": [
+          "9668c3a5-8358-430c-9087-33800d05da6b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "没啥风险，最终我只要3条，按a方案，降到100"
+      },
+      {
+        "timestamp": "2026-06-11T12:02:00.156055+00:00",
+        "total_results": 7,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2517,
+        "total_chars": 596,
+        "injected_count": 7,
+        "recalled_ids": [
+          "999",
+          "1058",
+          "1028",
+          "1038",
+          "2354"
+        ],
+        "eval_expected_ids": [
+          "9668c3a5-8358-430c-9087-33800d05da6b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "插件内部不用改，我现在希望能给个方案让pre和post的hooks在该调用的时候才调用，而不是整个过程无脑调用"
+      },
+      {
+        "timestamp": "2026-06-12T00:49:49.960370+00:00",
+        "total_results": 6,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2459,
+        "total_chars": 582,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1923",
+          "1069",
+          "1692",
+          "1051",
+          "1358"
+        ],
+        "eval_expected_ids": [
+          "9668c3a5-8358-430c-9087-33800d05da6b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "方案没有把hindsight的能力重复利用"
+      },
+      {
+        "timestamp": "2026-06-12T00:50:06.645135+00:00",
+        "total_results": 5,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2795,
+        "total_chars": 653,
+        "injected_count": 8,
+        "recalled_ids": [
+          "1565",
+          "3022",
+          "3032",
+          "3079",
+          "3044"
+        ],
+        "eval_expected_ids": [
+          "9668c3a5-8358-430c-9087-33800d05da6b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "方案没有把hindsight的能力充分利用"
+      },
+      {
+        "timestamp": "2026-06-12T05:45:24.757709+00:00",
+        "total_results": 2,
+        "kept_results": 4,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2005,
+        "total_chars": 421,
+        "injected_count": 6,
+        "recalled_ids": [
+          "962",
+          "1138",
+          "1099",
+          "1107"
+        ],
+        "eval_expected_ids": [
+          "9668c3a5-8358-430c-9087-33800d05da6b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "先不用，写入方案了来，怕丢失了"
+      },
+      {
+        "timestamp": "2026-06-12T06:32:58.650375+00:00",
+        "total_results": 21,
+        "kept_results": 2,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2111,
+        "total_chars": 229,
+        "injected_count": 4,
+        "recalled_ids": [
+          "5287",
+          "5285"
+        ],
+        "eval_expected_ids": [
+          "9668c3a5-8358-430c-9087-33800d05da6b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "现在评估方案的真实可落地性"
+      },
+      {
+        "timestamp": "2026-06-12T07:00:01.490825+00:00",
+        "total_results": 37,
+        "kept_results": 2,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2945,
+        "total_chars": 242,
+        "injected_count": 4,
+        "recalled_ids": [
+          "3052",
+          "3079"
+        ],
+        "eval_expected_ids": [
+          "9668c3a5-8358-430c-9087-33800d05da6b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "把这个分析写进方案，一会给qoder看看"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_095": {
+    "total_requests": 4,
+    "dimension": "gen",
+    "avg_kept_results": 3.0,
+    "kept_ci_95": [
+      0.5,
+      5.5
+    ],
+    "avg_score": 0.6277,
+    "score_ci_95": [
+      0.2081,
+      0.8544
+    ],
+    "avg_latency_ms": 2420.0,
+    "latency_ci_95": [
+      1989.0,
+      3020.0
+    ],
+    "avg_total_results": 15.5,
+    "avg_excluded_marked": 0.2,
+    "avg_injected_count": 4.8,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T06:18:20.939624+00:00",
+        "total_results": 12,
+        "kept_results": 0,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 3361,
+        "total_chars": 42,
+        "injected_count": 1,
+        "recalled_ids": [],
+        "eval_expected_ids": [
+          "dd247527-4bc8-40c6-b350-1702d94ea250"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "3. 让知识导航插件对 review 类提示词做短路处理——提前识别并跳过 recall"
+      },
+      {
+        "timestamp": "2026-06-11T11:44:40.453691+00:00",
+        "total_results": 16,
+        "kept_results": 1,
+        "avg_score": 0.8325314647986634,
+        "excluded_marked": 0,
+        "latency_ms": 1979,
+        "total_chars": 318,
+        "injected_count": 3,
+        "recalled_ids": [
+          "3de43167-bffa-4505-85bc-ec7dcac59f12"
+        ],
+        "eval_expected_ids": [
+          "dd247527-4bc8-40c6-b350-1702d94ea250"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "审查下知识导航插件和知识树插件，在对话过程中存在工具调用和运维llm调用，如review skill这样的llm调用，评"
+      },
+      {
+        "timestamp": "2026-06-12T11:47:27.528407+00:00",
+        "total_results": 21,
+        "kept_results": 7,
+        "avg_score": 0.8088095143578685,
+        "excluded_marked": 0,
+        "latency_ms": 1999,
+        "total_chars": 1018,
+        "injected_count": 9,
+        "recalled_ids": [
+          "ed049055-0acd-4c7d-94a5-521aa9876ca4",
+          "47146350-4feb-4c74-9296-dab9a38bec40",
+          "7708d8e8-5d4c-4d4b-b181-fdd59ec11930",
+          "2338",
+          "634",
+          "687",
+          "679"
+        ],
+        "eval_expected_ids": [
+          "dd247527-4bc8-40c6-b350-1702d94ea250"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我搞错了，应该归集到知识导航项目，而不是聚类项目"
+      },
+      {
+        "timestamp": "2026-06-12T11:50:12.193019+00:00",
+        "total_results": 13,
+        "kept_results": 4,
+        "avg_score": 0.8696296793088465,
+        "excluded_marked": 1,
+        "latency_ms": 2341,
+        "total_chars": 704,
+        "injected_count": 6,
+        "recalled_ids": [
+          "1a19e00a-6b0e-4ab4-bf3e-3a32d5a8b51c",
+          "a6fbbde2-df5e-4944-a37d-6b177e8819cf",
+          "3087",
+          "3097"
+        ],
+        "eval_expected_ids": [
+          "dd247527-4bc8-40c6-b350-1702d94ea250"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "self-evolving/scripts/collect_baseline.py不应该有，所有功能直接归集到知识导航的"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_002": {
+    "total_requests": 3,
+    "dimension": "gen",
+    "avg_kept_results": 3.67,
+    "kept_ci_95": [
+      0.0,
+      8.0
+    ],
+    "avg_score": 0.536,
+    "score_ci_95": [
+      0.0,
+      0.8041
+    ],
+    "avg_latency_ms": 4497.0,
+    "latency_ci_95": [
+      3815.0,
+      5817.0
+    ],
+    "avg_total_results": 12.3,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 5.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T06:20:03.155286+00:00",
+        "total_results": 9,
+        "kept_results": 3,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 3860,
+        "total_chars": 357,
+        "injected_count": 5,
+        "recalled_ids": [
+          "1685",
+          "1735",
+          "982"
+        ],
+        "eval_expected_ids": [
+          "a9494cea-07a2-4a82-a5eb-a8081473bf9e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "先读这个目录里面的readme，再做"
+      },
+      {
+        "timestamp": "2026-06-12T05:59:56.945514+00:00",
+        "total_results": 14,
+        "kept_results": 8,
+        "avg_score": 0.8040659775831737,
+        "excluded_marked": 0,
+        "latency_ms": 5817,
+        "total_chars": 1221,
+        "injected_count": 10,
+        "recalled_ids": [
+          "bf69654b-1ab5-4a9a-b889-c78d2558bc09",
+          "fccd5867-b596-4de3-a46d-b9af8df75854",
+          "61332e61-86dd-4a3c-b674-c2e40ee4d9e1",
+          "2316",
+          "2296",
+          "2301",
+          "2313",
+          "2309"
+        ],
+        "eval_expected_ids": [
+          "a9494cea-07a2-4a82-a5eb-a8081473bf9e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "读下d:/HermesProject/scripts/self-evolving/docs/hindsight-memo"
+      },
+      {
+        "timestamp": "2026-06-12T07:40:41.777220+00:00",
+        "total_results": 14,
+        "kept_results": 0,
+        "avg_score": 0.8039700529975192,
+        "excluded_marked": 0,
+        "latency_ms": 3815,
+        "total_chars": 0,
+        "injected_count": 0,
+        "recalled_ids": [],
+        "eval_expected_ids": [
+          "a9494cea-07a2-4a82-a5eb-a8081473bf9e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "读下d:/HermesProject/scripts/self-evolving/docs/hindsight-memo"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_030": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 4.0,
+    "kept_ci_95": [
+      4.0,
+      4.0
+    ],
+    "avg_score": 0.4279,
+    "score_ci_95": [
+      0.0,
+      0.8559
+    ],
+    "avg_latency_ms": 2571.0,
+    "latency_ci_95": [
+      1693.0,
+      3449.0
+    ],
+    "avg_total_results": 21.5,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T06:32:04.892241+00:00",
+        "total_results": 38,
+        "kept_results": 4,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1693,
+        "total_chars": 464,
+        "injected_count": 6,
+        "recalled_ids": [
+          "995",
+          "1140",
+          "2356",
+          "1141"
+        ],
+        "eval_expected_ids": [
+          "cec490b6-a5c0-45b2-bf5b-cefe1b9f94f3"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "openclaw为什么出错，它的网关一直开启的"
+      },
+      {
+        "timestamp": "2026-06-12T08:20:33.596413+00:00",
+        "total_results": 5,
+        "kept_results": 4,
+        "avg_score": 0.8558580532944181,
+        "excluded_marked": 0,
+        "latency_ms": 3449,
+        "total_chars": 604,
+        "injected_count": 6,
+        "recalled_ids": [
+          "e249eb21-c532-41c8-bb19-cf2d36b50311",
+          "3074",
+          "3073",
+          "3072"
+        ],
+        "eval_expected_ids": [
+          "cec490b6-a5c0-45b2-bf5b-cefe1b9f94f3"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "不清理 entity/unit_entity/memory_link，为什么不清理，Hindsight consolid"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_062": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 5.0,
+    "kept_ci_95": [
+      5.0,
+      5.0
+    ],
+    "avg_score": 0.413,
+    "score_ci_95": [
+      0.0,
+      0.826
+    ],
+    "avg_latency_ms": 2345.0,
+    "latency_ci_95": [
+      1571.0,
+      3119.0
+    ],
+    "avg_total_results": 22.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T07:03:31.171791+00:00",
+        "total_results": 23,
+        "kept_results": 5,
+        "avg_score": 0.8260401785778643,
+        "excluded_marked": 0,
+        "latency_ms": 3119,
+        "total_chars": 1042,
+        "injected_count": 7,
+        "recalled_ids": [
+          "e1a8bd83-e502-4589-91ab-314bd5abcc7f",
+          "3cf877e0-6455-47d6-9ae4-c2736b13da9e",
+          "54f4b27b-1ee9-4f7e-9fe6-912e00ae9b33",
+          "1068",
+          "1051"
+        ],
+        "eval_expected_ids": [
+          "a82256ee-3dac-4530-b968-09ab379cdd04"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "检查下hindsight的recall现在还有400错误没？"
+      },
+      {
+        "timestamp": "2026-06-11T14:44:31.740040+00:00",
+        "total_results": 21,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1571,
+        "total_chars": 630,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1142",
+          "2914",
+          "1140",
+          "1126",
+          "2915"
+        ],
+        "eval_expected_ids": [
+          "a82256ee-3dac-4530-b968-09ab379cdd04"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "你不是已经部署过了吗，检查下"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_096": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 5,
+    "kept_ci_95": [
+      5,
+      5
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 3172,
+    "latency_ci_95": [
+      3172,
+      3172
+    ],
+    "avg_total_results": 15.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T07:06:25.454447+00:00",
+        "total_results": 15,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 3172,
+        "total_chars": 576,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3046",
+          "3077",
+          "3052",
+          "3071",
+          "1429"
+        ],
+        "eval_expected_ids": [
+          "3ee7366b-dd31-4c1a-9a34-3959ded61a79"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "[Note: model was just switched from s-deepseek-v4-flash to s"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_084": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 1,
+    "kept_ci_95": [
+      1,
+      1
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 1736,
+    "latency_ci_95": [
+      1736,
+      1736
+    ],
+    "avg_total_results": 10.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 3.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T11:00:23.732926+00:00",
+        "total_results": 10,
+        "kept_results": 1,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1736,
+        "total_chars": 140,
+        "injected_count": 3,
+        "recalled_ids": [
+          "962"
+        ],
+        "eval_expected_ids": [
+          "645f44cf-629a-4b08-bc75-e03b574f106b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "先确认Windows环境"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_064": {
+    "total_requests": 3,
+    "dimension": "gen",
+    "avg_kept_results": 5.33,
+    "kept_ci_95": [
+      5.0,
+      6.0
+    ],
+    "avg_score": 0.3027,
+    "score_ci_95": [
+      0.0,
+      0.908
+    ],
+    "avg_latency_ms": 3665.0,
+    "latency_ci_95": [
+      1940.0,
+      7095.0
+    ],
+    "avg_total_results": 17.7,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.7,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T11:55:49.156617+00:00",
+        "total_results": 7,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1940,
+        "total_chars": 514,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3062",
+          "3042",
+          "3029",
+          "3046",
+          "3077"
+        ],
+        "eval_expected_ids": [
+          "b51eaf9a-847a-4398-8487-be9b4d94fae1"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "提取降配就没必要了，就是想减少2个插件的操作，提速"
+      },
+      {
+        "timestamp": "2026-06-11T12:04:23.369088+00:00",
+        "total_results": 13,
+        "kept_results": 6,
+        "avg_score": 0.9080420595388198,
+        "excluded_marked": 0,
+        "latency_ms": 7095,
+        "total_chars": 1144,
+        "injected_count": 9,
+        "recalled_ids": [
+          "4648b4d3-1423-4f39-b497-20bb3eb98cfb",
+          "2331",
+          "998",
+          "1027",
+          "2329",
+          "1108"
+        ],
+        "eval_expected_ids": [
+          "b51eaf9a-847a-4398-8487-be9b4d94fae1"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "[System note: Your previous turn was interrupted before you "
+      },
+      {
+        "timestamp": "2026-06-11T14:59:49.629904+00:00",
+        "total_results": 33,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1960,
+        "total_chars": 636,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1141",
+          "1024",
+          "1021",
+          "1030",
+          "1140"
+        ],
+        "eval_expected_ids": [
+          "b51eaf9a-847a-4398-8487-be9b4d94fae1"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "我们在正式环境中测试下这两个插件，看看是否出错，是否达到预期"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_023": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 5,
+    "kept_ci_95": [
+      5,
+      5
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 1901,
+    "latency_ci_95": [
+      1901,
+      1901
+    ],
+    "avg_total_results": 18.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T12:44:56.985147+00:00",
+        "total_results": 18,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1901,
+        "total_chars": 559,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1929",
+          "3098",
+          "3055",
+          "3052",
+          "1427"
+        ],
+        "eval_expected_ids": [
+          "8e20e77e-3626-4d0f-9a2c-02a3339bb79e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "评估下用这种字典方式是不是不好？有没有什么算法，或者干脆调一次llm判断？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_051": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 5,
+    "kept_ci_95": [
+      5,
+      5
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 2300,
+    "latency_ci_95": [
+      2300,
+      2300
+    ],
+    "avg_total_results": 9.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T12:51:26.851508+00:00",
+        "total_results": 9,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2300,
+        "total_chars": 530,
+        "injected_count": 7,
+        "recalled_ids": [
+          "1058",
+          "1037",
+          "1072",
+          "1697",
+          "1031"
+        ],
+        "eval_expected_ids": [
+          "19764aa3-39e5-4b07-9243-f3447cad9034"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "感觉这个方案还有一个硬伤，很多llm是管线内的，或者hermes平台自己调用的，这些其实不管什么类型都应该被门阀挡下来"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_014": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 1,
+    "kept_ci_95": [
+      1,
+      1
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 2773,
+    "latency_ci_95": [
+      2773,
+      2773
+    ],
+    "avg_total_results": 12.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 4.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T13:01:58.721316+00:00",
+        "total_results": 12,
+        "kept_results": 1,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2773,
+        "total_chars": 177,
+        "injected_count": 4,
+        "recalled_ids": [
+          "4545"
+        ],
+        "eval_expected_ids": [
+          "5f53eceb-a10b-4b4f-8f28-df2e7ab4be63"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "你前面不是说2层，来源门控+文本门控，因为就算是正常对话，确实有些对话没必要recall或提取，怎么分析后把前面的方案忘"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_053": {
+    "total_requests": 3,
+    "dimension": "gen",
+    "avg_kept_results": 4.0,
+    "kept_ci_95": [
+      3.0,
+      5.0
+    ],
+    "avg_score": 0.2705,
+    "score_ci_95": [
+      0.0,
+      0.8114
+    ],
+    "avg_latency_ms": 4470.0,
+    "latency_ci_95": [
+      1991.0,
+      6577.0
+    ],
+    "avg_total_results": 14.7,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T13:58:11.580220+00:00",
+        "total_results": 12,
+        "kept_results": 3,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 4841,
+        "total_chars": 413,
+        "injected_count": 5,
+        "recalled_ids": [
+          "1082",
+          "1137",
+          "980"
+        ],
+        "eval_expected_ids": [
+          "31f248b7-54a3-4eee-8100-84ca74042241"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "应该放行cli、飞书、微信其他的全挡，然后再说放行的这3个怎么办"
+      },
+      {
+        "timestamp": "2026-06-12T08:05:15.920914+00:00",
+        "total_results": 20,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1991,
+        "total_chars": 624,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3024",
+          "3042",
+          "3088",
+          "3046",
+          "3087"
+        ],
+        "eval_expected_ids": [
+          "31f248b7-54a3-4eee-8100-84ca74042241"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "好执行一遍，分析下数据"
+      },
+      {
+        "timestamp": "2026-06-12T08:45:39.492621+00:00",
+        "total_results": 12,
+        "kept_results": 4,
+        "avg_score": 0.8113788936975316,
+        "excluded_marked": 0,
+        "latency_ms": 6577,
+        "total_chars": 779,
+        "injected_count": 6,
+        "recalled_ids": [
+          "9d26030c-fb42-4b06-bc54-e048cc4a3633",
+          "4553821c-cc16-4654-9d46-b0c7839885c9",
+          "3089",
+          "3078"
+        ],
+        "eval_expected_ids": [
+          "31f248b7-54a3-4eee-8100-84ca74042241"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "执行一次：\ncur.execute(\"\"\"\n        DELETE FROM entities e\n       "
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_046": {
+    "total_requests": 3,
+    "dimension": "gen",
+    "avg_kept_results": 5.67,
+    "kept_ci_95": [
+      5.0,
+      6.0
+    ],
+    "avg_score": 0.5522,
+    "score_ci_95": [
+      0.0,
+      0.8561
+    ],
+    "avg_latency_ms": 2672.0,
+    "latency_ci_95": [
+      1985.0,
+      3399.0
+    ],
+    "avg_total_results": 16.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.7,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T15:05:44.813467+00:00",
+        "total_results": 16,
+        "kept_results": 6,
+        "avg_score": 0.8004081649176266,
+        "excluded_marked": 0,
+        "latency_ms": 2633,
+        "total_chars": 824,
+        "injected_count": 8,
+        "recalled_ids": [
+          "126e682b-0e16-4966-b35e-46ff0ef4affe",
+          "3046",
+          "3042",
+          "3024",
+          "3077",
+          "3065"
+        ],
+        "eval_expected_ids": [
+          "94647c1c-0401-483d-932b-b59aadefa26f"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "多少字会被门控跳过recall"
+      },
+      {
+        "timestamp": "2026-06-12T08:15:32.177222+00:00",
+        "total_results": 5,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 3399,
+        "total_chars": 644,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2356",
+          "2993",
+          "2914",
+          "1140",
+          "3008"
+        ],
+        "eval_expected_ids": [
+          "94647c1c-0401-483d-932b-b59aadefa26f"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "直接做，你这个标记等于没加，根本不知道谁和谁重复，浪费时间，给出bug修改和管线 DELETE loser的改动方案"
+      },
+      {
+        "timestamp": "2026-06-12T08:32:48.367683+00:00",
+        "total_results": 27,
+        "kept_results": 6,
+        "avg_score": 0.856113571422362,
+        "excluded_marked": 0,
+        "latency_ms": 1985,
+        "total_chars": 837,
+        "injected_count": 8,
+        "recalled_ids": [
+          "16bb4f5f-1438-4b90-9385-dfa30f02bc29",
+          "5be8807d-644a-41b6-8939-6a5e09d72ca9",
+          "1107",
+          "1099",
+          "2352",
+          "1015"
+        ],
+        "eval_expected_ids": [
+          "94647c1c-0401-483d-932b-b59aadefa26f"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "是不是还有孤儿实体需要清理？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_005": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 5,
+    "kept_ci_95": [
+      5,
+      5
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 1694,
+    "latency_ci_95": [
+      1694,
+      1694
+    ],
+    "avg_total_results": 50.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T15:08:25.705476+00:00",
+        "total_results": 50,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 1694,
+        "total_chars": 660,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3761",
+          "3763",
+          "3753",
+          "3766",
+          "3762"
+        ],
+        "eval_expected_ids": [
+          "c436482b-8f60-4edb-87c4-a0dfec19b8a8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "今天学习cron任务学了什么"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_077": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 5,
+    "kept_ci_95": [
+      5,
+      5
+    ],
+    "avg_score": 0.8007,
+    "score_ci_95": [
+      0.8007,
+      0.8007
+    ],
+    "avg_latency_ms": 2298,
+    "latency_ci_95": [
+      2298,
+      2298
+    ],
+    "avg_total_results": 14.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-11T23:47:42.252090+00:00",
+        "total_results": 14,
+        "kept_results": 5,
+        "avg_score": 0.8007187741961098,
+        "excluded_marked": 0,
+        "latency_ms": 2298,
+        "total_chars": 693,
+        "injected_count": 7,
+        "recalled_ids": [
+          "4272160b-f26a-4a17-9da6-4a77af678387",
+          "3027",
+          "3043",
+          "3023",
+          "3079"
+        ],
+        "eval_expected_ids": [
+          "f3abcd59-7aab-45fd-9211-c10f905b069e"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "评估下Hindsight中记忆的质量，是不是应该定期整理？先理清楚Hindsight自己有哪些整理功能。"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_075": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 5,
+    "kept_ci_95": [
+      5,
+      5
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 9146,
+    "latency_ci_95": [
+      9146,
+      9146
+    ],
+    "avg_total_results": 13.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T00:36:00.802459+00:00",
+        "total_results": 13,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 9146,
+        "total_chars": 631,
+        "injected_count": 7,
+        "recalled_ids": [
+          "3064",
+          "3056",
+          "1413",
+          "3071",
+          "3070"
+        ],
+        "eval_expected_ids": [
+          "17c67da2-4c56-466e-8aed-e12246ca39ba"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "P0 查那 14 条超长记忆"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_074": {
+    "total_requests": 3,
+    "dimension": "gen",
+    "avg_kept_results": 6.0,
+    "kept_ci_95": [
+      6.0,
+      6.0
+    ],
+    "avg_score": 0.808,
+    "score_ci_95": [
+      0.8037,
+      0.8103
+    ],
+    "avg_latency_ms": 2232.0,
+    "latency_ci_95": [
+      1605.0,
+      2644.0
+    ],
+    "avg_total_results": 15.0,
+    "avg_excluded_marked": 0.3,
+    "avg_injected_count": 8.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T00:42:45.209962+00:00",
+        "total_results": 13,
+        "kept_results": 6,
+        "avg_score": 0.8103339989761625,
+        "excluded_marked": 0,
+        "latency_ms": 2644,
+        "total_chars": 914,
+        "injected_count": 8,
+        "recalled_ids": [
+          "83abd78d-6428-40a3-84a7-3a2462e93d35",
+          "01d4a9fd-46d5-49e3-904b-28be2cb96049",
+          "121866da-9cb4-492f-95fe-0e72c7d2ee5d",
+          "3024",
+          "3055",
+          "3043"
+        ],
+        "eval_expected_ids": [
+          "0a6a4077-c1e2-4557-a90b-015e27a43b7c"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "先别忙，结合hindsight自己有的功能，对数据质量全面评估后，给出一个可持续自动的提升记忆质量的方案"
+      },
+      {
+        "timestamp": "2026-06-12T06:01:13.474679+00:00",
+        "total_results": 21,
+        "kept_results": 6,
+        "avg_score": 0.8037066815426721,
+        "excluded_marked": 0,
+        "latency_ms": 1605,
+        "total_chars": 646,
+        "injected_count": 8,
+        "recalled_ids": [
+          "b5862751-b74e-4924-9ed4-a8916b02d503",
+          "3756",
+          "3768",
+          "3758",
+          "3762",
+          "3757"
+        ],
+        "eval_expected_ids": [
+          "0a6a4077-c1e2-4557-a90b-015e27a43b7c"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "数据质量技术储备方案柔和进整体方案"
+      },
+      {
+        "timestamp": "2026-06-12T10:51:51.584198+00:00",
+        "total_results": 11,
+        "kept_results": 6,
+        "avg_score": 0.8100332696402273,
+        "excluded_marked": 1,
+        "latency_ms": 2447,
+        "total_chars": 876,
+        "injected_count": 8,
+        "recalled_ids": [
+          "48835ba2-eeb3-4912-938b-31bbabc8549c",
+          "2775",
+          "2773",
+          "2920",
+          "2794",
+          "2774"
+        ],
+        "eval_expected_ids": [
+          "0a6a4077-c1e2-4557-a90b-015e27a43b7c"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "评估最大单条记忆 83,247 字符，属于数据质量问题，记忆维护的cron任务中是否应该处理这样记录？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_063": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 4,
+    "kept_ci_95": [
+      4,
+      4
+    ],
+    "avg_score": 0.8011,
+    "score_ci_95": [
+      0.8011,
+      0.8011
+    ],
+    "avg_latency_ms": 9359,
+    "latency_ci_95": [
+      9359,
+      9359
+    ],
+    "avg_total_results": 8.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T05:32:30.733401+00:00",
+        "total_results": 8,
+        "kept_results": 4,
+        "avg_score": 0.8010941921005986,
+        "excluded_marked": 0,
+        "latency_ms": 9359,
+        "total_chars": 460,
+        "injected_count": 6,
+        "recalled_ids": [
+          "83abd78d-6428-40a3-84a7-3a2462e93d35",
+          "3047",
+          "3056",
+          "1929"
+        ],
+        "eval_expected_ids": [
+          "bc8e8948-0040-460f-8dcd-1f0f2f37370b"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "全面review，这个hindsight-memory-maintenance-framework.md文件"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_073": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 6.0,
+    "kept_ci_95": [
+      5.0,
+      7.0
+    ],
+    "avg_score": 0.8494,
+    "score_ci_95": [
+      0.8054,
+      0.8935
+    ],
+    "avg_latency_ms": 3674.0,
+    "latency_ci_95": [
+      3473.0,
+      3875.0
+    ],
+    "avg_total_results": 17.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 8.5,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T06:28:35.482618+00:00",
+        "total_results": 26,
+        "kept_results": 7,
+        "avg_score": 0.8053904368193063,
+        "excluded_marked": 0,
+        "latency_ms": 3473,
+        "total_chars": 1048,
+        "injected_count": 9,
+        "recalled_ids": [
+          "c157effc-37ac-4558-aed4-6e061508b3fe",
+          "306b94e8-66d5-4792-ac22-299ffd5c3545",
+          "1113",
+          "1047",
+          "3009",
+          "999",
+          "2915"
+        ],
+        "eval_expected_ids": [
+          "8581ec0d-f453-47ad-ae08-6fa0feb96957"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "持续监控（巡检 cron 末步发飞书）？和巡检有什么关系？"
+      },
+      {
+        "timestamp": "2026-06-12T08:38:46.953777+00:00",
+        "total_results": 8,
+        "kept_results": 5,
+        "avg_score": 0.8934625513873321,
+        "excluded_marked": 0,
+        "latency_ms": 3875,
+        "total_chars": 935,
+        "injected_count": 8,
+        "recalled_ids": [
+          "95082032-7aa5-4835-b7ba-292b097f7466",
+          "16e47e36-b64a-4dd1-bd55-928c04c393c6",
+          "3025",
+          "3097",
+          "3081"
+        ],
+        "eval_expected_ids": [
+          "8581ec0d-f453-47ad-ae08-6fa0feb96957"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "已部署。 delete_loser()  的完整清理链现在三阶段：                           "
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_066": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 5,
+    "kept_ci_95": [
+      5,
+      5
+    ],
+    "avg_score": 0.8051,
+    "score_ci_95": [
+      0.8051,
+      0.8051
+    ],
+    "avg_latency_ms": 1748,
+    "latency_ci_95": [
+      1748,
+      1748
+    ],
+    "avg_total_results": 27.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 7.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T07:46:38.007618+00:00",
+        "total_results": 27,
+        "kept_results": 5,
+        "avg_score": 0.8050547570224459,
+        "excluded_marked": 0,
+        "latency_ms": 1748,
+        "total_chars": 664,
+        "injected_count": 7,
+        "recalled_ids": [
+          "193c0d8a-f1a3-4a7b-adff-4ffa3403edde",
+          "982",
+          "1094",
+          "980",
+          "2914"
+        ],
+        "eval_expected_ids": [
+          "1d2fe827-a553-4346-bb27-89d0f4294089"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "好，现在在正式环境逐项验证"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_094": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 6,
+    "kept_ci_95": [
+      6,
+      6
+    ],
+    "avg_score": 0.8081,
+    "score_ci_95": [
+      0.8081,
+      0.8081
+    ],
+    "avg_latency_ms": 2078,
+    "latency_ci_95": [
+      2078,
+      2078
+    ],
+    "avg_total_results": 28.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 8.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T08:01:04.503299+00:00",
+        "total_results": 28,
+        "kept_results": 6,
+        "avg_score": 0.8081309699400506,
+        "excluded_marked": 0,
+        "latency_ms": 2078,
+        "total_chars": 697,
+        "injected_count": 8,
+        "recalled_ids": [
+          "8867fd32-97b0-4ff3-a6a9-dab85427fa5b",
+          "3058",
+          "3098",
+          "1427",
+          "3065",
+          "3079"
+        ],
+        "eval_expected_ids": [
+          "2e5da6de-6c0a-4891-9755-69417ecb36e8"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "lsh去重，你刚才的建议是什么，看不到了"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_001": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 4,
+    "kept_ci_95": [
+      4,
+      4
+    ],
+    "avg_score": 0.0,
+    "score_ci_95": [
+      0.0,
+      0.0
+    ],
+    "avg_latency_ms": 2393,
+    "latency_ci_95": [
+      2393,
+      2393
+    ],
+    "avg_total_results": 12.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 6.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T08:09:26.722093+00:00",
+        "total_results": 12,
+        "kept_results": 4,
+        "avg_score": 0.0,
+        "excluded_marked": 0,
+        "latency_ms": 2393,
+        "total_chars": 488,
+        "injected_count": 6,
+        "recalled_ids": [
+          "3062",
+          "3047",
+          "3082",
+          "3103"
+        ],
+        "eval_expected_ids": [
+          "0ae728e6-97f6-4075-833b-a1fd043416a5"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "粒度够了不，是不是可以改代码实现追加合并+删除逻辑？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_088": {
+    "total_requests": 1,
+    "dimension": "gen",
+    "avg_kept_results": 6,
+    "kept_ci_95": [
+      6,
+      6
+    ],
+    "avg_score": 0.8095,
+    "score_ci_95": [
+      0.8095,
+      0.8095
+    ],
+    "avg_latency_ms": 2722,
+    "latency_ci_95": [
+      2722,
+      2722
+    ],
+    "avg_total_results": 11.0,
+    "avg_excluded_marked": 0.0,
+    "avg_injected_count": 8.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T08:22:12.796488+00:00",
+        "total_results": 11,
+        "kept_results": 6,
+        "avg_score": 0.8095012973802688,
+        "excluded_marked": 0,
+        "latency_ms": 2722,
+        "total_chars": 942,
+        "injected_count": 8,
+        "recalled_ids": [
+          "1ac111b8-83f9-4f15-bf0c-ea067a167940",
+          "d0770a08-5fa8-470d-9d03-fc5eedd2c907",
+          "e37fd3e1-e0b8-4088-9801-52be23eaa535",
+          "2775",
+          "2770",
+          "2790"
+        ],
+        "eval_expected_ids": [
+          "3538d714-9911-4c12-83b1-6ff27579cc96"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "问题：脚本标记循环走了 pairs[:20]，只处理了前 20 对，剩余 854 对没标记。这个bug呢？"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "gen_038": {
+    "total_requests": 2,
+    "dimension": "gen",
+    "avg_kept_results": 3.5,
+    "kept_ci_95": [
+      2.0,
+      5.0
+    ],
+    "avg_score": 0.4201,
+    "score_ci_95": [
+      0.0,
+      0.8403
+    ],
+    "avg_latency_ms": 4668.0,
+    "latency_ci_95": [
+      1732.0,
+      7603.0
+    ],
+    "avg_total_results": 9.0,
+    "avg_excluded_marked": 2.0,
+    "avg_injected_count": 6.0,
+    "raw_records": [
+      {
+        "timestamp": "2026-06-12T08:25:58.841008+00:00",
+        "total_results": 4,
+        "kept_results": 2,
+        "avg_score": 0.8402829542911592,
+        "excluded_marked": 0,
+        "latency_ms": 7603,
+        "total_chars": 492,
+        "injected_count": 5,
+        "recalled_ids": [
+          "4fe411c0-4f5c-4774-8334-e6bb9fd2fddb",
+          "2925"
+        ],
+        "eval_expected_ids": [
+          "336d1d47-1c06-4651-b077-b67a9f97fbd2"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "全部修完部署。改动总结：                                                "
+      },
+      {
+        "timestamp": "2026-06-12T11:31:00.330121+00:00",
+        "total_results": 14,
+        "kept_results": 5,
+        "avg_score": 0.0,
+        "excluded_marked": 4,
+        "latency_ms": 1732,
+        "total_chars": 658,
+        "injected_count": 7,
+        "recalled_ids": [
+          "2790",
+          "2792",
+          "2794",
+          "2773",
+          "2919"
+        ],
+        "eval_expected_ids": [
+          "336d1d47-1c06-4651-b077-b67a9f97fbd2"
+        ],
+        "eval_recall_hit": 0,
+        "eval_recall_k": 1,
+        "query_trunc": "不用qoder了，你在源码处理就行，配置也能改，但飞书通知的内容需要丰富，现在只能看到成功还是失败"
+      }
+    ],
+    "avg_recall_at_k": 0.0,
+    "recall_ci_95": [
+      0.0,
+      0.0
+    ]
+  }
+}

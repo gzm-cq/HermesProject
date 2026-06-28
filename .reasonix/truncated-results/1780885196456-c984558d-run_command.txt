@@ -1,0 +1,846 @@
+$ git diff HEAD~10..HEAD
+[exit 0]
+diff --git a/README.md b/README.md
+index 9631c54..3e3aa40 100644
+--- a/README.md
++++ b/README.md
+@@ -4,16 +4,18 @@
+ 
+ ## 项目概览
+ 
+-HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 6 个独立可部署的子项目 + 1 个研究项目，共同支撑端到端的 AI 助手系统：
++HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 8 个独立可部署的子项目 + 1 个研究项目，共同支撑端到端的 AI 助手系统：
+ 
+ | # | 项目 | 路径 | 简介 | 运行方式 |
+ |---|------|------|------|----------|
+ | 1 | **AI 报告生成系统** | `scripts/ai-report-system/` | 多数据源智能分析，自动生成 Word/PDF/Markdown 报告 | Cron / 手动触发 |
+ | 2 | **记忆聚类分析** | `scripts/clustering-analysis-v3/` | 基于 DBSCAN 的记忆向量聚类，支持因果链检测 | Cron 定时 (每日 2am) |
+ | 3 | **Draw.io 矢量图生成** | `scripts/drawio-generator/` | 根据规格说明自动生成 draw.io / SVG 矢量图 | 手动触发 |
+-| 4 | **记忆清理** | `scripts/memory-cleanup/` | LLM 驱动的记忆分类清理（retain/remove/merge/compress） | Cron / 手动触发 |
+-| 5 | **知识导航插件** | `plugins/knowledge-navigation/` | 自动召回 Hindsight 记忆并注入 LLM 上下文 | 网关插件（Hook 注册） |
+-| 6 | **自我进化研究 (SE-Agent)** | `scripts/self-evolving/` | 自进化智能体算子研究 — Revision/Recombination/Refinement | 研究项目，非 deploy |
++| 4 | **知识分域建树管线** | `scripts/knowledge-tree-builder/` | 从文章自动构建二叉树知识树（Step 1-5 全管线） | CLI 手动触发 |
++| 5 | **记忆清理** | `scripts/memory-cleanup/` | LLM 驱动的记忆分类清理（retain/remove/merge/compress） | Cron / 手动触发 |
++| 6 | **知识导航插件** | `plugins/knowledge-navigation/` | 融合 Hindsight 经验 + 知识树双域，注入 LLM 上下文 | 网关插件（Hook 注册） |
++| 7 | **知识树在线插件** | `plugins/knowledge-tree-plugin/` | 知识树在线 recall + post_llm_call 增量学习 | 网关插件（Hook 注册） |
++| 8 | **自我进化研究 (SE-Agent)** | `scripts/self-evolving/` | 自进化智能体算子研究 + Phase B Kanban 反思回路 | 研究项目，非 deploy |
+ 
+ > Hermes Gateway（消息网关）是系统级的常驻服务，其源码独立管理，不在此仓库中。
+ 
+@@ -38,8 +40,13 @@ Hermes 采用 **5 层记忆体系**，三个子项目分别作用于不同层级
+ │                                                                 │
+ │ 用户消息 ──→ ⑥ 知识导航 (Hook) ──→ 组装上下文 ──→ LLM 调用 ──→ 响应  │
+ │                    │                       ↑                         │
+-│                    │ 每条消息动态召回     │ 静态记忆(上面注入)      │
++│          ┌─────────┴────────┐              │                         │
++│          ▼                  ▼              │                         │
++│   Hindsight recall    知识树 recall         │                         │
++│   （经验域）          （知识域）            │                         │
++│          └─────────┬────────┘              │                         │
+ │                    ▼                       │                         │
++│              双域融合                       │                         │
+ └───────────────────┬───────────────────────┬─────────────────────────┘
+                     │ 语义检索                │
+                     ▼                        │
+@@ -85,10 +92,12 @@ HermesProject/
+ │   ├── ai-report-system/         # AI 报告生成系统（独立 pyproject.toml）
+ │   ├── clustering-analysis-v3/   # 记忆聚类分析（独立 pyproject.toml）
+ │   ├── drawio-generator/         # Draw.io 矢量图生成（独立 pyproject.toml）
++│   ├── knowledge-tree-builder/   # 知识分域建树管线（独立 pyproject.toml）
+ │   ├── memory-cleanup/           # 记忆分类清理（独立 pyproject.toml）
+-│   └── self-evolving/            # 自我进化研究项目（独立 pyproject.toml）
++│   └── self-evolving/            # 自我进化研究 + 反思回路（独立 pyproject.toml）
+ ├── plugins/
+-│   ├── knowledge-navigation/     # 知识导航插件
++│   ├── knowledge-navigation/     # 知识导航插件（融合双域）
++│   ├── knowledge-tree-plugin/    # 知识树在线插件（增量学习）
+ │   └── hermes-plugin-template/   # 插件开发模板
+ ├── deploy/                  # 一键部署系统
+ │   ├── deploy.sh            # 分发入口（list / plan / deploy / rollback / history / cleanup）
+@@ -154,6 +163,9 @@ cd scripts/clustering-analysis-v3 && pip install -e . && pytest
+ # Draw.io 生成器
+ cd scripts/drawio-generator && pip install -e . && pytest
+ 
++# 知识树构建器
++cd scripts/knowledge-tree-builder && pip install -e . && pytest
++
+ # 记忆清理
+ cd scripts/memory-cleanup && pip install -e . && pytest
+ 
+@@ -185,8 +197,10 @@ deploy 采用三层架构：
+ ./deploy/deploy.sh deploy ai-report-system
+ ./deploy/deploy.sh deploy clustering-analysis-v3
+ ./deploy/deploy.sh deploy drawio-generator
++./deploy/deploy.sh deploy knowledge-tree-builder
+ ./deploy/deploy.sh deploy memory-cleanup
+ ./deploy/deploy.sh deploy knowledge-navigation   # 自动重启 hermes-gateway
++./deploy/deploy.sh deploy knowledge-tree-plugin  # 自动重启 hermes-gateway
+ 
+ # 回滚（先清残留再还原备份）
+ ./deploy/deploy.sh rollback <project>
+@@ -199,8 +213,10 @@ deploy 采用三层架构：
+ | AI 报告系统 | `/root/.hermes/scripts/ai-report-system/` | — |
+ | 聚类分析 | `/root/.hermes/scripts/clustering-analysis-v3/` | — |
+ | Draw.io 生成 | `/root/.hermes/scripts/drawio-generator/` | — |
++| 知识树构建器 | `/root/.hermes/scripts/knowledge-tree-builder/` | — |
+ | 记忆清理 | `/root/.hermes/scripts/memory-cleanup/` | — |
+ | 知识导航 | `/root/.hermes/plugins/knowledge-navigation/` | `hermes-gateway.service` |
++| 知识树插件 | `/root/.hermes/plugins/knowledge-tree-plugin/` | `hermes-gateway.service` |
+ 
+ > `self-evolving` 为研究项目，不在 deploy 范围内。
+ 
+@@ -236,21 +252,46 @@ LLM 驱动的智能记忆管理（MEMORY.md + USER.md）：
+ - 默认 dry-run，`--apply` 才实际执行
+ - 支持 Hindsight API 同步删除
+ 
+-### 5. 知识导航插件
++### 5. 知识分域建树管线
++从文章自动构建二叉树知识树：
++- Step 1：LLM 提取 3-8 个关键知识点（区分原理/方法论 vs 配置/操作）
++- Step 1.5：规则驱动的准入过滤（4 条规则，无 LLM）
++- Step 2：HDBSCAN 递归 sub-clustering + 自动干跑迭代
++- Step 3：LLM 判断多叉/二叉结构 + 二分校验
++- Step 4：LLM 节点命名（科目 4-8 字，知识点 2-8 字）
++- Step 5：PG 写入（含增量去重 + 矛盾检测）
++- 用户命令：`add` / `ingest` / `tree` / `find` / `move` / `edit` / `remove` / `merge`
++
++### 6. 知识导航插件（双域融合）
+ 在每次 LLM 调用前自动触发：
+-- 从 Hindsight 召回相关记忆
+-- 基于 rerank_score 精度过滤
+-- 结构化注入上下文
+-- 零侵入 Hook 集成
++- 从 Hindsight 召回相关记忆（经验域）
++- 通过 `knowledge-tree-plugin` 公共 API 召回知识树（知识域）
++- 融合两个分域的结果后注入 LLM 上下文
++- 熔断器 + 飞书告警
++- 注入去重、Compaction、HitCounter、时态衰减
++
++### 7. 知识树在线插件
++增量学习，在 LLM 响应后自动补充知识：
++- `post_llm_call`：分析对话 → 提取知识点 → 增量放置到知识树
++- 向知识导航插件提供 `recall_from_tree()` 公共 API
++- 增量去重（cosine > 0.95 合并 source_ids）
++- 矛盾检测（cosine > 0.8 + 关键词对立 → review_queue）
++- K 向量 EMA 更新
+ 
+-### 6. 自我进化研究（SE-Agent）
+-> **状态**：研究分析阶段已完成，待工程深度实现
++### 8. 自我进化研究（SE-Agent）
+ 
+-自进化智能体算子研究项目，实现了三大进化算子：
++自进化智能体算子研究项目，包含：
++
++**三大进化算子**：
+ - **Revision**：失败驱动的策略生成（`se-revision`）
+ - **Recombination**：跨轨迹知识合成（`se-recombine`）
+ - **Refinement**：风险感知的内容优化（`se-refine`）
+ 
++**Phase B 反思回路**（已完成）：
++- `kanban-reflect` CLI：分析失败任务并输出结构化反思结果
++- `kanban_reflect_hook.py`：Kanban 集成 + 注入重试 prompt
++- 29 个测试全部通过
++
+ 支持 B / D 两种算子串联模式，可通过 `python -m self_evolving.scripts.*` 调用。
+ 
+ ## 开发规范
+@@ -280,6 +321,8 @@ MIT
+ | `scripts/drawio-generator/` | `diagramming/drawio-generator/SKILL.md` |
+ | `scripts/memory-cleanup/` | `devops/memory-md-cleanup/SKILL.md`、`software-development/memory-cleanup/SKILL.md` |
+ | `scripts/self-evolving/` | `se-agent-evolution/SKILL.md` |
++| `scripts/knowledge-tree-builder/` | 建树管线 Step 1-5 CLI |
+ | `plugins/knowledge-navigation/` | `software-development/knowledge-navigation/SKILL.md` |
++| `plugins/knowledge-tree-plugin/` | `public_api.recall_from_tree()` 公共 API |
+ 
+ 部署时通过 `deploy.sh` 自动将 skills/ 同步至 `/root/.hermes/skills/`。
+\ No newline at end of file
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/adapters/hindsight.py b/plugins/knowledge-navigation/src/knowledge_navigation/adapters/hindsight.py
+index 13a896c..1d7584b 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/adapters/hindsight.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/adapters/hindsight.py
+@@ -69,7 +69,7 @@ class HindsightClient:
+                         logger.warning("JSON 解析失败: %s", e)
+                         return None
+                 elif response.status_code == 429:
+-                    wait_time = 2**attempt + 0.1 * attempt
++                    wait_time = min(2**attempt + 0.1 * attempt, 30.0)
+                     logger.warning("API 限流，等待 %.1f 秒后重试...", wait_time)
+                     time.sleep(wait_time)
+                     continue
+@@ -79,7 +79,7 @@ class HindsightClient:
+ 
+             except requests.exceptions.Timeout:
+                 if attempt < CONFIG.max_retries:
+-                    wait_time = 2**attempt + 0.1 * attempt
++                    wait_time = min(2**attempt + 0.1 * attempt, 30.0)
+                     logger.warning("请求超时，%.1f 秒后重试...", wait_time)
+                     time.sleep(wait_time)
+                     continue
+@@ -88,7 +88,7 @@ class HindsightClient:
+                     return None
+             except requests.exceptions.ConnectionError:
+                 if attempt < CONFIG.max_retries:
+-                    wait_time = 2**attempt + 0.1 * attempt
++                    wait_time = min(2**attempt + 0.1 * attempt, 30.0)
+                     logger.warning("连接失败，%.1f 秒后重试...", wait_time)
+                     time.sleep(wait_time)
+                     continue
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/cli.py b/plugins/knowledge-navigation/src/knowledge_navigation/cli.py
+index 6003bff..cae9937 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/cli.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/cli.py
+@@ -1,6 +1,6 @@
+ """CLI 入口 —— 知识导航插件测试工具。"""
+ 
+-from typing import Optional
++import logging
+ 
+ import typer
+ 
+@@ -49,13 +49,14 @@ def _test_recall(query: str) -> None:
+ 
+ @app.command()
+ def run(
+-    query: Optional[str] = typer.Argument(None, help="要测试的查询文本"),
++    query: str | None = typer.Argument(None, help="要测试的查询文本"),
+     list_hooks: bool = typer.Option(False, "--list-hooks", help="列出支持的钩子"),
+     verbose: bool = typer.Option(False, "--verbose", "-v", help="详细输出"),
+ ) -> None:
+     """执行 recall 测试或列出支持的钩子。"""
+     if verbose:
+-        setup_logging("DEBUG")
++        logging.getLogger("knowledge_navigation").setLevel(logging.DEBUG)
++        setup_logging()
+ 
+     if list_hooks:
+         typer.echo("支持的钩子:")
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py b/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py
+index 60184d0..2db10c3 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py
+@@ -3,6 +3,7 @@
+ 负责基于 rerank_score 的精度过滤和结果筛选。
+ """
+ 
++import html
+ import math
+ import re
+ 
+@@ -77,7 +78,7 @@ def filter_by_score(
+     max_results: int = CONFIG.max_results,
+     enable_temporal: bool = False,
+     mentioned_at_map: dict[str, str] | None = None,
+-) -> tuple[list[dict], list[float]]:
++) -> tuple[list[dict], list[float], list[dict]]:
+     """基于分数过滤结果。
+ 
+     默认按 rerank_score 降序排列后截取。
+@@ -119,12 +120,10 @@ def filter_by_score(
+                 fused = score
+             candidates.append((r, fused))
+ 
+-    # 按融合分数降序排列，截取 top-N
++    # 按融合分数降序排列 → 去重 → 截取 top-N
+     candidates.sort(key=lambda x: x[1], reverse=True)
+-    kept = [r for r, _ in candidates[:max_results]]
+-
+-    # 去重：同 node_id 只保留第一个
+-    kept = _dedup_candidates(kept)
++    candidates_deduped = _dedup_candidates([r for r, _ in candidates])
++    kept = candidates_deduped[:max_results]
+ 
+     # 构建双分对比数据（始终计算，不受 enable_temporal 影响）
+     comparison_data: list[dict[str, float]] = []
+@@ -175,7 +174,8 @@ def format_context_lines(
+         if text:
+             truncated_text = text[:max_text_length]
+             node_id = r.get("id", "")
+-            lines.append(f'  <memory source="hindsight" node_id="{node_id}">{truncated_text}</memory>')
++            escaped_id = html.escape(str(node_id), quote=True)
++            lines.append(f'  <memory source="hindsight" node_id="{escaped_id}">{truncated_text}</memory>')
+     lines.append("</memory-context>")
+     return lines
+ 
+@@ -191,3 +191,127 @@ def calculate_score_stats(scores: list[float]) -> dict[str, float]:
+         "avg": sum(scores) / len(scores),
+         "count": len(scores),
+     }
++
++
++# ========== 跨域语义去重 ==========
++
++
++def _char_ngram_jaccard(text_a: str, text_b: str, n: int = 3) -> float:
++    """基于字符 n-gram 的 Jaccard 相似度（0~1）。
++
++    适用于跨域文本去重，无需 embedding 即可捕获近似重复内容。
++    """
++    if not text_a or not text_b:
++        return 0.0
++    a = text_a.lower().strip()
++    b = text_b.lower().strip()
++    if len(a) < n or len(b) < n:
++        n = max(2, min(n, len(a), len(b)))
++    set_a = {a[i:i + n] for i in range(len(a) - n + 1)}
++    set_b = {b[i:i + n] for i in range(len(b) - n + 1)}
++    if not set_a or not set_b:
++        return 0.0
++    intersection = set_a & set_b
++    union = set_a | set_b
++    return len(intersection) / len(union)
++
++
++def _cosine_similarity_vec(a: list[float], b: list[float]) -> float:
++    """计算两个向量的余弦相似度。"""
++    dot = sum(x * y for x, y in zip(a, b))
++    norm_a = sum(x * x for x in a) ** 0.5
++    norm_b = sum(x * x for x in b) ** 0.5
++    if norm_a == 0 or norm_b == 0:
++        return 0.0
++    return dot / (norm_a * norm_b)
++
++
++def cross_domain_dedup(
++    hindsight_results: list[dict],
++    kt_results: list[dict],
++    *,
++    threshold: float = 0.85,
++    embed_fn: "callable | None" = None,
++) -> tuple[list[dict], int]:
++    """跨域语义去重：知识树结果与 Hindsight 结果比较，去除重复知识。
++
++    优先使用 embedding 余弦相似度（语义级），
++    embed_fn 不可用时回退到字符 n-gram Jaccard（文本级）。
++
++    Args:
++        hindsight_results: Hindsight 过滤后的结果 [{id, text, ...}]
++        kt_results: 知识树结构化结果 [{id, name, text, score}]
++        threshold: 去重阈值（相似度 ≥ threshold 视为重复）
++        embed_fn: embedding 函数 (texts: list[str]) -> list[list[float]] | None
++
++    Returns:
++        (deduped_kt_results, removed_count)
++    """
++    if not kt_results or not hindsight_results:
++        return kt_results, 0
++
++    hs_texts = [str(r.get("text", "")).strip() for r in hindsight_results if r.get("text")]
++    if not hs_texts:
++        return kt_results, 0
++
++    # 尝试使用 embedding 做语义去重
++    if embed_fn is not None:
++        all_texts = hs_texts + [
++            (kp.get("text", "") or kp.get("name", "")) for kp in kt_results
++        ]
++        try:
++            all_embeddings = embed_fn(all_texts)
++            if all_embeddings and len(all_embeddings) == len(all_texts):
++                hs_vecs = all_embeddings[:len(hs_texts)]
++                kt_vecs = all_embeddings[len(hs_texts):]
++                return _dedup_by_cosine(kt_results, kt_vecs, hs_vecs, threshold)
++        except Exception:
++            pass  # embedding 失败时回退到文本去重
++
++    # 回退：字符 n-gram Jaccard
++    return _dedup_by_jaccard(kt_results, hs_texts, threshold)
++
++
++def _dedup_by_cosine(
++    kt_results: list[dict],
++    kt_vecs: list[list[float]],
++    hs_vecs: list[list[float]],
++    threshold: float,
++) -> tuple[list[dict], int]:
++    """使用 embedding 余弦相似度去重。"""
++    kept: list[dict] = []
++    removed = 0
++    for i, kp in enumerate(kt_results):
++        if i >= len(kt_vecs):
++            kept.append(kp)
++            continue
++        is_dup = False
++        for hs_vec in hs_vecs:
++            if _cosine_similarity_vec(kt_vecs[i], hs_vec) >= threshold:
++                is_dup = True
++                removed += 1
++                break
++        if not is_dup:
++            kept.append(kp)
++    return kept, removed
++
++
++def _dedup_by_jaccard(
++    kt_results: list[dict],
++    hs_texts: list[str],
++    threshold: float,
++) -> tuple[list[dict], int]:
++    """使用字符 n-gram Jaccard 相似度去重（embedding 不可用时的回退）。"""
++    kept: list[dict] = []
++    removed = 0
++    for kp in kt_results:
++        kt_text = (kp.get("text", "") or kp.get("name", "")).strip()
++        is_dup = False
++        for hs_text in hs_texts:
++            if _char_ngram_jaccard(kt_text, hs_text) >= threshold:
++                is_dup = True
++                removed += 1
++                break
++        if not is_dup:
++            kept.append(kp)
++    return kept, removed
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py b/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
+index 2e926be..3bf65ec 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
+@@ -11,6 +11,7 @@ import json
+ import logging
+ import os
+ import re
++import threading
+ import time
+ from collections import Counter, defaultdict
+ from logging.handlers import RotatingFileHandler
+@@ -21,25 +22,23 @@ from knowledge_navigation.config import CONFIG, JSONFormatter
+ 
+ # 知识树集成（通过 knowledge-tree-plugin 公共 API）
+ try:
+-    from knowledge_tree_plugin.public_api import recall_from_tree as _recall_knowledge_tree
++    from knowledge_tree_plugin.public_api import (
++        recall_from_tree as _recall_knowledge_tree,
++        recall_from_tree_raw as _recall_knowledge_tree_raw,
++    )
+     HAS_KNOWLEDGE_TREE = True
+ except ImportError:
+     HAS_KNOWLEDGE_TREE = False
+ 
+-    def _recall_knowledge_tree(*args, **kwargs):
++    def _recall_knowledge_tree(*args: object, **kwargs: object) -> None:
+         return None
+ 
+-# 知识树集成（通过 knowledge-tree-plugin 公共 API）
+-try:
+-    from knowledge_tree_plugin.public_api import recall_from_tree as _recall_knowledge_tree
+-    HAS_KNOWLEDGE_TREE = True
+-except ImportError:
+-    HAS_KNOWLEDGE_TREE = False
++    def _recall_knowledge_tree_raw(*args: object, **kwargs: object) -> list:
++        return []
+ 
+-    def _recall_knowledge_tree(*args: object, **kwargs: object) -> None:
+-        return None
+ from knowledge_navigation.core.filtering import (
+     calculate_score_stats,
++    cross_domain_dedup,
+     exclude_marked,
+     extract_rerank_scores,
+     filter_by_score,
+@@ -73,12 +72,14 @@ class _CompactionTracker:
+ class _HitCounter:
+     """记录记忆被命中的次数，高频记忆获得分数 boost。"""
+ 
++    _MAX_ENTRIES = 200  # 内存保护：超过时淘汰最早条目
++
+     def __init__(self, boost_factor: float = 0.1) -> None:
+         self._counts: dict[str, int] = defaultdict(int)
+         self._boost_factor = boost_factor
+ 
+     def boost_scores(self, memories: list[dict], rerank_map: dict[str, float]) -> None:
+-        """提高高频被命中记忆的 rerank_score，最大 boost 不超过 2x。"""
++        """提高高频被命中记忆的 rerank_score，boost 上限 2x，绝对分数上限 2.0。"""
+         for m in memories:
+             node_id = m.get("id", "")
+             if node_id:
+@@ -86,7 +87,15 @@ class _HitCounter:
+                 hits = self._counts[node_id]
+                 if hits > 1 and node_id in rerank_map:
+                     boost = min(1 + self._boost_factor * (hits - 1), 2.0)
+-                    rerank_map[node_id] *= boost
++                    rerank_map[node_id] = min(rerank_map[node_id] * boost, 2.0)
++        self._evict_stale()
++
++    def _evict_stale(self) -> None:
++        """条目超限时淘汰最早的一半。"""
++        if len(self._counts) > self._MAX_ENTRIES:
++            to_remove = list(self._counts)[:self._MAX_ENTRIES // 2]
++            for k in to_remove:
++                del self._counts[k]
+ 
+ 
+ # ========== C-P1-3: 定期任务回述 ==========
+@@ -94,12 +103,15 @@ class _HitCounter:
+ class _TaskTracker:
+     """每 N 轮注射任务状态摘要，避免长对话中目标被稀释。"""
+ 
++    _MAX_ENTRIES = 200  # 内存保护
++
+     def __init__(self, interval: int = 5) -> None:
+         self._rounds: dict[str, int] = defaultdict(int)
+         self._interval = interval
+ 
+     def get_summary_prompt(self, session_id: str) -> str | None:
+         self._rounds[session_id] += 1
++        self._evict_stale()
+         if self._rounds[session_id] % self._interval == 0:
+             return (
+                 "[任务状态摘要]\n"
+@@ -112,6 +124,13 @@ class _TaskTracker:
+         """返回当前 session 的轮次号，用于日志打点。"""
+         return self._rounds.get(session_id, 0)
+ 
++    def _evict_stale(self) -> None:
++        """条目超限时淘汰最早的一半。"""
++        if len(self._rounds) > self._MAX_ENTRIES:
++            to_remove = list(self._rounds)[:self._MAX_ENTRIES // 2]
++            for k in to_remove:
++                del self._rounds[k]
++
+ 
+ _compaction = _CompactionTracker()
+ _hit_counter = _HitCounter()
+@@ -120,8 +139,8 @@ _task_tracker = _TaskTracker()
+ 
+ # ========== 熔断器：连续失败后跳过 recall ==========
+ # 参数通过 CONFIG.circuit_breaker_threshold / cooldown 配置
+-# 注意：模块级全局变量非线程安全，当前设计假定单线程调用
+ 
++_circuit_lock = threading.Lock()
+ _circuit_failures: int = 0
+ _circuit_open_until: float = 0.0
+ _circuit_failure_types: Counter[str] = Counter()
+@@ -130,54 +149,55 @@ _circuit_failure_types: Counter[str] = Counter()
+ def _circuit_is_open() -> bool:
+     """检查熔断器是否开启（跳过 recall）。"""
+     global _circuit_failures, _circuit_open_until
+-    if _circuit_open_until <= 0:
++    with _circuit_lock:
++        if _circuit_open_until <= 0:
++            return False
++        if time.time() < _circuit_open_until:
++            return True
++        # 冷却期已过，重置
++        _circuit_failures = 0
++        _circuit_open_until = 0.0
+         return False
+-    if time.time() < _circuit_open_until:
+-        return True
+-    # 冷却期已过，重置
+-    _circuit_failures = 0
+-    _circuit_open_until = 0.0
+-    return False
+ 
+ 
+ def _circuit_record_failure(category: str = "unknown") -> None:
+     """记录一次失败，必要时触发熔断并发送飞书通知。
+ 
+     Args:
+-        category: 失败类别（exception / service_error / empty_results）。
++        category: 失败类别（exception / service_error）。
+     """
+     global _circuit_failures, _circuit_open_until, _circuit_failure_types
+-    _circuit_failures += 1
+-    _circuit_failure_types[category] += 1
+-    if _circuit_failures >= CONFIG.circuit_breaker_threshold:
+-        _circuit_open_until = time.time() + CONFIG.circuit_breaker_cooldown
+-        logger.warning(
+-            "熔断器开启：连续 %d 次 recall 失败，跳过 %d 秒",
+-            _circuit_failures, CONFIG.circuit_breaker_cooldown,
+-        )
+-        _notify_feishu_circuit_open(dict(_circuit_failure_types))
+-        _circuit_failure_types.clear()
++    with _circuit_lock:
++        _circuit_failures += 1
++        _circuit_failure_types[category] += 1
++        if _circuit_failures >= CONFIG.circuit_breaker_threshold:
++            _circuit_open_until = time.time() + CONFIG.circuit_breaker_cooldown
++            logger.warning(
++                "熔断器开启：连续 %d 次 recall 失败，跳过 %d 秒",
++                _circuit_failures, CONFIG.circuit_breaker_cooldown,
++            )
++            _notify_feishu_circuit_open(dict(_circuit_failure_types))
++            _circuit_failure_types.clear()
+ 
+ 
+ def _circuit_record_success() -> None:
+     """成功调用后重置熔断器。"""
+     global _circuit_failures, _circuit_open_until, _circuit_failure_types
+-    _circuit_failures = 0
+-    _circuit_open_until = 0.0
+-    _circuit_failure_types.clear()
++    with _circuit_lock:
++        _circuit_failures = 0
++        _circuit_open_until = 0.0
++        _circuit_failure_types.clear()
+ 
+ 
+ _CATEGORY_LABELS: dict[str, str] = {
+     "exception": "🔴 未预期异常",
+     "service_error": "🟡 服务返回空",
+-    "empty_results": "🟠 无匹配结果",
+ }
+ 
+ 
+ _CATEGORY_LEVELS: dict[str, str] = {
+     "exception": "red",
+     "service_error": "yellow",
+-    "empty_results": "orange",
+ }
+ 
+ 
+@@ -314,7 +334,7 @@ def _notify_feishu_circuit_open(failure_types: dict[str, int]) -> None:
+             timeout=10,
+         )
+         if resp.status_code != 200:
+-            logger.warning("飞书通知失败：HTTP %s, body=%s", resp.status_code, resp.text[:200])
++            logger.warning("飞书通知失败：HTTP %s", resp.status_code)
+         else:
+             logger.info("飞书通知已发送（类别分布：%s）", failure_types)
+     except Exception as e:
+@@ -322,7 +342,6 @@ def _notify_feishu_circuit_open(failure_types: dict[str, int]) -> None:
+ 
+ 
+ # 评测日志（独立文件，用于评估灵活匹配效果）
+-_eval_logger: logging.Logger | None = None
+ 
+ 
+ def _get_eval_logger() -> logging.Logger | None:
+@@ -545,6 +564,8 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+     raw_results = result.get("results", [])
+ 
+     if not raw_results:
++        # API 成功但无匹配结果，重置熔断器（不计为失败）
++        _circuit_record_success()
+         logger.info(
+             "recall empty results",
+             extra={
+@@ -587,55 +608,69 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+     # 计算统计信息
+     score_stats = calculate_score_stats(all_scores)
+ 
+-    # 格式化上下文
+-    context_lines = format_context_lines(kept, CONFIG.max_text_length)
+-
+     # 匹配评测查询
+     eval_match = _match_eval_query(user_message)
+ 
+     # ===== C-P1-3: 定期任务回述 =====
+     summary = _task_tracker.get_summary_prompt(session_id)
+ 
+-    if not context_lines and summary is None:
++    if not kept and summary is None:
+         # 连知识树也没有结果时才返回 None
+         if not HAS_KNOWLEDGE_TREE:
+             return None
+         # 知识树可能返回结果，继续
+ 
+-    if summary:
+-        context_lines.append(summary)
+-
+-    # ===== 知识树 recall（融合知识域）=====
+-    kt_context: str | None = None
++    # ===== 知识树 recall（融合知识域，带超时保护）=====
++    kt_raw_results: list[dict[str, Any]] = []
+     if HAS_KNOWLEDGE_TREE:
+         try:
+-            kt_context = _recall_knowledge_tree(session_id, user_message)
++            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
++            with ThreadPoolExecutor(max_workers=1) as executor:
++                future = executor.submit(
++                    _recall_knowledge_tree_raw, session_id, user_message
++                )
++                kt_raw_results = future.result(timeout=CONFIG.timeout_seconds)
++        except FuturesTimeout:
++            logger.warning("知识树 recall 超时（%d 秒）", CONFIG.timeout_seconds)
++            kt_raw_results = []
+         except Exception as e:
+             logger.warning("知识树 recall 异常（跳过）: %s", e)
+-            kt_context = None
+-
+-    # 融合两个分域的结果
+-    fusion_lines: list[str] = []
+-    if context_lines:
+-        fusion_lines.append("<domain source=\"hindsight\">")
+-        fusion_lines.extend(context_lines)
+-        fusion_lines.append("</domain>")
+-    if kt_context:
+-        fusion_lines.append("<domain source=\"knowledge_tree\">")
+-        fusion_lines.append(kt_context)
+-        fusion_lines.append("</domain>")
+-
+-    # 更新统计（含知识树）
+-    if kt_context:
+-        kt_line_count = kt_context.count("\n") + 1
+-        kept_count = len(kept) + kt_line_count
+-    else:
+-        kept_count = len(kept)
++            kt_raw_results = []
++
++    # ===== 跨域语义去重：知识域 vs 经验域 =====
++    kt_dedup_removed = 0
++    if kt_raw_results and kept:
++        kt_raw_results, kt_dedup_removed = cross_domain_dedup(
++            hindsight_results=kept,
++            kt_results=kt_raw_results,
++            threshold=0.85,
++        )
++        if kt_dedup_removed:
++            logger.info(
++                "跨域去重移除 %d 条知识树重复结果",
++                kt_dedup_removed,
++                extra={"session_id": session_id, "kt_dedup_removed": kt_dedup_removed},
++            )
++
++    # 知识树结果对齐经验域结构（id → str, text），合并后统一格式化
++    for kp in kt_raw_results:
++        text = (kp.get("text", "") or kp.get("name", "")).strip()
++        if text:
++            kept.append({"id": str(kp.get("id", "")), "text": text})
++
++    # 统一格式化：两个域的结果合并在单一 <memory-context> 块中
++    context_lines = format_context_lines(kept, CONFIG.max_text_length)
++
++    if summary:
++        context_lines.append(summary)
++
++    # 更新统计
++    kept_count = len(kept)
+ 
+     # 提取已召回并过滤后的 memory_id（用于离线 recall@k 评估）
+     recalled_ids = [m.get("id", "") for m in kept if m.get("id")]
+ 
+-    # 构建日志 extra 字段（在 TaskTracker 之后，injected_count/total_chars 已含摘要）
++    # 构建日志 extra 字段
+     log_extra: dict[str, Any] = {
+         "session_id": session_id,
+         "query_trunc": query_trunc,
+@@ -645,9 +680,10 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+         "kept_results": len(kept),
+         "dropped_results": len(raw_results) - len(kept),
+         "score_stats": score_stats,
+-        "injected_count": len(fusion_lines) if fusion_lines else len(context_lines),
+-        "total_chars": sum(len(line) for line in fusion_lines) if fusion_lines else sum(len(line) for line in context_lines),
+-        "has_knowledge_tree": kt_context is not None,
++        "injected_count": len(context_lines),
++        "total_chars": sum(len(line) for line in context_lines),
++        "has_knowledge_tree": len(kt_raw_results) > 0,
++        "kt_dedup_removed": kt_dedup_removed,
+         "latency_ms": latency_ms,
+         "score_comparison": score_comparison,
+         "recalled_ids": recalled_ids,
+@@ -664,6 +700,6 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+ 
+     logger.info("recall success", extra=log_extra)
+ 
+-    if not fusion_lines and not context_lines:
++    if not context_lines:
+         return None
+-    return "\n".join(fusion_lines) if fusion_lines else "\n".join(context_lines)
++    return "\n".join(context_lines)
+diff --git a/plugins/knowledge-navigation/tests/test_filtering.py b/plugins/knowledge-navigation/tests/test_filtering.py
+index d919e77..66ce955 100644
+--- a/plugins/knowledge-navigation/tests/test_filtering.py
++++ b/plugins/knowledge-navigation/tests/test_filtering.py
+@@ -5,8 +5,11 @@ from datetime import datetime, timedelta, timezone
+ import pytest
+ 
+ from knowledge_navigation.core.filtering import (
++    _char_ngram_jaccard,
++    _cosine_similarity_vec,
+     calculate_score_stats,
+     calculate_time_score,
++    cross_domain_dedup,
+     exclude_marked,
+     extract_rerank_scores,
+     filter_by_score,
+@@ -330,3 +333,132 @@ class TestCalculateTimeScore:
+         node_map_no = {item["node_id"]: item["temporal_score"] for item in comparison_no}
+         node_map_yes = {item["node_id"]: item["temporal_score"] for item in comparison_yes}
+         assert node_map_no == node_map_yes
++
++
++class TestCharNgramJaccard:
++    """测试字符 n-gram Jaccard 相似度。"""
++
++    def test_identical_texts(self) -> None:
++        """完全相同的文本相似度为 1.0。"""
++        assert _char_ngram_jaccard("知识管理系统", "知识管理系统") == 1.0
++
++    def test_completely_different(self) -> None:
++        """完全不同的文本相似度为 0.0。"""
++        assert _char_ngram_jaccard("abc", "xyz") == 0.0
++
++    def test_similar_texts(self) -> None:
++        """近似文本相似度在 0~1 之间。"""
++        sim = _char_ngram_jaccard(
++            "DBSCAN 算法用于向量聚类",
++            "DBSCAN 聚类算法应用于向量数据",
++        )
++        assert 0.3 < sim < 0.9
++
++    def test_empty_text(self) -> None:
++        """空文本返回 0.0。"""
++        assert _char_ngram_jaccard("", "something") == 0.0
++        assert _char_ngram_jaccard("something", "") == 0.0
++
++    def test_short_texts(self) -> None:
++        """短文本回退到更小的 n。"""
++        sim = _char_ngram_jaccard("ab", "ab")
++        assert sim == 1.0
++
++
++class TestCosineSimilarityVec:
++    """测试向量余弦相似度。"""
++
++    def test_identical_vectors(self) -> None:
++        """相同向量相似度为 1.0。"""
++        assert _cosine_similarity_vec([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
++
++    def test_orthogonal_vectors(self) -> None:
++        """正交向量相似度为 0.0。"""
++        assert _cosine_similarity_vec([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
++
++    def test_zero_vector(self) -> None:
++        """零向量返回 0.0。"""
++        assert _cosine_similarity_vec([0.0, 0.0], [1.0, 0.0]) == 0.0
++
++
++class TestCrossDomainDedup:
++    """测试跨域语义去重。"""
++
++    def test_no_overlap_keeps_all(self) -> None:
++        """无重复时保留所有知识树结果。"""
++        hs = [{"id": "h1", "text": "DBSCAN 聚类算法"}]
++        kt = [
++            {"id": 1, "name": "A", "text": "强化学习在机器人中的应用", "score": 0.8},
++            {"id": 2, "name": "B", "text": "微服务架构设计原则", "score": 0.7},
++        ]
++        deduped, removed = cross_domain_dedup(hs, kt)
++        assert len(deduped) == 2
++        assert removed == 0
++
++    def test_exact_duplicate_removed(self) -> None:
++        """完全重复的知识被去除。"""
++        hs = [{"id": "h1", "text": "DBSCAN 是一种基于密度的聚类算法"}]
++        kt = [
++            {"id": 1, "name": "A", "text": "DBSCAN 是一种基于密度的聚类算法", "score": 0.8},
++            {"id": 2, "name": "B", "text": "微服务架构设计原则", "score": 0.7},
++        ]
++        deduped, removed = cross_domain_dedup(hs, kt, threshold=0.85)
++        assert removed == 1
++        assert len(deduped) == 1
++        assert deduped[0]["id"] == 2
++
++    def test_empty_hindsight_returns_all(self) -> None:
++        """Hindsight 为空时返回所有知识树结果。"""
++        kt = [{"id": 1, "name": "A", "text": "测试文本", "score": 0.8}]
++        deduped, removed = cross_domain_dedup([], kt)
++        assert deduped == kt
++        assert removed == 0
++
++    def test_empty_kt_returns_empty(self) -> None:
++        """知识树为空时返回空列表。"""
++        hs = [{"id": "h1", "text": "测试文本"}]
++        deduped, removed = cross_domain_dedup(hs, [])
++       
+
+[… truncated 85495 chars …]

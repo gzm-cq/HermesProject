@@ -1,0 +1,782 @@
+$ git diff
+[exit 0]
+diff --git a/deploy/manifests/knowledge-tree-builder.manifest b/deploy/manifests/knowledge-tree-builder.manifest
+index e50f3dc..8765ef0 100644
+--- a/deploy/manifests/knowledge-tree-builder.manifest
++++ b/deploy/manifests/knowledge-tree-builder.manifest
+@@ -18,3 +18,6 @@ README.md
+ !**/*.egg-info/**
+ !**/tests/**
+ !**/test_*.py
++!src/knowledge_tree_builder/core/clustering.py
++!src/knowledge_tree_builder/core/validator.py
++!src/knowledge_tree_builder/core/namer.py
+diff --git a/deploy/projects/knowledge-tree-builder.sh b/deploy/projects/knowledge-tree-builder.sh
+index 8018ea4..f91d027 100644
+--- a/deploy/projects/knowledge-tree-builder.sh
++++ b/deploy/projects/knowledge-tree-builder.sh
+@@ -11,6 +11,9 @@ PROJECT_SRC_REL="scripts/knowledge-tree-builder"
+ PROJECT_TGT="/root/.hermes/scripts/knowledge-tree-builder"
+ PROJECT_SVC=""
+ 
++SKILLS_SRC="scripts/knowledge-tree-builder/skills"
++SKILLS_TGT="/root/.hermes/skills"
++
+ LEGACY_FILES=(
+   "/root/.hermes/scripts/knowledge-tree-builder.py"
+ )
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py b/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py
+index 2db10c3..51b614c 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py
+@@ -36,11 +36,14 @@ def exclude_marked(results: list[dict]) -> tuple[list[dict], int]:
+ def calculate_time_score(mentioned_at_str: str | None) -> float:
+     """基于时间衰减计算时效分数。
+ 
+-    使用指数衰减：score = exp(-days / 30)
++    使用指数衰减：score = exp(-days / halflife)
+     最新记忆（0 天前）→ 1.0
+-    30 天前 → ~0.37
+-    90 天前 → ~0.05
++    halflife 天后 → ~0.37
++    3×halflife 天后 → ~0.05
++    halflife 通过 CONFIG.temporal_halflife_days 配置（默认 30）。
+     """
++    from knowledge_navigation.config import CONFIG
++    halflife = CONFIG.temporal_halflife_days
+     if not mentioned_at_str:
+         return 0.5  # 无时间戳时取中性值
+ 
+@@ -54,7 +57,7 @@ def calculate_time_score(mentioned_at_str: str | None) -> float:
+         days = (now - mentioned_at).total_seconds() / 86400.0
+         if days < 0:
+             days = 0.0
+-        return math.exp(-days / 30.0)
++        return math.exp(-days / halflife)
+     except (ValueError, TypeError):
+         return 0.5
+ 
+@@ -115,7 +118,8 @@ def filter_by_score(
+                 time_score = calculate_time_score(
+                     mentioned_at_map.get(node_id) if mentioned_at_map else None
+                 )
+-                fused = 0.5 * score + 0.5 * time_score
++                w = CONFIG.temporal_weight
++                fused = w * score + (1.0 - w) * time_score
+             else:
+                 fused = score
+             candidates.append((r, fused))
+@@ -133,7 +137,7 @@ def filter_by_score(
+         time_score_val = calculate_time_score(
+             mentioned_at_map.get(node_id) if mentioned_at_map else None
+         )
+-        temporal_score_val = round(0.5 * base_score + 0.5 * time_score_val, 4)
++        temporal_score_val = round(CONFIG.temporal_weight * base_score + (1.0 - CONFIG.temporal_weight) * time_score_val, 4)
+         comparison_data.append({
+             "node_id": node_id,
+             "base_score": round(base_score, 4),
+@@ -230,7 +234,7 @@ def cross_domain_dedup(
+     hindsight_results: list[dict],
+     kt_results: list[dict],
+     *,
+-    threshold: float = 0.85,
++    threshold: float = 0.65,
+     embed_fn: "callable | None" = None,
+ ) -> tuple[list[dict], int]:
+     """跨域语义去重：知识树结果与 Hindsight 结果比较，去除重复知识。
+diff --git a/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py b/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
+index 4de07f6..5590a37 100644
+--- a/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
++++ b/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks.py
+@@ -693,7 +693,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
+         kt_raw_results, kt_dedup_removed = cross_domain_dedup(
+             hindsight_results=kept,
+             kt_results=kt_raw_results,
+-            threshold=0.85,
++            threshold=0.65,
+         )
+         if kt_dedup_removed:
+             logger.info(
+diff --git a/plugins/knowledge-tree-plugin/deploy/manifests/knowledge-tree-plugin.manifest b/plugins/knowledge-tree-plugin/deploy/manifests/knowledge-tree-plugin.manifest
+index 94fa422..ae7e12f 100644
+--- a/plugins/knowledge-tree-plugin/deploy/manifests/knowledge-tree-plugin.manifest
++++ b/plugins/knowledge-tree-plugin/deploy/manifests/knowledge-tree-plugin.manifest
+@@ -9,6 +9,7 @@ src/knowledge_tree_plugin/**/*.py
+ config/**/*.yaml
+ plugin.yaml
+ pyproject.toml
++skills/**/*.md
+ 
+ # === Exclude ===
+ !**/__pycache__/**
+diff --git a/plugins/knowledge-tree-plugin/deploy/projects/knowledge-tree-plugin.sh b/plugins/knowledge-tree-plugin/deploy/projects/knowledge-tree-plugin.sh
+index 3a05b2c..2847426 100644
+--- a/plugins/knowledge-tree-plugin/deploy/projects/knowledge-tree-plugin.sh
++++ b/plugins/knowledge-tree-plugin/deploy/projects/knowledge-tree-plugin.sh
+@@ -9,7 +9,7 @@ PROJECT_SRC_REL="plugins/knowledge-tree-plugin"
+ PROJECT_TGT="/root/.hermes/plugins/knowledge-tree-plugin"
+ PROJECT_SVC="hermes-gateway.service"
+ 
+-SKILLS_SRC=""
+-SKILLS_TGT=""
++SKILLS_SRC="plugins/knowledge-tree-plugin/skills"
++SKILLS_TGT="/root/.hermes/skills"
+ 
+ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh" "$@"
+diff --git a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/__init__.py b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/__init__.py
+index 1b4d763..d2785b5 100644
+--- a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/__init__.py
++++ b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/__init__.py
+@@ -18,8 +18,16 @@ if _KT_SRC_ENV:
+ else:
+     _KT_SRC = Path(__file__).resolve().parent.parent.parent.parent.parent \
+         / "scripts" / "knowledge-tree-builder" / "src"
+-if str(_KT_SRC) not in sys.path:
+-    sys.path.insert(0, str(_KT_SRC))
++_KT_SRC_STR = str(_KT_SRC)
++if _KT_SRC_STR not in sys.path:
++    sys.path.insert(0, _KT_SRC_STR)
++if not (_KT_SRC / "knowledge_tree_builder" / "__init__.py").exists():
++    import logging
++    logging.getLogger(__name__).warning(
++        "知识树 builder 路径未找到: %s（知识树功能将不可用，"
++        "设置 KT_BUILDER_SRC 环境变量指向正确的 src 目录）",
++        _KT_SRC_STR,
++    )
+ 
+ from knowledge_tree_plugin.hooks import post_llm_call
+ 
+diff --git a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/hooks.py b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/hooks.py
+index 0945ea3..b76963b 100644
+--- a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/hooks.py
++++ b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/hooks.py
+@@ -70,141 +70,8 @@ def _get_adapter() -> PluginDatabaseAdapter:
+     return _adapter
+ 
+ 
+-# ========== pre_llm_call ==========
+-
+-
+-def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
+-    """知识树在线 recall：用户 query → 知识树定位 → 注意力筛选 → 格式化注入。
+-
+-    Hermes 会在每次 LLM 调用前调用此函数。
+-    返回值（非 None）将注入到 LLM 的 user_message 中。
+-
+-    Args:
+-        session_id: 当前会话 ID
+-        user_message: 用户原始消息
+-        **kwargs: 其他上下文参数
+-
+-    Returns:
+-        格式化的注入文本（<memory-context>...</memory-context>），
+-        无可匹配知识点时返回 None。
+-    """
+-    # None 防御：Hermes 框架可能传入 None
+-    user_message = user_message or ""
+-
+-    t0 = time.time()
+-    try:
+-        cfg = _get_config()
+-        adapter = _get_adapter()
+-    except RuntimeError as e:
+-        logger.warning("pre_llm_call 初始化失败: %s", e)
+-        return None
+-    except Exception as e:
+-        logger.error("pre_llm_call 初始化异常: %s", e)
+-        return None
+-
+-    try:
+-        # Step 1: 计算 query embedding
+-        query_embedding_raw = batch_embed(
+-            [user_message],
+-            base_url=cfg.embed_base_url,
+-            model=cfg.embed_model,
+-            api_key=cfg.embed_api_key,
+-            batch_size=1,
+-        )
+-        if not query_embedding_raw:
+-            logger.info(
+-                "pre_llm_call: query embedding 失败",
+-                extra={"session_id": session_id, "event": "embedding_failed"},
+-            )
+-            return None
+-
+-        query_embedding = query_embedding_raw[0]
+-
+-        # Step 2: 科目定位
+-        subject = locate_subject(
+-            query=user_message,
+-            query_embedding=query_embedding,
+-            adapter=adapter,
+-            cold_start_threshold=cfg.cold_start_threshold,
+-        )
+-        if not subject:
+-            logger.debug(
+-                "pre_llm_call: 无匹配科目",
+-                extra={"session_id": session_id, "event": "no_subject"},
+-            )
+-            return None
+-
+-        children = subject.get("children", [])
+-
+-        # Step 3: 判断是否冷启动
+-        child_count = subject.get("child_count", len(children))
+-        cold_start = child_count < cfg.cold_start_threshold
+-
+-        # Step 4: 注意力筛选
+-        kp_results = attention_filter(
+-            query_embedding=query_embedding,
+-            child_nodes=children,
+-            cold_start=cold_start,
+-            min_score=cfg.recall_min_score,
+-            max_results=cfg.max_recall_results,
+-            local_offset=subject.get("local_offset"),
+-        )
+-
+-        if not kp_results:
+-            logger.debug(
+-                "pre_llm_call: 注意力筛选无结果",
+-                extra={
+-                    "session_id": session_id,
+-                    "event": "no_kp_after_filter",
+-                    "subject_id": subject["id"],
+-                    "child_count": child_count,
+-                    "cold_start": cold_start,
+-                },
+-            )
+-            return None
+-
+-        # Step 5: 格式化注入
+-        context_lines = format_context_lines(kp_results)
+-        if not context_lines:
+-            return None
+-
+-        # Step 6: 回写 use_log
+-        node_ids = [kp["id"] for kp in kp_results]
+-        try:
+-            log_use(adapter, session_id, node_ids, user_message)
+-        except Exception as e:
+-            logger.warning("log_use 失败: %s", e)
+-
+-        # 日志
+-        latency_ms = int((time.time() - t0) * 1000)
+-        logger.info(
+-            "知识树 recall 成功",
+-            extra={
+-                "session_id": session_id,
+-                "event": "recall_success",
+-                "subject_id": subject["id"],
+-                "subject_name": subject.get("name", ""),
+-                "child_count": child_count,
+-                "cold_start": cold_start,
+-                "kp_count": len(kp_results),
+-                "node_ids": node_ids,
+-                "scores": [kp["score"] for kp in kp_results],
+-                "latency_ms": latency_ms,
+-            },
+-        )
+-
+-        return "\n".join(context_lines)
+-
+-    except Exception as e:
+-        logger.error(
+-            "知识树 recall 异常",
+-            extra={
+-                "session_id": session_id,
+-                "event": "recall_error",
+-                "error": f"{type(e).__name__}: {e}",
+-            },
+-        )
+-        return None  # pre_llm_call 失败不可阻塞 LLM 调用
++# pre_llm_call 已移除：知识树 recall 由 knowledge-navigation 插件通过
++# public_api.recall_from_tree_raw() 统一调用，无需本插件注册。
+ 
+ 
+ # ========== post_llm_call ==========
+diff --git a/scripts/clustering-analysis-v3/src/clustering_analysis/cli.py b/scripts/clustering-analysis-v3/src/clustering_analysis/cli.py
+index cdb939a..7b2b259 100644
+--- a/scripts/clustering-analysis-v3/src/clustering_analysis/cli.py
++++ b/scripts/clustering-analysis-v3/src/clustering_analysis/cli.py
+@@ -184,6 +184,14 @@ def run(
+     # Embedding 配置
+     embed_base_url, embed_model, embed_api_key = _load_embedding_config(config)
+     embed_batch_size = config.get("embed_batch_size", cfg.embed_batch_size)
++    from functools import partial
++    _embed_fn = partial(
++        batch_embed,
++        base_url=embed_base_url,
++        model=embed_model,
++        api_key=embed_api_key,
++        batch_size=embed_batch_size,
++    )
+ 
+     # GPU 检测
+     if TORCH_AVAILABLE and torch.cuda.is_available():
+@@ -634,9 +642,7 @@ def run(
+                 texts_to_embed.append(text)
+                 id_order.append(uid)
+         if texts_to_embed:
+-            new_embeddings = batch_embed(
+-                texts_to_embed, embed_base_url, embed_model, embed_api_key, embed_batch_size
+-            )
++            new_embeddings = _embed_fn(texts_to_embed)
+             if new_embeddings:
+                 # 批量更新 embedding，一次 execute_values 完成
+                 updates = [(emb, uid) for uid, emb in zip(id_order, new_embeddings)]
+diff --git a/scripts/knowledge-tree-builder/README.md b/scripts/knowledge-tree-builder/README.md
+index f0c88c1..9b4a170 100644
+--- a/scripts/knowledge-tree-builder/README.md
++++ b/scripts/knowledge-tree-builder/README.md
+@@ -9,10 +9,15 @@
+ knowledge-tree-builder init-db
+ 
+ # 2. 从文章目录提取知识点并写入知识树
++knowledge-tree-builder run \
++  --input-dir ./articles \
++  --merged
++
++# 预览模式（不写入 PG）
+ knowledge-tree-builder run \
+   --input-dir ./articles \
+   --merged \
+-  --apply
++  --dry-run
+ 
+ # 3. 查看知识树
+ knowledge-tree-builder tree
+@@ -77,8 +82,7 @@ export KT_DB_URL=postgresql://user@host:5432/dbname  # 数据库
+ psql $KT_DB_URL -c "TRUNCATE knowledge_tree CASCADE;"
+ knowledge-tree-builder run \
+   --input-dir /path/to/articles \
+-  --merged \
+-  --apply
++  --merged
+ ```
+ 
+ ### 增量添加
+@@ -88,8 +92,7 @@ knowledge-tree-builder run \
+ ```bash
+ knowledge-tree-builder run \
+   --input-dir /path/to/new-articles \
+-  --merged \
+-  --apply
++  --merged
+ ```
+ 
+ ## 断点续传
+@@ -109,10 +112,10 @@ knowledge-tree-builder run \
+ 
+ ```bash
+ # 首次运行
+-knowledge-tree-builder run --input-dir ./articles --merged --apply
++knowledge-tree-builder run --input-dir ./articles --merged
+ 
+ # 中断后续传（自动检测各级缓存）
+-knowledge-tree-builder run --input-dir ./articles --merged --apply
++knowledge-tree-builder run --input-dir ./articles --merged
+ ```
+ 
+ ### 仅预览（不写入）
+@@ -121,8 +124,7 @@ knowledge-tree-builder run --input-dir ./articles --merged --apply
+ knowledge-tree-builder run \
+   --input-dir ./articles \
+   --merged \
+-  --dry-run \
+-  --verbose
++  --dry-run
+ ```
+ 
+ ### 分阶段运行
+diff --git a/scripts/knowledge-tree-builder/config/default.yaml b/scripts/knowledge-tree-builder/config/default.yaml
+index 3643e44..9502b60 100644
+--- a/scripts/knowledge-tree-builder/config/default.yaml
++++ b/scripts/knowledge-tree-builder/config/default.yaml
+@@ -19,14 +19,29 @@ embed_model: "BAAI/bge-m3"
+ embed_api_key: ""                  # 通过 HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY 注入
+ embed_batch_size: 20
+ 
+-# === HDBSCAN 聚类参数 ===
+-min_cluster_size: 5
+-cluster_selection_method: "eom"    # 'eom' | 'leaf'
+-max_subcluster_depth: 5
++# === 新管线参数（迁移后旧参数不再使用）===
+ 
+-# === 准入规则 ===
+-min_knowledge_point_length: 10     # 最短知识点字数
++# 阶段1：知识点提取
++max_candidates_per_article: 15     # 候选数上限 (K)
++article_max_chars: 12000           # 文章截断长度
+ 
+-# === 去重阈值 ===
+-dedup_cosine_threshold: 0.95       # > 此值视为重复
+-conflict_cosine_threshold: 0.80    # > 此值则检查关键词对立
++# 阶段2：拆解与校验
++split_max_rounds: 2                # 拆解轮数上限 (R_max)
++self_explanatory_rules: true       # 启用自解释检查
++
++# 阶段3：准入与去重
++dedup_threshold_direct: 0.95       # 直接判重阈值（cosine > 此值直接视为重复）
++dedup_threshold_llm: 0.90          # LLM 确认区间下界（0.90~0.95 进入 LLM）
++dedup_batch_size: 5                # LLM 去重确认批大小
++conflict_threshold: 0.80           # 矛盾检测余弦阈值
++cold_start_text_dedup_count: 50    # < 此数量时启用纯文本去重
++
++# 阶段4：树定位（无规则表，LLM 判断领域，有就入没有就建）
++subject_match_threshold: 0.70           # 科目匹配 cosine 阈值
++cold_start_article_count: 3             # < 此数量时启用冷启动建科目
++
++# === 旧参数（废弃，迁移后移除）===
++# 以下参数属于旧 HDBSCAN 聚类管线，新管线不再使用
++# min_cluster_size: 5
++# cluster_selection_method: "eom"
++# max_subcluster_depth: 5
+diff --git a/scripts/knowledge-tree-builder/skills/knowledge-tree-builder/SKILL.md b/scripts/knowledge-tree-builder/skills/knowledge-tree-builder/SKILL.md
+index 5594441..f2a125b 100644
+--- a/scripts/knowledge-tree-builder/skills/knowledge-tree-builder/SKILL.md
++++ b/scripts/knowledge-tree-builder/skills/knowledge-tree-builder/SKILL.md
+@@ -32,10 +32,9 @@ knowledge-tree-builder init-db
+ # 完整管线：提取 → 拆解 → 准入 → 树定位 → 写入 PG
+ knowledge-tree-builder run \
+   --input-dir /path/to/articles \
+-  --merged \
+-  --apply
++  --merged
+ 
+-# 仅预览（不写入 PG）
++# 预览模式
+ knowledge-tree-builder run \
+   --input-dir /path/to/articles \
+   --merged \
+@@ -73,7 +72,7 @@ knowledge-tree-builder run \
+ 单次 LLM 调用完成分析 + 拆解，跳过 claims_count 校验，节省约 80% tokens。
+ 
+ ```bash
+-knowledge-tree-builder run --input-dir <目录> --merged --apply
++knowledge-tree-builder run --input-dir <目录> --merged
+ ```
+ 
+ ### 阶段3：准入去重
+@@ -92,10 +91,10 @@ LLM 判断文章所属领域，有则入、无则新建。知识点只存一份
+ 
+ ```bash
+ # 3 路并发（推荐）
+-knowledge-tree-builder run --input-dir <目录> --merged --apply -j 3
++knowledge-tree-builder run --input-dir <目录> --merged -j 3
+ 
+ # 5 路并发（注意 API 限流）
+-knowledge-tree-builder run --input-dir <目录> --merged --apply -j 5
++knowledge-tree-builder run --input-dir <目录> --merged -j 5
+ ```
+ 
+ 并发数不影响提取质量，只影响吞吐。建议起始 `-j 3`。
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py
+index fc9dcf9..813dc5e 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py
+@@ -52,8 +52,11 @@ class DatabaseAdapter:
+ 
+     def __init__(self, db_url: str) -> None:
+         self.conn = psycopg2.connect(db_url)
+-        # 先注册 pgvector 类型（必须在 autocommit=False 之前，否则
+-        # register_vector 内部调用 set_session 会因事务冲突而报错）
++        # 先确保 autocommit=True，再注册 pgvector 类型。
++        # register_vector 内部调用 set_session，在活跃事务中会触发
++        # "set_session cannot be used inside a transaction" 错误。
++        # connect() 默认 autocommit=True，但显式设置一次彻底消除环境差异。
++        self.conn.autocommit = True
+         if PGVECTOR_AVAILABLE:
+             try:
+                 register_vector(self.conn)
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py
+index eb1019c..b005827 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/cli.py
+@@ -191,8 +191,7 @@ def run(
+     input_dir: str = typer.Option("references", "--input-dir", help="输入文章目录"),
+     phase: str = typer.Option("all", "--phase", help="运行阶段: scan|analyze|split|admit|place|all"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+-    dry_run: bool = typer.Option(True, "--dry-run", help="仅预览不写 PG"),
+-    apply: bool = typer.Option(False, "--apply", help="实际写入 PG（覆盖 --dry-run）"),
++    dry_run: bool = typer.Option(False, "--dry-run", help="仅预览不写 PG，传 --dry-run 开启预览模式"),
+     merged: bool = typer.Option(False, "--merged", help="阶段1+2 合并为单次 LLM 调用（更快，跳过 claims_count 校验）"),
+     concurrent: int = typer.Option(1, "--concurrent", "-j", help="并行提取线程数（默认 1=串行）"),
+     verbose: bool = typer.Option(False, "--verbose", "-v", help="详细输出"),
+@@ -200,9 +199,6 @@ def run(
+     """新管线：scan → analyze → split → admit → place。"""
+     from knowledge_tree_builder.config import AppConfig
+ 
+-    if apply:
+-        dry_run = False
+-
+     # 确保 API key 从环境变量注入（load_config 只读取 YAML + 已设置的 os.environ）
+     import os as _os
+     _os.environ.setdefault("LITELLM_MASTER_KEY", "")
+@@ -566,6 +562,28 @@ def run(
+         except Exception:
+             pass
+ 
++    # 清理运行缓存（dry-run 时不删，供调试用）
++    if not dry_run:
++        _input_dir_name = Path(input_dir).name if input_dir else ""
++        for _cache_pattern in [
++            f".kb_manifest_{_input_dir_name}.json",
++            ".kb_embed_cache.json",
++        ]:
++            _cp = Path(_cache_pattern)
++            if _cp.exists():
++                try:
++                    _cp.unlink()
++                except Exception:
++                    pass
++        # 清理 atomics 目录（Manifest 创建时名称 = manifest 路径去掉 .json 加 _atomics）
++        _atomics_dir = Path(f".kb_manifest_{_input_dir_name}_atomics")
++        if _atomics_dir.is_dir():
++            try:
++                import shutil
++                shutil.rmtree(_atomics_dir)
++            except Exception:
++                pass
++
+     if _db is not None:
+         _db.close()
+ 
+@@ -1353,8 +1371,8 @@ def write(
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+     apply: bool = typer.Option(False, "--apply", help="实际写入 PG（默认 dry-run）"),
+ ) -> None:
+-    """[已废弃] 写入 PG — 请使用新管线: knowledge-tree-builder run --merged --apply"""
+-    print("⚠️  write 已废弃，请使用: knowledge-tree-builder run --merged --apply")
++    """[已废弃] 写入 PG — 请使用新管线: knowledge-tree-builder run --merged"""
++    print("⚠️  write 已废弃，请使用: knowledge-tree-builder run --merged")
+     config = load_config(config_path)
+     cfg = AppConfig.from_dict(config)
+ 
+@@ -1829,7 +1847,7 @@ def _load_subjects_for_consolidation(adapter: Any) -> list[dict[str, Any]]:
+ def consolidate(
+     action: str = typer.Argument("run", help="操作: run | process-timeouts"),
+     config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+-    dry_run: bool = typer.Option(True, "--dry-run", help="仅预览"),
++    dry_run: bool = typer.Option(False, "--dry-run", help="仅预览，传 --dry-run 开启预览模式"),
+     merge_domains: bool = typer.Option(True, "--merge-domains", help="启用碎片 domain 合并（默认开启，--no-merge-domains 关闭）"),
+     min_domain_nodes: int = typer.Option(5, "--min-domain-nodes", help="domain 合并阈值"),
+     domain_merge_threshold: float = typer.Option(0.3, "--domain-merge-threshold", help="余弦相似度阈值"),
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/config.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/config.py
+index c260170..f622af0 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/config.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/config.py
+@@ -62,15 +62,18 @@ class AppConfig:
+     embed_model: str = "BAAI/bge-m3"
+     embed_api_key: str = ""
+     embed_batch_size: int = 20
+-    # HDBSCAN
+-    min_cluster_size: int = 5
+-    cluster_selection_method: str = "eom"
+-    max_subcluster_depth: int = 5
+-    # 准入
+-    min_knowledge_point_length: int = 10
+-    # 去重
+-    dedup_cosine_threshold: float = 0.95
+-    conflict_cosine_threshold: float = 0.80
++    # 新管线参数
++    max_candidates_per_article: int = 15        # K: 阶段1候选数上限
++    article_max_chars: int = 12000              # 文章截断长度
++    split_max_rounds: int = 2                   # R_max: 阶段2拆解轮数上限
++    self_explanatory_rules: bool = True         # 是否启用自解释检查
++    dedup_threshold_direct: float = 0.95        # 直接判重阈值
++    dedup_threshold_llm: float = 0.90           # LLM 确认区间下界
++    dedup_batch_size: int = 5                   # 去重批大小
++    conflict_threshold: float = 0.80            # 矛盾检测阈值
++    cold_start_text_dedup_count: int = 50       # 冷启动纯文本去重阈值
++    subject_match_threshold: float = 0.70       # 科目匹配阈值
++    cold_start_article_count: int = 3           # 冷启动科目创建阈值
+ 
+     @classmethod
+     def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
+@@ -93,9 +96,26 @@ def load_config(config_path: str) -> dict[str, Any]:
+         "db_url": "KT_DB_URL",
+         "llm_api_key": "LITELLM_MASTER_KEY",
+         "embed_api_key": "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
++        # Phase A 新增
++        "max_candidates_per_article": "KT_MAX_CANDIDATES_PER_ARTICLE",
++        "split_max_rounds": "KT_SPLIT_MAX_ROUNDS",
++        "self_explanatory_rules": "KT_SELF_EXPLANATORY_RULES",
+     }
+     for key, env_var in env_mapping.items():
+         if env_var in os.environ:
+             config[key] = os.environ[env_var]
+ 
++    # Phase A: ENV 值类型转换（ENV 值都是字符串）
++    _int_env_fields = {"max_candidates_per_article", "split_max_rounds"}
++    _bool_env_fields = {"self_explanatory_rules"}
++    for key in _int_env_fields:
++        if key in config and isinstance(config[key], str):
++            try:
++                config[key] = int(config[key])
++            except ValueError:
++                pass
++    for key in _bool_env_fields:
++        if key in config and isinstance(config[key], str):
++            config[key] = config[key].lower() in ("true", "1", "yes")
++
+     return config
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/core/consolidation.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/core/consolidation.py
+index 96b2f06..c7ec1da 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/core/consolidation.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/core/consolidation.py
+@@ -106,7 +106,7 @@ class ConsolidationEngine:
+                     results["splits"].append(split_result)
+ 
+             # 3. 计算并更新 TaxoGen 局部偏移向量
+-            if db_adapter and not dry_run and subject.get("embeddings"):
++            if db_adapter and not dry_run and subject.get("embeddings") is not None:
+                 try:
+                     from knowledge_tree_builder.core.incremental import compute_subject_offset
+                     children = subject.get("children_embeddings", [])
+@@ -311,14 +311,21 @@ class ConsolidationEngine:
+         cursor = db_adapter.cursor
+         stats = {"total": 0, "fragments": 0, "merged": 0, "deleted": 0, "kept": 0}
+ 
+-        # 1. 查出所有顶层 subject 节点及其子节点数
++        # 1. 查出所有顶层 subject 节点及其 knowledge_point 总数
++        # 使用递归 CTE 统计所有层级下的 knowledge_point（而非仅直接子节点）
+         cursor.execute(
+             "SELECT kt.id, kt.name, kt.k_vector, "
+-            "  (SELECT COUNT(*) FROM knowledge_tree child "
+-            "    WHERE child.parent_id = kt.id) AS child_count "
++            "  (WITH RECURSIVE descendants AS ("
++            "      SELECT id, node_type FROM knowledge_tree WHERE parent_id = kt.id"
++            "    UNION ALL"
++            "      SELECT child.id, child.node_type FROM knowledge_tree child"
++            "      JOIN descendants d ON child.parent_id = d.id"
++            "   )"
++            "   SELECT COUNT(*) FROM descendants WHERE node_type = 'knowledge_point'"
++            "  ) AS knowledge_count "
+             "FROM knowledge_tree kt "
+             "WHERE kt.parent_id IS NULL AND kt.node_type = 'subject' "
+-            "ORDER BY child_count DESC"
++            "ORDER BY knowledge_count DESC"
+         )
+         all_rows = cursor.fetchall()
+         stats["total"] = len(all_rows)
+@@ -337,6 +344,8 @@ class ConsolidationEngine:
+             }
+             (big if entry["child_count"] >= min_nodes else small).append(entry)
+ 
++        # 大 domain 的 child_count 是递归统计的 knowledge_point 数，反映真实数据量
++
+         # 对大 domain，从子节点 k_vector 实时计算 centroid
+         for d in big:
+             children = self._get_domain_children(cursor, d["id"])
+@@ -354,15 +363,36 @@ class ConsolidationEngine:
+ 
+         if dry_run:
+             for d in small:
+-                logger.info("  碎片 domain: %s (%d 子节点)", d["name"], d["child_count"])
++                logger.info("  碎片 domain: %s (%d 知识点)", d["name"], d["child_count"])
+             return stats
+ 
+         # 3. 逐碎片合并
+         for sm in small:
+             children = self._get_domain_children(cursor, sm["id"])
+             if not children:
+-                cursor.execute("DELETE FROM knowledge_tree WHERE id = %s", (sm["id"],))
+-                stats["deleted"] += 1
++                # 空 domain：所有 knowledge_point 已搬走或被清空。
++                # 但中间层 subject 节点（如 general/root）仍通过 FK 引用此 domain。
++                # 需要递归删所有后代，再删自身。
++                sp_name = f"cascade_sp_{sm['id']}"
++                try:
++                    cursor.execute(f"SAVEPOINT {sp_name}")
++                    cursor.execute(
++                        "WITH RECURSIVE descendants AS ("
++                        "  SELECT id FROM knowledge_tree WHERE parent_id = %s"
++                        "  UNION ALL"
++                        "  SELECT kt.id FROM knowledge_tree kt"
++                        "  JOIN descendants d ON kt.parent_id = d.id"
++                        ") "
++                        "DELETE FROM knowledge_tree WHERE id IN (SELECT id FROM descendants)",
++                        (sm["id"],),
++                    )
++                    cursor.execute("DELETE FROM knowledge_tree WHERE id = %s", (sm["id"],))
++                    cursor.execute(f"RELEASE SAVEPOINT {sp_name}")
++                    stats["deleted"] += 1
++                except Exception as _cascade_err:
++                    cursor.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
++                    logger.warning("级联删除 domain %s 失败: %s", sm["name"], _cascade_err)
++                    stats["kept"] += 1
+                 continue
+ 
+             centroid = self._compute_centroid(children)
+@@ -375,15 +405,29 @@ class ConsolidationEngine:
+                 stats["kept"] += 1
+                 continue
+ 
+-            child_ids = [c["id"] for c in children]
+-            cursor.execute(
+-                "UPDATE knowledge_tree SET parent_id = %s WHERE id = ANY(%s)",
+-                (best["id"], child_ids),
+-            )
+-            cursor.execute("DELETE FROM knowledge_tree WHERE id = %s", (sm["id"],))
+-            stats["merged"] += 1
+-            stats["deleted"] += 1
+-            logger.info("  合并: %s (%d) → %s", sm["name"], sm["child_count"], best["name"])
++            child_ids = [int(c["id"]) for c in children]
++            # 使用 savepoint 隔离每次合并，单次失败不波及全局
++            sp_name = f"merge_sp_{sm['id']}"
++            try:
++                cursor.execute(f"SAVEPOINT {sp_name}")
++                cursor.execute(
++                    "UPDATE knowledge_tree SET parent_id = %s WHERE id = ANY(%s)",
++                    (best["id"], child_ids),
++                )
++                affected = cursor.rowcount
++                if affected != len(child_ids):
++                    raise RuntimeError(
++                        f"预期更新 {len(child_ids)} 行，实际 {affected} 行"
++                    )
++                cursor.execute("DELETE FROM knowledge_tree WHERE id = %s", (sm["id"],))
++                cursor.execute(f"RELEASE SAVEPOINT {sp_name}")
++                stats["merged"] += 1
++                stats["deleted"] += 1
++                logger.info("  合并: %s (%d 知识点) → %s", sm["name"], sm["child_count"], best["name"])
++            except Exception as _merge_err:
++                cursor.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
++                logger.warning("合并失败 %s: %s，跳过", sm["name"], _merge_err)
++                stats["kept"] += 1
+ 
+         db_adapter.conn.commit()
+         return stats
+@@ -469,6 +513,7 @@ class ConsolidationEngine:
+                     return cooc[sb["id"]]
+             except Exception:
+                 pass
+-        # fallback：基于 placement 时间接近度估算
+-        diff = abs(sa.get("last_placement_day", 0) - sb.get("last_placement_day", 0))
+-        return max(0.0, 1.0 - diff * 0.1)
++        # fallback：无使用日志时返回 0（不触发合并）
++        # last_placement_day 字段不存在（subjects 字典中没有该字段），
++        # 因此不再基于虚构的时间差做无意义估算
++        return 0.0
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/llm/client.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/llm/client.py
+index 90c79e6..bb23e3e 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/llm/client.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/llm/client.py
+@@ -44,13 +44,19 @@ def call_llm(
+         messages.append({"role": "system", "content": system_prompt})
+     messages.append({"role": "user", "content": prompt})
+ 
++    # 请求间间隔，避免 QPS 过载
++    time.sleep(0.3)
++
+     for attempt in range(retries):
++        if attempt > 0:
++            time.sleep(2**attempt)  # 重试退避
+         try:
+             resp = requests.post(
+                 api_url,
+                 headers={
+                     "Content-Type": "application/json",
+                     "Authorization": f"Bearer
+
+[… truncated 21484 chars …]

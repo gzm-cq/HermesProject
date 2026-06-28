@@ -22,6 +22,8 @@ HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 10+ 独�
 | — | **Cron 定时脚本集合** | `scripts/cron-wrappers/` | Cron | 统一 shell wrapper（cron_common.sh），flock 防重入 |
 
 > Hermes Gateway（消息网关）、SkillOpt-Sleep（优化引擎）、Hindsight RAG（记忆系统）是系统级的常驻服务，其源码独立管理，不在此仓库中。
+>
+> **从零搭建完整环境？请先看 [docs/setup-guide.md](docs/setup-guide.md)** — 包含常驻服务安装、环境变量、验证清单。
 
 ## 系统架构
 Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 + 两个插件协同，实现：控制 token 开销 + 最大化记忆有效性 + 技能即时可用。
@@ -54,9 +56,8 @@ Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 +
 │                    ┌──────────────┐                   │             │               │
 │                    │  Skill 匹配   │────────────────────             │               │
 │                    │  (第三路)     │ 自动注入 <auto_loaded_skills>   │               │
-│                    │  Tier 1: BGE │ 到用户消息                        │               │
-│                    │  Tier 2: LLM │                   │             │               │
-│                    │  Tier 3: 空  │                   │             │               │
+│                    │  LLM 语义理解+关键词扩展 │ 到用户消息                        │               │
+│                    │  匹配不到不强行注入     │                   │             │               │
 │                    └──────────────┘                   │             │               │
 └──────────────────────────┬───────────────────────────────┬──────────────────────────┘
                            │ 语义检索                       │
@@ -91,7 +92,7 @@ Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 +
 
 **设计目标**：
 - **知识导航**：确保有效记忆主动召回，避免 LLM 不主动提取记忆的问题
-- **技能强制注入**：BGE-M3 embedding + LLM 三级兜底，自动匹配相关 skill 并注入全文到 `<auto_loaded_skills>`，解决 LLM 不主动 `skill_view()` 的问题
+- **技能强制注入**：LLM 语义理解 + 关键词扩展，自动匹配相关 skill 并注入全文到 `<auto_loaded_skills>`（无 embedding 层，匹配不到不强行注入），解决 LLM 不主动 `skill_view()` 的问题
 - **聚类分析**：优化 RAG 库结构，最大化提升召回记忆的有效性与 recall 率
 - **记忆清理**：精简核心记忆，控制 token 开销，其余降级到 RAG 按需召回
 - **综合效果**：每条消息只携带必要上下文，又不丢失任何历史记忆，最大化记忆有效性
@@ -157,6 +158,8 @@ HermesProject/
 - Python 3.10+
 - WSL2 (Ubuntu)
 - Hermes 运行时已部署在 `/root/.hermes/`
+
+> 完整环境搭建指南（PostgreSQL、LiteLLM、Hindsight、Gateway 安装与配置）见 **[docs/setup-guide.md](docs/setup-guide.md)**。
 
 ### 安装子项目（开发模式）
 
@@ -241,11 +244,17 @@ deploy 采用三层架构：
 # 一键部署
 ./deploy/deploy.sh deploy ai-report-system
 ./deploy/deploy.sh deploy clustering-analysis-v3
+./deploy/deploy.sh deploy cron-wrappers
+./deploy/deploy.sh deploy daily-learn
 ./deploy/deploy.sh deploy drawio-generator
+./deploy/deploy.sh deploy knowledge-navigation  # 自动重启 hermes-gateway
 ./deploy/deploy.sh deploy knowledge-tree-builder
-./deploy/deploy.sh deploy memory-cleanup
-./deploy/deploy.sh deploy knowledge-navigation   # 自动重启 hermes-gateway
 ./deploy/deploy.sh deploy knowledge-tree-plugin  # 自动重启 hermes-gateway
+./deploy/deploy.sh deploy memory-cleanup
+./deploy/deploy.sh deploy self-evolving
+./deploy/deploy.sh deploy skillopt-runner
+./deploy/deploy.sh deploy skillopt-sleep
+./deploy/deploy.sh deploy system-health-check
 
 # 回滚（先清残留再还原备份）
 ./deploy/deploy.sh rollback <project>
@@ -257,13 +266,19 @@ deploy 采用三层架构：
 |------|------------|---------|
 | AI 报告系统 | `/root/.hermes/scripts/ai-report-system/` | — |
 | 聚类分析 | `/root/.hermes/scripts/clustering-analysis-v3/` | — |
+| Cron wrappers | `/root/.hermes/scripts/cron-wrappers/` | — |
+| 每日在线学习 | `/root/.hermes/scripts/daily-learn/` | — |
 | Draw.io 生成 | `/root/.hermes/scripts/drawio-generator/` | — |
 | 知识树构建器 | `/root/.hermes/scripts/knowledge-tree-builder/` | — |
 | 记忆清理 | `/root/.hermes/scripts/memory-cleanup/` | — |
 | 知识导航 | `/root/.hermes/plugins/knowledge-navigation/` | `hermes-gateway.service` |
 | 知识树插件 | `/root/.hermes/plugins/knowledge-tree-plugin/` | `hermes-gateway.service` |
+| 自我进化 | `/root/.hermes/scripts/self-evolving/` | — |
+| SkillOpt Runner | `/root/.hermes/scripts/skillopt-runner/` | — |
+| SkillOpt Sleep | `/root/.hermes/scripts/skillopt-sleep/` | — |
+| 系统健康巡检 | `/root/.hermes/scripts/system-health-check/` | — |
 
-> `self-evolving` 为研究项目，不在 deploy 范围内。
+> 部署系统完整说明见 [deploy/README.md](deploy/README.md)。
 
 ## 各子项目详情
 
@@ -276,8 +291,8 @@ deploy 采用三层架构：
 - StateGraph 工作流编排
 
 ### 2. 记忆聚类分析
-对 Hermes 对话记忆进行向量嵌入 + DBSCAN 聚类：
-- 自动识别主题簇
+对 Hermes 对话记忆进行向量嵌入 + HDBSCAN 语义聚类：
+- 自动识别主题簇 + 实体挂靠
 - 因果关系链检测
 - 每日 cron 定时执行
 - `--dry-run` 安全模式
@@ -292,7 +307,7 @@ deploy 采用三层架构：
 
 ### 4. 记忆清理
 LLM 驱动的智能记忆管理（MEMORY.md + USER.md）：
-- 6 维度分类（retain / remove / merge / compress / promote / demote）
+- 6 类分类（retain / remove / merge / compress / hindsight / flagged）
 - 并行 LLM 批处理（BATCH_SIZE=20）
 - 默认 dry-run，`--apply` 才实际执行
 - 支持 Hindsight API 同步删除

@@ -6,7 +6,8 @@
 
 新 contributor 建议按此顺序阅读：
 
-1. `README.md`（项目根）— 项目概览、架构、子项目清单
+| `README.md`（项目根）— 项目概览、架构、子项目清单
+| `docs/setup-guide.md` — **环境搭建完整指南（推荐先看）**
 2. `docs/architecture/记忆体系架构设计-当前.md` — 5 层记忆体系全景
 3. `docs/architecture/knowledge-point-definition.md` — 知识点模型 v2.3
 4. `docs/engineering-standards.md` — 开发规范

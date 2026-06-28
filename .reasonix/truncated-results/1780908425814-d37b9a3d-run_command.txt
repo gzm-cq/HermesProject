@@ -1,0 +1,1152 @@
+$ git diff HEAD~2..HEAD
+[exit 0]
+diff --git a/docs/superpowers/plans/2026-06-06-knowledge-tree-repair.md b/docs/superpowers/plans/2026-06-06-knowledge-tree-repair.md
+new file mode 100644
+index 0000000..bd032a4
+--- /dev/null
++++ b/docs/superpowers/plans/2026-06-06-knowledge-tree-repair.md
+@@ -0,0 +1,178 @@
++# 知识树质量问题修复计划
++
++> 日期: 2026-06-06
++> 状态: 待审批
++> 涉及项目: knowledge-tree-builder, knowledge-tree-plugin
++
++## 问题概述
++
++| # | 问题 | 严重度 | 影响范围 |
++|---|------|--------|---------|
++| 1 | k_vector 全部 NULL (1483/1483) | 🔴 | 语义搜索失效，去重失效，consolidation 跑不了 |
++| 2 | 66% 知识点堆积在 general/root (976/1483) | 🔴 | 领域分类完全失效 |
++| 3 | 无跨科链接 (0 edges) | 🔴 | 知识关联缺失 |
++| 4 | 建议/意见型知识点混入 (73 条) | 🟡 | 知识纯度下降 |
++| 5 | 树结构扁平，无子科目细分 | 🟡 | 检索精度有限 |
++
++## 现有设施复用
++
++`core/consolidation.py` 的 `ConsolidationEngine` 已实现：
++- **科目拆分** (`_split_subject`)：子节点 > 50 时 HDBSCAN 聚类拆子科
++- **跨科建边** (`check_merge`)：共现率 > 80% 自动 `insert_edge`
++- **Confidence 衰减**：使用日志驱动升降权
++
++这些模块只需要 k_vector 就绪 + use_log 有数据就能跑。本计划的任务就是补上这两个前提，然后跑一轮 consolidation 让它自动完成子科目细分和跨科建边。
++
++## 任务分解（6 步）
++
++---
++
++### Step 1: 批量回填 k_vector
++
++**文件**: `scripts/knowledge-tree-builder/src/knowledge_tree_builder/scripts/backfill_k_vectors.py`
++
++**改动**:
++新增独立脚本 + CLI 子命令 `knowledge-tree-builder backfill-k-vectors`：
++1. 查出 `k_vector IS NULL` 的所有叶子节点
++2. 读出 `knowledge_point_texts.text` 作为输入
++3. 调用 `batch_embed` 批量计算 embedding（batch_size=20）
++4. 调用 `update_k_vector(node_id, k_vector, placement_count=0)` 写入
++
++**验证**:
++```bash
++knowledge-tree-builder backfill-k-vectors --dry-run  # 预览条数
++knowledge-tree-builder backfill-k-vectors
++psql -c "SELECT COUNT(*) FROM knowledge_tree WHERE k_vector IS NULL AND node_type='knowledge_point'"
++# 预期: 0
++```
++
++---
++
++### Step 2: 修复离线管线 `_write_to_db` 补写 k_vector
++
++**文件**: `scripts/knowledge-tree-builder/src/knowledge_tree_builder/place.py`
++
++**改动**:
++`_write_to_db()` 在 `executemany` 插入 knowledge_point 后，拿到返回的 `node_ids`，对每个新节点调用 `adapter.update_k_vector(node_id, k_vector, placement_count=1)`。
++
++**验证**:
++```bash
++knowledge-tree-builder run --input-dir ... --skip-existing
++psql -c "SELECT COUNT(*) FROM knowledge_tree WHERE k_vector IS NULL AND node_type='knowledge_point'"
++# 新插入的节点应有 k_vector
++```
++
++---
++
++### Step 3: 重新分类 general/root 下 976 条
++
++**文件**: `scripts/knowledge-tree-builder/src/knowledge_tree_builder/scripts/redistribute_general.py`
++
++**改动**:
++新增独立脚本 + CLI 子命令 `knowledge-tree-builder redistribute`。
++
++3 级漏斗策略：
++
++| 级别 | 方法 | 预期覆盖率 | API 成本 |
++|------|------|-----------|---------|
++| L1 | 关键词规则（"Atlas"→repowiki, "rtk-hermes"→runtime 等） | ~20% | 0 |
++| L2 | 语义 cosine 匹配已有 domain centroid | ~50% | 1 次 batch_embed |
++| L3 | LLM 批量判断残差（每组 20 条，temperature=0） | ~30% | ~15 次 LLM 调用 |
++
++每个知识点迁移到正确的 `domain/subject` 节点（更新 `parent_id`）。
++
++**验证**:
++```bash
++knowledge-tree-builder redistribute --dry-run  # 预览迁移计划
++knowledge-tree-builder redistribute
++psql -c "SELECT name, COUNT(*) FROM knowledge_tree WHERE node_type='subject' GROUP BY name"
++# general 应降至合理范围
++```
++
++---
++
++### Step 4: 验证在线插件增量放置路径
++
++**文件**: `plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/placement.py`
++
++**改动**:
++C1 修复后 `update_k_vector` 已自带 commit，本步只验证。检查 `_update_k_vector` 调用后 k_updated_at 时间戳正确更新。
++
++**验证**:
++```bash
++# 手动触发一次 post_llm_call，查 PG 日志
++psql -c "SELECT id, name, k_updated_at FROM knowledge_tree WHERE k_updated_at IS NOT NULL LIMIT 5"
++```
++
++---
++
++### Step 5: 跑 Consolidation（自动完成子科目细分 + 跨科建边 + confidence）
++
++**文件**: 无新增。复用已有 `cli.py` 的 `consolidate` 子命令。
++
++**前提**: Step 1 已经回填 k_vector，Step 3 已经让节点归位。
++
++**执行**:
++```bash
++knowledge-tree-builder consolidate run --dry-run  # 预览拆分和建边
++knowledge-tree-builder consolidate run             # 执行
++```
++
++ConsolidationEngine 自动做三件事：
++1. **科目拆分**（子节点 > 50 的 domain 做 HDBSCAN 聚类 → 拆子科）
++2. **跨科建边**（共现率 > 80% 的科目对自动 `insert_edge`）
++3. **Confidence 衰减**（初始化所有节点 confidence）
++
++此步骤替代了原计划中独立的 `build_edges` 和 `tree_rebalance` 脚本。
++
++**验证**:
++```bash
++psql -c "SELECT node_type, COUNT(*) FROM knowledge_tree GROUP BY node_type"
++# 预期出现细分 subject
++
++psql -c "SELECT COUNT(*) FROM knowledge_tree_edges"
++# 预期 > 0
++```
++
++---
++
++### Step 6: 增加建议/意见过滤规则
++
++**文件**: `scripts/knowledge-tree-builder/src/knowledge_tree_builder/phase/admit.py`
++
++**改动**:
++在 `_guard_filter()` 中添加：
++```python
++_SUGGESTION_PATTERNS = [
++    re.compile(r"^建议"),
++    re.compile(r"^改进建议"),
++    re.compile(r"^[Nn]ote[:：]"),
++]
++```
++
++**验证**:
++```python
++def test_guard_filter_drops_suggestion(self):
++    assert _guard_filter({"text": "建议增加日志记录", "type": "method"})[0] is False
++```
++
++---
++
++## 执行顺序
++
++```
++Step 1 (回填 k_vector) ──→ Step 3 (重分类 general) ──→ Step 5 (跑 consolidation)
++                                                          ├─ 子科目拆分
++                                                          ├─ 跨科建边
++                                                          └─ confidence 初始化
++Step 2 (修复写入) ──→ Step 4 (验证插件)
++Step 6 (过滤规则)  ← 独立，可与前 5 步并行
++```
++
++## 风险
++
++| 风险 | 概率 | 缓解 |
++|------|------|------|
++| embedding API 限流 | 低 | batch_size=20，内置重试 3 次 |
++| Step 3 LLM 重新分类不准 | 中 | 3 级漏斗 + dry-run 预览 |
++| consolidation 拆科命名差 | 低 | 使用现有 consolidation 模块（已投产） |
+diff --git a/plugins/knowledge-tree-plugin/pyproject.toml b/plugins/knowledge-tree-plugin/pyproject.toml
+index 0a1e730..000a868 100644
+--- a/plugins/knowledge-tree-plugin/pyproject.toml
++++ b/plugins/knowledge-tree-plugin/pyproject.toml
+@@ -17,6 +17,7 @@ dependencies = [
+     "typer>=0.9.0",
+     "numpy>=1.24.0",
+     "psycopg2-binary>=2.9.0",
++    "pgvector",                # VECTOR 类型读写适配器
+     "PyYAML>=6.0",
+ ]
+ 
+@@ -29,6 +30,52 @@ where = ["src"]
+ [tool.setuptools.package-data]
+ "*" = ["*.json", "*.yaml", "*.yml"]
+ 
++[project.optional-dependencies]
++dev = [
++    "pytest>=7.0",
++    "pytest-cov>=4.0",
++    "ruff>=0.4",
++    "black>=24.0",
++    "mypy>=1.0.0",
++]
++
++[tool.black]
++line-length = 100
++target-version = ["py310"]
++
++[tool.ruff]
++line-length = 100
++target-version = "py310"
++
++[tool.ruff.lint]
++select = [
++    "E",
++    "W",
++    "F",
++    "I",
++    "B",
++    "UP",
++    "SIM",
++]
++ignore = [
++    "E501",
++    "B008",
++]
++
++[tool.ruff.lint.isort]
++known-first-party = ["knowledge_tree_plugin", "knowledge_tree_builder"]
++
++[tool.mypy]
++python_version = "3.10"
++warn_return_any = true
++warn_unused_configs = true
++disallow_untyped_defs = true
++disallow_incomplete_defs = true
++check_untyped_defs = true
++no_implicit_optional = true
++warn_redundant_casts = true
++strict_equality = true
++
+ [tool.pytest.ini_options]
+ testpaths = ["tests"]
+ python_files = ["test_*.py"]
+diff --git a/plugins/knowledge-tree-plugin/skills/knowledge-tree-plugin/SKILL.md b/plugins/knowledge-tree-plugin/skills/knowledge-tree-plugin/SKILL.md
+new file mode 100644
+index 0000000..8ab7af5
+--- /dev/null
++++ b/plugins/knowledge-tree-plugin/skills/knowledge-tree-plugin/SKILL.md
+@@ -0,0 +1,50 @@
++---
++name: knowledge-tree-plugin
++description: 知识树在线插件 — post_llm_call 增量学习，在对话中提取新知识点并自动入库
++version: 0.1.0
++author: Hermes Team
++license: MIT
++metadata:
++  hermes:
++    tags: [knowledge-tree, incremental-learning, knowledge-extraction, hermes-plugin]
++    related_skills: [knowledge-navigation, knowledge-tree-builder]
++    categories: [knowledge-management, plugins]
++---
++
++# Knowledge Tree Plugin
++
++Hermes 插件。在每次 LLM 调用后，从对话中提取新知识点并增量写入知识树。
++
++## 职责
++
++- **post_llm_call**: 分析对话内容，提取五分类知识点（原理/公式/要点/结论/方法）
++- 新知识点自动去重、矛盾检测后写入知识树
++- 更新父科目的 K 向量（指数移动平均）
++
++## 架构
++
++```
++LLM 响应
++  ↓
++post_llm_call hook
++  ↓
++extract_from_dialog() → phase/merged.analyze_and_split (新管线)
++  ↓
++place_new_knowledge_points() → 去重 → 矛盾检测 → PG 写入 → K 向量更新
++```
++
++知识树 recall（pre_llm_call）由 `knowledge-navigation` 插件统一负责，
++本插件不注册 pre_llm_call 钩子。
++
++## 配置
++
++```yaml
++# config/default.yaml 或环境变量
++db_url: ""                        # KT_DB_URL
++extract_enabled: true             # 是否启用自动提取
++extract_min_dialog_length: 50     # 最短对话长度
++llm_api_url: "http://127.0.0.1:4142/v1/chat/completions"
++dedup_cosine_threshold: 0.95      # 去重阈值
++```
++
++环境变量前缀：`KT_*`（LLM/Embedding 参数）
+diff --git a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/adapters/database.py b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/adapters/database.py
+index 627a217..dc76c95 100644
+--- a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/adapters/database.py
++++ b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/adapters/database.py
+@@ -185,7 +185,7 @@ class PluginDatabaseAdapter:
+         cursor = self._inner.cursor
+         cursor.execute(
+             "SELECT id, name, k_vector FROM knowledge_tree "
+-            "WHERE parent_id IS NULL AND node_type = 'domain' "
++            "WHERE parent_id IS NULL AND node_type = 'subject' "
+             "ORDER BY display_order"
+         )
+         rows = cursor.fetchall()
+diff --git a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/extract_new.py b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/extract_new.py
+index fa4ad04..0d0c75a 100644
+--- a/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/extract_new.py
++++ b/plugins/knowledge-tree-plugin/src/knowledge_tree_plugin/extract_new.py
+@@ -1,7 +1,7 @@
+ """post_llm_call 知识点提取编排
+ 
+ 每次 LLM 调用后，分析对话（user_message + llm_response）中是否包含新知识点。
+-复用 knowledge_tree_builder.core.extractor 和 admission。
++使用新管线 phase/merged 模块（五分类 + 原子性，K=15 上限）。
+ """
+ 
+ from __future__ import annotations
+@@ -9,7 +9,7 @@ from __future__ import annotations
+ import logging
+ from typing import Any
+ 
+-from knowledge_tree_builder import extract_knowledge_points, filter_knowledge_points
++from knowledge_tree_builder.config import AppConfig
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -26,13 +26,10 @@ def extract_from_dialog(
+ ) -> list[str]:
+     """从对话中提取新的知识点。
+ 
+-    将 user_message + llm_response 拼接为"伪文章"送给 extractor，
+-    看是否能提取出持久知识。
+-
+-    策略：
+-    - 只提取 user_message 中的提问部分 + llm_response 中的结论部分
+-    - 不做全量分析，只聚焦"LLM 告诉用户的事实性内容"
+-    - 提取出的知识点会经过准入过滤
++    使用新管线的 phase/merged.analyze_and_split：
++    - 五分类（原理/公式/要点/结论/方法）
++    - 直接输出原子知识（claims_count=1）
++    - 上限 K=15 条
+ 
+     Args:
+         user_message: 用户提问
+@@ -44,19 +41,19 @@ def extract_from_dialog(
+         model: 模型名
+ 
+     Returns:
+-        通过准入的新知识点列表（可为空）
++        知识点文本列表（可为空）
+     """
+-    # 拼接对话为“伪文章”
++    # 拼接对话为"伪文章"
+     dialog_text = (
+         f"# 对话记录\n\n"
+         f"## 用户提问\n{user_message[:max(1, max_input_length // 2)]}\n\n"
+         f"## 回答\n{llm_response[:max(1, max_input_length // 2)]}"
+     )
+ 
+-    # 估计 token（粗略：中文字符 ≈ 1 token，英文 ≈ 0.3 token）
+-    estimated_tokens = len(dialog_text) * 0.5
++    # 估计 token
++    # 中文字符约 1.5-2 chars/token，取保守值 0.3
++    estimated_tokens = len(dialog_text) * 0.3
+     if estimated_tokens > 3000:
+-        # 超过 3000 token 时截断，保留首尾
+         half_input = max_input_length // 2
+         dialog_text = (
+             dialog_text[:half_input]
+@@ -64,16 +61,18 @@ def extract_from_dialog(
+             + dialog_text[-half_input:]
+         )
+ 
+-    # Step 1: LLM 提取知识点
++    # 使用新管线 merged 模块提取
+     try:
+-        raw_points = extract_knowledge_points(
+-            article_text=dialog_text,
+-            article_title="对话知识提取",
+-            api_url=api_url,
+-            api_key=api_key,
+-            model=model,
+-            temperature=0,
++        from knowledge_tree_builder.phase.merged import analyze_and_split
++
++        cfg = AppConfig(
++            llm_api_url=api_url,
++            llm_api_key=api_key,
++            llm_model=model,
++            extract_temperature=0.0,
+         )
++
++        atomics, _ = analyze_and_split(dialog_text, "对话知识提取", config=cfg)
+     except Exception as e:
+         logger.warning(
+             "extract_from_dialog failed",
+@@ -81,20 +80,19 @@ def extract_from_dialog(
+         )
+         return []
+ 
+-    if not raw_points:
++    if not atomics:
+         return []
+ 
+-    # Step 2: 准入过滤
+-    filtered = filter_knowledge_points(raw_points, min_length=min_length)
++    texts = [a["text"] for a in atomics if len(a.get("text", "")) >= min_length]
+ 
+-    if filtered:
++    if texts:
+         logger.info(
+             "dialog knowledge extraction",
+             extra={
+-                "raw_count": len(raw_points),
+-                "filtered_count": len(filtered),
+-                "points": filtered,
++                "raw_count": len(atomics),
++                "filtered_count": len(texts),
++                "points": texts,
+             },
+         )
+ 
+-    return filtered
++    return texts
+diff --git a/scripts/knowledge-tree-builder/README.md b/scripts/knowledge-tree-builder/README.md
+index 6130a0c..f0c88c1 100644
+--- a/scripts/knowledge-tree-builder/README.md
++++ b/scripts/knowledge-tree-builder/README.md
+@@ -1,45 +1,295 @@
+ # Knowledge Tree Builder — 知识分域建树管线
+ 
+-从精读笔记/文章中提取知识点，自动构建二叉树知识树。
++从精读笔记/技术文章中自动提取知识点，按五分类建树入库。
+ 
+-## 管线步骤
++## Quick Start
+ 
+-| Step | 名称 | 说明 |
+-|:----:|------|------|
+-| 1 | LLM 知识点提取 | 每篇文章提取 3-8 个关键知识点 |
+-| 1.5 | 规则准入过滤 | 长度/模糊概括规则兜底过滤 |
+-| 2 | HDBSCAN 递归聚类 | 自底向上聚类 + 建树报告 + 自动干跑 |
+-| 3 | LLM 结构校验 | 子簇关系判断（平行/上下位） |
+-| 4 | LLM 节点命名 | 科目名 / 知识点名 |
+-| 5 | 写入 PG | 树写入 + 去重 + 矛盾检测 |
++```bash
++# 1. 初始化数据库（首次运行）
++knowledge-tree-builder init-db
++
++# 2. 从文章目录提取知识点并写入知识树
++knowledge-tree-builder run \
++  --input-dir ./articles \
++  --merged \
++  --apply
++
++# 3. 查看知识树
++knowledge-tree-builder tree
++
++# 4. 搜索知识点
++knowledge-tree-builder find <关键词>
++```
++
++## 管线架构
++
++```
++[文章目录]
++    │
++    ▼
++Pre-phase: 文件扫描
++    │  排除 index.md、_bak/、二进制文件等
++    ▼
++Phase 1+2: 分析 + 拆解（合并模式，单次 LLM 调用）
++    │  五分类知识提取 + 原子性检查 + 自解释校验
++    │  ┌─ principle（原理）    ─ 因果/机制关系
++    │  ├─ formula（公式）      ─ 可计算形式化表述
++    │  ├─ key_point（要点）    ─ 事实/分类/结构
++    │  ├─ conclusion（结论）   ─ 有条件对比
++    │  └─ method（方法/流程）  ─ 可复现步骤/规范
++    ▼
++Phase 3: 准入 + 去重
++    │  规则兜底拦截 → 两段式 cosine 去重 → 矛盾检测
++    ▼
++Phase 4: 树定位 → PG
++    │  LLM 判断领域 → 科目匹配 → 写入知识树
++    ▼
++[知识树] ← 纠错回路（confidence 收敛 + review_queue）
++```
++
++## 安装
++
++### 依赖
++
++- Python 3.10+
++- PostgreSQL (建议 14+)
++- LLM API（兼容 OpenAI 格式）
++
++### 部署
++
++```bash
++# 使用项目统一部署工具
++./deploy/deploy.sh deploy knowledge-tree-builder --yes
++
++# 设置环境变量
++export LITELLM_MASTER_KEY=sk-xxx        # LLM API 密钥
++export KT_DB_URL=postgresql://user@host:5432/dbname  # 数据库
++```
++
++## 详细用法
++
++### 全量重建
++
++首次运行或需要重建知识树时：
++
++```bash
++# 清空旧树 + 全量重建
++psql $KT_DB_URL -c "TRUNCATE knowledge_tree CASCADE;"
++knowledge-tree-builder run \
++  --input-dir /path/to/articles \
++  --merged \
++  --apply
++```
++
++### 增量添加
++
++已有知识树的基础上添加新文章：
++
++```bash
++knowledge-tree-builder run \
++  --input-dir /path/to/new-articles \
++  --merged \
++  --apply
++```
++
++## 断点续传
++
++管线支持三级断点续传：
++
++| 层级 | 缓存文件 | 作用 |
++|------|----------|------|
++| L1 提取 | `.kb_manifest_<目录>.json` + `_atomics/` | Phase 1+2 逐篇进度，已提取跳过 LLM |
++| L2 Embedding | `.kb_embed_cache.json` | embedding 结果缓存，续传免重算 |
++| L3 树定位 | `.kb_phase4_<目录>.json` | Phase 4 逐篇领域判断和 placement 缓存 |
++
++- **提取中断**：重跑自动检测清单，跳过已提取的，只处理待处理和失败的
++- **写入中断**：atomics 已存盘，重跑跳过提取直接 admit + 写入
++- **单篇失败**：跳过失败篇，继续处理后续，最后列出失败清单
++- **树定位中断**：领域判断结果和 placement records 已缓存，重跑自动跳过已定位文章，最后批量写入 PG
++
++```bash
++# 首次运行
++knowledge-tree-builder run --input-dir ./articles --merged --apply
++
++# 中断后续传（自动检测各级缓存）
++knowledge-tree-builder run --input-dir ./articles --merged --apply
++```
+ 
+-## 快速开始
++### 仅预览（不写入）
+ 
+ ```bash
+-# 完整 dry-run（不写 PG）
+-cd scripts/knowledge-tree-builder
+-python -m knowledge_tree_builder.cli run --dry-run
++knowledge-tree-builder run \
++  --input-dir ./articles \
++  --merged \
++  --dry-run \
++  --verbose
++```
++
++### 分阶段运行
+ 
+-# 实际写入
+-python -m knowledge_tree_builder.cli run --apply
++```bash
++knowledge-tree-builder run --phase scan     # 只看扫描结果
++knowledge-tree-builder run --phase admit    # 只跑准入去重
++knowledge-tree-builder run --phase place    # 只跑树定位（需要 Phase 3 结果）
++```
++
++> 注意：`--phase place` 单独运行时需要先有 Phase 3 的产出（`_admit_result`），
++> 否则会提示跳过。
++
++### 独立模式（含 claims_count 校验）
++
++不推荐，除非需要调试 claims_count 原子性检查：
++
++```bash
++knowledge-tree-builder run --input-dir ./articles  # 默认独立模式
++```
++
++## 审查队列
++
++知识点管线运行中，以下情况会自动进入审查队列：
++
++| 类型 | 来源 | 说明 |
++|------|------|------|
++| `contradiction` | 阶段3 | 条件相同 + 结论对立的知识 |
++| `incomplete_split` | 阶段2 | 2 轮拆解后仍有残余 |
++| `orphan` | 阶段4 | 无法归入现有树的知识点 |
++| `consistency_warning` | 阶段2 | claims_count sum 校验异常 |
++
++```bash
++# 查看待审查项
++knowledge-tree-builder review list
++
++# 按类型查看
++knowledge-tree-builder review list --type contradiction
++
++# 接受/拒绝
++knowledge-tree-builder review accept 42
++knowledge-tree-builder review reject 42
++```
++
++## 维护命令
++
++### 回填 k_vector
++
++修复历史数据中缺失的 embedding 向量（k_vector 全部为 NULL）：
++
++```bash
++# 预览待回填数
++knowledge-tree-builder backfill-k-vectors --dry-run
++
++# 执行回填
++knowledge-tree-builder backfill-k-vectors
++```
++
++### 领域重分类
++
++将错误归入 `general` 的知识点重新分配到正确领域。
++3 级漏斗：关键词规则 → 语义 cosine → LLM 批量判断：
++
++```bash
++# 预览迁移计划
++knowledge-tree-builder redistribute --dry-run
++
++# 执行迁移
++knowledge-tree-builder redistribute
++```
++
++## 纠错回路（一键维护）
++
++单条命令自动完成 3 件事：
++
++```bash
++# 默认开启全部： domain 合并 + confidence 更新 + 子科目拆分
++knowledge-tree-builder consolidate run
++
++# 仅做 confidence 更新（跳过 domain 合并）
++knowledge-tree-builder consolidate run --no-merge-domains
++
++# 仅处理超时的审查项
++knowledge-tree-builder consolidate process-timeouts
++```
++
++`consolidate run` 自动执行：
++
++| 阶段 | 动作 | 条件 |
++|------|------|------|
++| 1 | 碎片 domain 合并 | 子节点 < 5 的 domain 合并到最近的大 domain |
++| 2 | 子科目拆分（HDBSCAN聚类） | 子节点 > 50 |
++| 3 | confidence 更新 | 有使用日志 |
++| 4 | 跨科建边 | 共现率 > 80% |
++| 5 | 超时审查项处理 | review_queue 有超时 |
++
++## 配置
++
++默认配置文件 `config/default.yaml`：
++
++```yaml
++# LLM
++llm_api_url: "http://127.0.0.1:4142/v1/chat/completions"
++llm_model: "s-deepseek-v4-flash"
++
++# 阶段1：知识点提取
++max_candidates_per_article: 15        # 每篇候选上限 (K)
++article_max_chars: 12000              # 文章截断长度
++
++# 阶段2：拆解与校验
++split_max_rounds: 2                   # 拆解轮数上限
++self_explanatory_rules: true          # 启用自解释检查
++
++# 阶段3：准入与去重
++dedup_threshold_direct: 0.95          # 直接判重阈值
++dedup_threshold_llm: 0.90             # LLM 确认区间下界
++conflict_threshold: 0.80              # 矛盾检测阈值
++
++# 阶段4：树定位
++subject_match_threshold: 0.70         # 科目匹配阈值
+ ```
+ 
+ ## 项目结构
+ 
+ ```
+-src/knowledge_tree_builder/
+-├── cli.py                     # typer CLI 入口
+-├── config.py                  # YAML 配置加载
+-├── adapters/database.py       # PG 读写层
+-├── core/
+-│   ├── extractor.py           # Step 1: LLM 知识点提取
+-│   ├── admission.py           # Step 1.5: 规则准入
+-│   ├── clustering.py          # Step 2: HDBSCAN 递归聚类
+-│   ├── validator.py           # Step 3: LLM 结构校验
+-│   ├── namer.py               # Step 4: LLM 节点命名
+-│   ├── writer.py              # Step 5: 写入 PG + 去重
+-│   ├── incremental.py         # 增量放置 + Q/K 向量管理
+-│   ├── consolidation.py       # 纠错回路
+-│   └── embeddings.py          # Embedding API 调用
+-└── llm/client.py              # LLM API 调用
++knowledge-tree-builder/
++├── src/knowledge_tree_builder/
++│   ├── cli.py                     # CLI 入口
++│   ├── config.py                  # 配置加载
++│   ├── models.py                  # 共享数据结构（AtomicKnowledge 含 source_title）
++│   ├── manifest.py                # 批处理清单 + 断点续传
++│   ├── place.py                   # 阶段4：树定位 + 批量写入（含 k_vector 补写）
++├── scripts/
++│   ├── backfill_k_vectors.py  # k_vector 批量回填（CLI: backfill-k-vectors）
++│   └── redistribute_general.py# 领域重分类（CLI: redistribute）
++│   ├── phase/
++│   │   ├── scan.py                # Pre-phase：文件扫描 + YAML 前置元数据跳过
++│   │   ├── analyze.py             # 阶段1：分析（独立模式）
++│   │   ├── merged.py              # 阶段1+2：合并模式（推荐）
++│   │   ├── split.py               # 阶段2：拆解（独立模式）
++│   │   └── admit.py               # 阶段3：准入去重
++│   ├── consolidate/
++│   │   ├── confidence.py          # confidence 衰减计算
++│   │   └── review.py              # review_queue 操作
++│   ├── adapters/database.py       # PG 适配器
++│   ├── llm/client.py              # LLM API 调用
++│   └── core/
++│       ├── embeddings.py          # Embedding API（带 None 占位防御）
++│       └── incremental.py         # 增量去重
++├── config/default.yaml            # 默认配置
++├── deploy/                        # 部署脚本
++├── tests/                         # 测试
++└── skills/                        # Hermes Skill 文件
+ ```
++
++## 迁移说明
++
++旧管线（HDBSCAN 聚类）已废弃。新管线使用领域匹配替代聚类，质量保障更强：
++
++| 维度 | 旧管线 | 新管线 |
++|------|--------|--------|
++| 知识点类型 | 无分类 | 五分类（原理/公式/要点/结论/方法）|
++| 提取量 | 3-8 条/篇 | K=15 条/篇 |
++| 原子性 | 无检查 | claims_count + sum 校验 |
++| 自解释 | 无 | 代词/元引用/省略 三项检查 |
++| 去重 | embedding 单阈值 | 两段式 + LLM 确认 + 矛盾检测 |
++| 树结构 | HDBSCAN 聚类 | 领域→科目→知识点 层级树 |
++| 纠错 | 无 | confidence 收敛 + review_queue |
++
++旧 CLI 命令（`extract`/`cluster`/`validate`/`name`/`write`/`report`）已标记废弃，将重定向到新管线。
+diff --git a/scripts/knowledge-tree-builder/pyproject.toml b/scripts/knowledge-tree-builder/pyproject.toml
+index eb8e5a1..a617b12 100644
+--- a/scripts/knowledge-tree-builder/pyproject.toml
++++ b/scripts/knowledge-tree-builder/pyproject.toml
+@@ -25,6 +25,7 @@ keywords = ["hermes", "knowledge-tree", "clustering"]
+ dependencies = [
+     "typer>=0.9.0",
+     "psycopg2-binary",
++    "pgvector",                # VECTOR 类型读写适配器（读必须有，写自动推断）
+     "numpy",
+     "scikit-learn",
+     "requests",
+diff --git a/scripts/knowledge-tree-builder/skills/knowledge-tree-builder/SKILL.md b/scripts/knowledge-tree-builder/skills/knowledge-tree-builder/SKILL.md
+new file mode 100644
+index 0000000..5594441
+--- /dev/null
++++ b/scripts/knowledge-tree-builder/skills/knowledge-tree-builder/SKILL.md
+@@ -0,0 +1,215 @@
++---
++name: knowledge-tree-builder
++description: 知识分域建树管线 — 从文章自动提取知识点、五分类、原子性拆解、准入去重、领域树定位、纠错回路
++version: 0.1.0
++author: Hermes Agent
++license: MIT
++metadata:
++  hermes:
++    tags: [knowledge-tree, knowledge-point, extraction, clustering, nlp, pipeline]
++    related_skills: [deep-research, audit-methodology, explore]
++    categories: [knowledge-management, data-processing]
++---
++
++# Knowledge Tree Builder Skill
++
++将文章（精读笔记、审计报告、技术文档）自动转化为结构化的知识树。
++分四阶段：知识点提取与拆解 → 准入去重 → 树定位 → 纠错回路。
++
++## 前置条件
++
++- LLM 服务运行中（`http://127.0.0.1:4142`）
++- PG 数据库可访问（`localhost:5434/hindsight`）
++- 环境变量 `LITELLM_MASTER_KEY` 已设置
++- 环境变量 `KT_DB_URL` 已设置（默认 `postgresql://postgres@127.0.0.1:5434/hindsight`）
++
++## 快速使用
++
++```bash
++# 初始化数据库（首次运行）
++knowledge-tree-builder init-db
++
++# 完整管线：提取 → 拆解 → 准入 → 树定位 → 写入 PG
++knowledge-tree-builder run \
++  --input-dir /path/to/articles \
++  --merged \
++  --apply
++
++# 仅预览（不写入 PG）
++knowledge-tree-builder run \
++  --input-dir /path/to/articles \
++  --merged \
++  --dry-run
++```
++
++## 五类知识点
++
++系统自动从文章中提取以下五类知识点：
++
++| 类型 | 定义 | 示例 |
++|------|------|------|
++| principle | 因果/机制关系 | "Q/K 分离使 query 不进 K 空间" |
++| formula | 可计算形式化表述 | "attention = softmax(Q×K^T/√d)" |
++| key_point | 事实/分类/结构 | "自进化Agent 分为三大范式" |
++| conclusion | 有条件对比 | "HDBSCAN 在非均匀密度上优于 DBSCAN" |
++| method | 可复现步骤/规范 | "部署流程分三步：备份→同步→验证" |
++
++## 管线阶段
++
++```
++文件系统 → Pre-phase 扫描排除 → 阶段1 分析提取（+ claims_count）
++  → 阶段2 拆解校验（原子性 + 自解释 + sum 校验）
++  → 阶段3 准入去重（兜底拦截 + 两段式去重 + 矛盾检测）
++  → 阶段4 树定位（领域匹配 + 科目匹配 + 写入 PG）
++  → 纠错回路（confidence 收敛 + review_queue）
++```
++
++### Pre-phase：输入扫描
++
++扫描输入目录，排除 `index.md`、`moc.md`、`_bak/`、二进制文件、空文件。
++
++### 阶段1+2（合并模式，推荐）
++
++单次 LLM 调用完成分析 + 拆解，跳过 claims_count 校验，节省约 80% tokens。
++
++```bash
++knowledge-tree-builder run --input-dir <目录> --merged --apply
++```
++
++### 阶段3：准入去重
++
++- **兜底拦截**：长度 < 10 字、元信息开头、提取失败信号 → 丢弃
++- **两段式去重**：cosine > 0.95 直接判重；0.90~0.95 LLM 确认
++- **矛盾检测**：条件相同 + 结论对立 → 入 review_queue
++
++### 阶段4：树定位
++
++LLM 判断文章所属领域，有则入、无则新建。知识点只存一份，跨域引用。
++
++## 并发提取
++
++默认串行处理（一篇等一篇）。多篇文章可用 `-j` 并发加速：
++
++```bash
++# 3 路并发（推荐）
++knowledge-tree-builder run --input-dir <目录> --merged --apply -j 3
++
++# 5 路并发（注意 API 限流）
++knowledge-tree-builder run --input-dir <目录> --merged --apply -j 5
++```
++
++并发数不影响提取质量，只影响吞吐。建议起始 `-j 3`。
++
++## 断点续传
++
++管线支持三级断点续传：
++
++| 层级 | 缓存文件 | 作用 |
++|------|----------|------|
++| L1 提取 | `.kb_manifest_<目录>.json` + `_atomics/` | Phase 1+2 逐篇进度 |
++| L2 Embedding | `.kb_embed_cache.json` | embedding 结果缓存 |
++| L3 树定位 | `.kb_phase4_<目录>.json` | Phase 4 领域 + placement 缓存 |
++
++- 提取中断 → 重跑自动续传，跳过已提取的
++- 写入中断 → atomics 已存盘，重跑直接 admit + 写入
++- 树定位中断 → 领域判断和 placement records 已缓存，重跑自动跳过已定位文章
++- 单篇失败 → 跳过继续，最后列出失败清单
++
++## 审查队列
++
++```bash
++# 查看待处理项
++knowledge-tree-builder review list
++
++# 按类型筛选
++knowledge-tree-builder review list --type contradiction
++
++# 接受/拒绝
++knowledge-tree-builder review accept <id>
++knowledge-tree-builder review reject <id>
++```
++
++## 维护命令
++
++### 回填 k_vector
++
++修复历史数据中缺失的 embedding 向量（如 k_vector 全部为 NULL 时）：
++
++```bash
++# 预览待回填数
++knowledge-tree-builder backfill-k-vectors --dry-run
++
++# 执行回填
++knowledge-tree-builder backfill-k-vectors
++```
++
++### 领域重分类
++
++将错误归入 `general` 的知识点重新分配到正确领域。
++3 级漏斗：关键词规则 → 语义 cosine → LLM 批量判断：
++
++```bash
++# 预览迁移计划
++knowledge-tree-builder redistribute --dry-run
++
++# 执行迁移
++knowledge-tree-builder redistribute
++```
++
++## 纠错回路（一键维护）
++
++单条命令自动完成 3 件事：
++
++```bash
++# 默认开启全部： domain 合并 + confidence 更新 + 子科目拆分
++knowledge-tree-builder consolidate run
++
++# 仅做 confidence 更新（跳过 domain 合并）
++knowledge-tree-builder consolidate run --no-merge-domains
++
++# 处理超时审查项
++knowledge-tree-builder consolidate process-timeouts
++```
++
++`consolidate run` 自动执行：
++
++| 阶段 | 动作 | 条件 |
++|------|------|------|
++| 1 | 碎片 domain 合并 | 子节点 < 5 的 domain 合并到最近的大 domain |
++| 2 | 子科目拆分（HDBSCAN聚类） | 子节点 > 50 |
++| 3 | confidence 更新 | 有使用日志 |
++| 4 | 跨科建边 | 共现率 > 80% |
++| 5 | 超时审查项处理 | review_queue 有超时 |
++
++## 查看知识树
++
++```bash
++knowledge-tree-builder tree
++knowledge-tree-builder find <关键词>
++```
++
++## Pipelne 输出格式
++
++阶段间通过 JSON 产物传递：
++
++```
++admitted_files.json → analysis_report.json → atomic_knowledge_list.json
++→ admitted_knowledge_list.json → tree_insertion_records.json → PG
++```
++
++## 实现模块
++
++| 模块 | 职责 |
++|------|------|
++| `phase/scan.py` | 文件扫描与过滤 |
++| `phase/merged.py` | 分析+拆解合并（推荐路径） |
++| `phase/analyze.py` | 独立分析（非合并模式） |
++| `phase/split.py` | 独立拆解（非合并模式） |
++| `phase/admit.py` | 准入去重 + 矛盾检测 |
++| `place.py` | 树定位 + PG 写入（含 k_vector 补写） |
++| `scripts/backfill_k_vectors.py` | k_vector 批量回填（CLI: backfill-k-vectors） |
++| `scripts/redistribute_general.py` | 领域重分类（CLI: redistribute） |
++| `consolidate/confidence.py` | confidence 衰减 |
++| `consolidate/review.py` | review_queue 操作 |
++| `adapters/database.py` | PG 适配器 |
++| `models.py` | 共享数据结构 |
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/__init__.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/__init__.py
+index 1e3630d..89e28f8 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/__init__.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/__init__.py
+@@ -12,7 +12,19 @@ from knowledge_tree_builder.core.admission import filter_knowledge_points
+ from knowledge_tree_builder.core.incremental import dedup_before_insert, detect_conflict, local_q
+ from knowledge_tree_builder.adapters.database import DatabaseAdapter
+ 
++# Phase A: 新管线模块
++from knowledge_tree_builder.models import (
++    KnowledgeType,
++    KNOWLEDGE_TYPE_NAMES,
++    KNOWLEDGE_TYPE_LABELS,
++    adjust_claims_count,
++)
++from knowledge_tree_builder.phase.scan import scan_input_dir
++from knowledge_tree_builder.phase.analyze import analyze_article
++from knowledge_tree_builder.phase.split import process_candidates
++
+ __all__ = [
++    # 旧管线 API（保留）
+     "batch_embed",
+     "cosine_similarity",
+     "extract_knowledge_points",
+@@ -21,4 +33,12 @@ __all__ = [
+     "detect_conflict",
+     "local_q",
+     "DatabaseAdapter",
++    # Phase A: 新管线 API
++    "KnowledgeType",
++    "KNOWLEDGE_TYPE_NAMES",
++    "KNOWLEDGE_TYPE_LABELS",
++    "adjust_claims_count",
++    "scan_input_dir",
++    "analyze_article",
++    "process_candidates",
+ ]
+diff --git a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py
+index db4920d..fc9dcf9 100644
+--- a/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py
++++ b/scripts/knowledge-tree-builder/src/knowledge_tree_builder/adapters/database.py
+@@ -18,17 +18,48 @@ import psycopg2.extras
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _parse_k_vector(raw: object) -> list[float] | None:
++    """将 pgvector 的 k_vector 安全转为 Python list。
++
++    无论 pgvector psycopg2 适配器是否生效（VECTOR 可能被读为字符串），
++    都能正确解析。返回 None 表示无法解析。
++    """
++    if raw is None:
++        return None
++    # pgvector 适配器生效时：list[float]
++    if isinstance(raw, list):
++        return raw
++    # pgvector 适配器生效时：tuple/numpy array
++    if hasattr(raw, "__iter__") and not isinstance(raw, (str, bytes)):
++        try:
++            return [float(x) for x in raw]
++        except (ValueError, TypeError):
++            return None
++    # pgvector 适配器未生效时：字符串 '[1.0, 2.0, ...]'
++    if isinstance(raw, (str, bytes)):
++        import json as _json
++        try:
++            parsed = _json.loads(str(raw))
++            if isinstance(parsed, list) and all(isinstance(x, (int, float)) for x in parsed):
++                return [float(x) for x in parsed]
++        except (_json.JSONDecodeError, ValueError, TypeError):
++            pass
++    return None
++
++
+ class DatabaseAdapter:
+     """知识树数据库适配器"""
+ 
+     def __init__(self, db_url: str) -> None:
+         self.conn = psycopg2.connect(db_url)
+-        self.conn.autocommit = False
++        # 先注册 pgvector 类型（必须在 autocommit=False 之前，否则
++        # register_vector 内部调用 set_session 会因事务冲突而报错）
+         if PGVECTOR_AVAILABLE:
+             try:
+                 register_vector(self.conn)
+             except Exception as e:
+-                logger.warning("pgvector register_vector 失败: %s", e)
++                logger.error("pgvector register_vector 失败（k_vector 将被读为字符串而非 list）: %s", e)
++        self.conn.autocommit = False
+         self.cursor = self.conn.cursor()
+ 
+     # ========== Source Articles ==========
+@@ -153,15 +184,6 @@ class DatabaseAdapter:
+             return list(row[0])
+         return None
+ 
+-    def update_k_vector(self, node_id: int, k_vector: list[float], placement_count: int) -> None:
+-        """更新节点的 K 向量"""
+-        self.cursor.execute(
+-            "UPDATE knowledge_tree SET k_vector = %s, placement_count = %s, "
+-            "k_updated_at = NOW() WHERE id = %s",
+-            (k_vector, placement_count, node_id),
+-        )
+-        self.conn.commit()
+-
+     def query_cooccurrence(self, subject_id: int, days_back: int = 30) -> dict[int, float]:
+         """查询某个科目与其他科目的共现率（基于 knowledge_use_log）。
+ 
+@@ -310,6 +332,200 @@ class DatabaseAdapter:
+             self.cursor.execute(stmt)
+         self.conn.commit()
+ 
++    # ========== Phase 4: Tree Placement ==========
++
++    def get_all_domains(self) -> list[str]:
++        """获取知识树中所有顶级领域名。"""
++        self.cursor.execute(
++            "SELECT DISTINCT name FROM knowledge_tree "
++            "WHERE parent_id IS NULL AND node_type = 'subject' "
++            "ORDER BY name"
++        )
++        return [row[0] for row in self.cursor.fetchall()]
++
++    def get_subjects_by_domain(self, domain: str) -> list[dict[str, Any]]:
++        """获取指定领域下的所有科目。"""
++        self.cursor.execute(
++            "SELECT kt.id, kt.name, kt.k_vector "
++            "FROM knowledge_tree kt "
++            "JOIN knowledge_tree domain ON kt.parent_id = domain.id "
++            "WHERE domain.name = %s AND domain.node_type = 'subject' "
++            "AND kt.node_type = 'subject'",
++            (domain,),
++        )
++        rows = self.cursor.fetchall()
++        return [
++            {"id": str(r[0]), "name": r[1], "k_vector": r[2] if len(r) > 2 else None}
++            for r in rows
++        ]
++
++    def find_or_create_subject(self, name: str, parent_id: int | None = None) -> int:
++        """查找或创建科目节点。返回节点 ID。"""
++        if parent_id is None:
++            self.cursor.execute(
++                "SELECT id FROM knowledge_tree WHERE name = %s AND parent_id IS NULL",
++                (name,),
+
+
+[… truncated 82963 chars …]
