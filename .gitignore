@@ -93,3 +93,16 @@ data/interim/
 *.secret
 config/local*.yaml
 config/local*.yml
+
+# === BFG 安全清理：发布用 ===
+.reasonix/truncated-results/
+__review_*.txt
+__*_diff.txt
+__baseline_*.txt
+__config_*.txt
+__filtering_*.txt
+baseline_output.json
+agent-tasks/
+.uploads/
+mnt/
+nul
