@@ -925,6 +925,15 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     trace_data = result.get("trace", {})
     rerank_map = extract_rerank_scores(trace_data) if raw_results else {}
 
+    # 回填 rerank_score 到原始结果上，供下游（含日志/测试）使用
+    if rerank_map and filtered_raw:
+        for r in filtered_raw:
+            nid = r.get("id", "")
+            score = rerank_map.get(nid)
+            if score is not None:
+                r.setdefault("score", score)
+                r.setdefault("rerank_score", score)
+
     # ===== C-P1-4: 本地重要性缓存 — boost 高频记忆 =====
     if filtered_raw:
         _hit_counter.boost_scores(filtered_raw, rerank_map)

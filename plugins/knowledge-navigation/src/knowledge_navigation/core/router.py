@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 
 import httpx
@@ -49,7 +50,14 @@ def route(
     """LLM Router 决策三路 mask。
 
     缓存 key=(session_id, message) 精确匹配，同轮 tool call 复用，新 message 重走。
+
+    api_key 为空时从环境变量 KN_ROUTER_API_KEY 动态加载，
+    绕过 CONFIG 模块级单例在 import 时的 env 未就绪问题。
     """
+    if not api_key:
+        api_key = os.getenv("KN_ROUTER_API_KEY", "")
+    if timeout <= 0:
+        timeout = int(os.getenv("KN_ROUTER_TIMEOUT", "15"))
     cache_key = (session_id, message)
     cached = _router_cache.get(cache_key)
     if cached is not None:
@@ -64,7 +72,7 @@ def route(
             json={
                 "model": model,
                 "temperature": 0.1,
-                "max_tokens": 64,
+                "max_tokens": 256,
                 "messages": [
                     {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
                     {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
@@ -74,7 +82,10 @@ def route(
             timeout=timeout,
         )
         resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        raw = resp.json()["choices"][0]["message"].get("content", "")
+        if raw is None:
+            raw = ""
+        raw = raw.strip()
     except Exception as e:
         logger.warning("Router 调用失败 (%s)，fallback 全开", e)
         _router_cache[cache_key] = {"h": True, "kt": True, "s": True}
