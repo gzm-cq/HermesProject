@@ -198,6 +198,8 @@ post_llm_call hook 中新增记录逻辑：
 
 #### Phase C：自动改进（cron 触发）
 
+**默认状态：关闭**，依赖 Phase B 的 RAGAS 评估数据。Router prompt 微调和召回参数调整涉及线上行为变更，建议积累至少 100 条评估样本后再启用。
+
 ```
 基于评估报告的自动化动作：
   1. Router prompt 微调：
@@ -285,20 +287,33 @@ pre_llm_call 注入完成后，将 recalled_ids 写入 memory_use_log 表：
 3. 冷记忆识别：
    → recall_count = 0 且 created_at > 30 天 → "从未被召回"
    → recall_count > 0 但 faithfulness 持续 < 0.3 → "召回但未被有效使用"
-   → 两者都标记为 [标记: 待验证]
+   → 输出冷记忆列表到评估报告，不直接标记（标记会触发在线排除）
+   → 供 Phase C 自动淘汰或人工决定是否标记
 ```
 
 #### Phase C：自动生命周期管理（cron 触发）
 
 **改动位置**：memory-cleanup 或新建 memory-lifecycle 脚本
 
+**默认状态：关闭**，需在 cron 配置中手动启用。冷记忆淘汰和高频回升均涉及不可逆操作（标记在线排除 / 修改 MEMORY.md），必须先运行 Phase B 确认数据可信后再开启。
+
 **设计**：
 
 ```
 1. 冷记忆淘汰（自动）：
-   → created_at > 90 天 且 recall_count = 0 且 非标记保留 → [标记: 待验证]
-   → 超过 180 天 且 recall_count = 0 → [标记: 作废]（在线排除生效）
-   → 可配置时间阈值，保守起见只标记不删除
+
+   标记机制说明（源码核实）：
+   → 标记通过 mark_memory.py 追加到 memory_units.text 末尾，不删除数据
+   → knowledge-navigation 的 exclude_marked() 用正则匹配 text[-100:] 实现在线排除
+   → 当前 _MARK_EXCLUDE 匹配: [标记: 错误|作废|可疑|待验证] → 完全排除
+   → 当前 _MARK_DEMOTE 匹配: [标记: 已解决] → 降权 0.3x
+
+   注意：[标记: 待验证] 会被在线完全排除，不等同于“挂起待审”。
+   因此冷记忆淘汰采用单步策略，去掉中间态：
+
+   → created_at > 90 天 且 recall_count = 0 且 非标记保留 → [标记: 作废]（在线排除）
+   → 可配置时间阈值（默认 90 天），标记即排除，不设“待验证”中间态
+   → 理由：90 天零召回本身就是强信号，“挂起待审”需要专用审核 UI，而本系统无 UI
 
 2. 高频记忆回升（L3 → L2）：
    → recall_count_decayed（指数衰减）持续 > 阈值（如每周被召回 5+ 次）
@@ -415,6 +430,8 @@ pre_llm_call 注入完成后，将 recalled_ids 写入 memory_use_log 表：
 
 **改动位置**：新建 cron 子项目或集成到 clustering-analysis-v3
 
+**默认状态：关闭**，需在 cron 配置中手动启用。首次运行建议用 `--dry-run` 模式只输出评分报告不执行任何修改，人工确认评分合理后再开启自动修复（Phase C）。
+
 **设计**：
 
 ```
@@ -453,6 +470,8 @@ pre_llm_call 注入完成后，将 recalled_ids 写入 memory_use_log 表：
 #### Phase C：质量驱动的自动修复（cron 触发）
 
 **改动位置**：clustering-analysis-v3 + knowledge-tree-builder consolidate
+
+**默认状态：关闭**，依赖 Phase B 的评分数据。建议 Phase B 的 dry-run 报告人工审核通过后再启用。
 
 **设计**：
 
