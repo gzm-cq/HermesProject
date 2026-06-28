@@ -93,13 +93,16 @@ def _get_cached_conn(db_url: str, pg_module) -> "psycopg2.extensions.connection 
 
 
 from knowledge_navigation.core.filtering import (
+    apply_token_budget,
     calculate_score_stats,
     cross_domain_dedup,
+    estimate_tokens,
     exclude_marked,
     extract_rerank_scores,
     filter_by_score,
 )
 from knowledge_navigation.core.router import route as _router_route
+from knowledge_navigation.core.use_log import UseLogger
 
 # 评测日志（独立文件，用于评估灵活匹配效果）
 _eval_logger: logging.Logger | None = None
@@ -189,6 +192,32 @@ class _TaskTracker:
 _compaction = _CompactionTracker()
 _hit_counter = _HitCounter()
 _task_tracker = _TaskTracker()
+
+# P2-2 Phase A: 记忆使用日志
+_use_logger: UseLogger | None = None
+
+
+def _get_use_logger() -> UseLogger | None:
+    """懒加载 UseLogger 实例。
+
+    Feature Flag: CONFIG.enable_use_log=false 时返回 None，完全不启用。
+    """
+    global _use_logger
+    if not CONFIG.enable_use_log:
+        return None
+    if _use_logger is not None:
+        return _use_logger
+    try:
+        _use_logger = UseLogger(
+            enabled=CONFIG.enable_use_log,
+            batch_size=CONFIG.use_log_batch_size,
+            flush_interval_seconds=CONFIG.use_log_flush_interval_seconds,
+            log_path=CONFIG.use_log_path,
+        )
+    except Exception as e:
+        logger.debug("UseLogger init failed silently: %s", e)
+        _use_logger = None
+    return _use_logger
 
 # Turn-to-turn 去重：session 隔离的 LRU，记录本轮已注入的 memory node_id
 # 结构：{session_id: OrderedDict{node_id: timestamp}}
@@ -551,11 +580,14 @@ def _do_kt_recall(session_id: str, query: str) -> list[dict]:
 
 
 def _do_skill_match(query: str) -> str:
-    """执行 skill 匹配（LLM 选择 + 读盘注入全文），返回注入文本或空字符串。"""
+    """执行 skill 匹配（关键词预筛选 + LLM 精排 + 读盘注入全文），返回注入文本或空字符串。"""
     from knowledge_navigation.core.skill_matcher import match_skills, strip_frontmatter  # type: ignore[import-untyped]
 
     try:
-        matched = match_skills(query)
+        matched = match_skills(
+            query,
+            enable_keyword_prescreen=CONFIG.kn_skill_keyword_prescreen,
+        )
         if not matched:
             return ""
         lines: list[str] = ["", "<auto_loaded_skills>"]
@@ -840,6 +872,34 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     latency_ms = int((time.time() - t0) * 1000)
     raw_results = result.get("results", [])
 
+    # ===== P2-2 Phase A: 记录召回使用日志 =====
+    _ul = _get_use_logger()
+    if _ul is not None:
+        try:
+            if _hs_active and raw_results:
+                _ul.log_recall(
+                    query=user_message,
+                    results=raw_results,
+                    source="hindsight",
+                    session_id=session_id,
+                )
+            if _kt_active and kt_raw_results:
+                _ul.log_recall(
+                    query=user_message,
+                    results=kt_raw_results,
+                    source="knowledge_tree",
+                    session_id=session_id,
+                )
+            if _s_active and _skill_context:
+                _ul.log_recall(
+                    query=user_message,
+                    results=[{"id": "skill_context", "score": 1.0}],
+                    source="skill",
+                    session_id=session_id,
+                )
+        except Exception as _ul_err:
+            logger.debug("use_log record failed silently: %s", _ul_err)
+
     if not raw_results and not kt_raw_results:
         # 两侧均无结果
         if _hs_active:
@@ -921,12 +981,17 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     # ===== 跨域语义去重：知识域 vs 经验域（默认文本 n-gram，无 API 调用）=====
     kt_dedup_removed = 0
     if kt_raw_results and kept:
+        # 读取配置，支持 KN_CROSS_DOMAIN_DEDUP_ACTION=remove/demote 和 KN_CROSS_DEDUP_DEMOTE_FACTOR
+        dedup_action = CONFIG.cross_domain_dedup_action
+        dedup_demote_factor = CONFIG.cross_domain_dedup_demote_factor
         if CONFIG.cross_domain_dedup_mode == "text_embedding":
             kt_raw_results, kt_dedup_removed = cross_domain_dedup(
                 hindsight_results=kept,
                 kt_results=kt_raw_results,
                 threshold=0.65,
                 embed_fn=_batch_embed,
+                action=dedup_action,
+                demote_factor=dedup_demote_factor,
             )
         else:
             kt_raw_results, kt_dedup_removed = cross_domain_dedup(
@@ -934,10 +999,13 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
                 kt_results=kt_raw_results,
                 threshold=0.65,
                 embed_fn=None,  # 文本模式，不调用 embedding API
+                action=dedup_action,
+                demote_factor=dedup_demote_factor,
             )
         if kt_dedup_removed:
             logger.info(
-                "跨域去重移除 %d 条知识树重复结果",
+                "跨域去重（%s）移除 %d 条知识树重复结果",
+                dedup_action,
                 kt_dedup_removed,
                 extra={"session_id": session_id, "kt_dedup_removed": kt_dedup_removed},
             )
@@ -988,6 +1056,56 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     # 文本去重：同一轮 recall 中 Jaccard 相似度 > 0.8 的只保留一条
     from knowledge_navigation.core.filtering import dedup_by_text as _dedup_by_text
     kept = _dedup_by_text(kept)
+
+    # ===== P1-1: Token 预算守门 =====
+    if CONFIG.enable_token_budget:
+        hs_list = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
+        kt_list = [r for r in kept if r.get("source") == "knowledge_tree"]
+        skill_list = []
+        if _skill_context:
+            skill_list = [{"text": _skill_context, "source": "skill", "final_score": 1.0}]
+
+        hs_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_list)
+        kt_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_list)
+        skill_tokens_before = estimate_tokens(_skill_context) if _skill_context else 0
+
+        hs_kept_tb, kt_kept_tb, skill_kept_tb = apply_token_budget(
+            hs_list,
+            kt_list,
+            skill_list,
+            CONFIG.token_budget_total,
+            CONFIG.token_budget_hindsight_ratio,
+            CONFIG.token_budget_kt_ratio,
+            CONFIG.token_budget_skill_ratio,
+        )
+
+        hs_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb)
+        kt_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_kept_tb)
+        skill_tokens_after = estimate_tokens(skill_kept_tb[0]["text"]) if skill_kept_tb else 0
+
+        kept = hs_kept_tb + kt_kept_tb
+        if skill_kept_tb:
+            _skill_context = skill_kept_tb[0]["text"]
+        else:
+            _skill_context = ""
+
+        logger.info(
+            "Token budget: hs %d→%d, kt %d→%d, skill %d→%d (total budget=%d)",
+            hs_tokens_before, hs_tokens_after,
+            kt_tokens_before, kt_tokens_after,
+            skill_tokens_before, skill_tokens_after,
+            CONFIG.token_budget_total,
+            extra={
+                "event": "token_budget",
+                "hs_tokens_before": hs_tokens_before,
+                "hs_tokens_after": hs_tokens_after,
+                "kt_tokens_before": kt_tokens_before,
+                "kt_tokens_after": kt_tokens_after,
+                "skill_tokens_before": skill_tokens_before,
+                "skill_tokens_after": skill_tokens_after,
+                "total_budget": CONFIG.token_budget_total,
+            },
+        )
 
     # 最终注入候选统一分数统计（Hindsight + KT，不含 task summary）
     score_stats = calculate_score_stats([_candidate_score(r) for r in kept])

@@ -403,6 +403,93 @@ class DatabaseAdapter:
         self.conn.commit()
         return updated
 
+    def update_quality_score(
+        self,
+        memory_id: str,
+        quality_score: float,
+        quality_details: dict[str, float] | None = None,
+    ) -> bool:
+        """更新记忆单元的质量评分。
+
+        若 memory_units 表中没有 quality_score 字段，则不写入，返回 False。
+        仅当字段存在且更新成功时返回 True。
+
+        Args:
+            memory_id: 记忆单元 ID
+            quality_score: 综合质量分数（0-1）
+            quality_details: 各维度详细分数（可选）
+
+        Returns:
+            是否成功更新
+        """
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'memory_units' AND column_name = 'quality_score'",
+                )
+                if not cur.fetchone():
+                    return False
+
+                details_json = json.dumps(quality_details) if quality_details else None
+                cur.execute(
+                    "UPDATE memory_units SET quality_score = %s, quality_details = %s WHERE id = %s",
+                    (quality_score, details_json, memory_id),
+                )
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            return False
+
+    def batch_update_quality_scores(
+        self,
+        updates: list[tuple[str, float, dict[str, float] | None]],
+    ) -> int:
+        """批量更新记忆单元的质量评分。
+
+        若 memory_units 表中没有 quality_score 字段，则不写入，返回 0。
+
+        Args:
+            updates: [(memory_id, quality_score, quality_details), ...]
+
+        Returns:
+            成功更新的条数
+        """
+        if not updates:
+            return 0
+
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'memory_units' AND column_name = 'quality_score'",
+                )
+                if not cur.fetchone():
+                    return 0
+
+                params = [
+                    (uid, score, json.dumps(details) if details else None)
+                    for uid, score, details in updates
+                ]
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    UPDATE memory_units AS mu
+                    SET quality_score = v.score, quality_details = v.details
+                    FROM (VALUES %s) AS v(id, score, details)
+                    WHERE mu.id = v.id::uuid
+                    """,
+                    params,
+                    template="(%s, %s, %s)",
+                )
+                updated = cur.rowcount
+            self.conn.commit()
+            return updated
+        except Exception:
+            self.conn.rollback()
+            return 0
+
     def close(self) -> None:
         """关闭数据库连接"""
         if self._conn is not None:

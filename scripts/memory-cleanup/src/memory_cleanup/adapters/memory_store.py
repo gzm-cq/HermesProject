@@ -44,13 +44,21 @@ class MemoryFileStore:
                 deduped.append(e)
         return deduped
 
-    def _retain(self, content: str) -> bool:
-        """retain 到 Hindsight（2 次重试），返回成功/失败。"""
+    def _retain(self, content: str, tags: list[str] | None = None) -> bool:
+        """retain 到 Hindsight（2 次重试），返回成功/失败。
+
+        Args:
+            content: 记忆内容
+            tags: 可选的关键词标签列表
+        """
+        item: dict[str, Any] = {"content": content}
+        if tags:
+            item["tags"] = tags
         for attempt in range(2):
             try:
                 req = urllib.request.Request(
                     self._config.hindsight_url,
-                    data=json.dumps({"items": [{"content": content}]}).encode(),
+                    data=json.dumps({"items": [item]}).encode(),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
@@ -61,6 +69,17 @@ class MemoryFileStore:
                     continue
                 logger.warning("retain failed after 2 attempts: %s", e)
                 return False
+
+    def fetch_hindsight_entries(self) -> list[dict[str, Any]]:
+        """从 Hindsight 获取条目列表。
+
+        暂时返回空列表（mock 实现），等 Hindsight API 支持查询后再接上真实数据。
+
+        Returns:
+            Hindsight 条目列表，每个条目含 content、tags 等字段
+        """
+        logger.info("fetch_hindsight_entries: 暂用 mock 实现，返回空列表")
+        return []
 
     def execute_cleanup(
         self,
@@ -74,8 +93,10 @@ class MemoryFileStore:
         v2_corrected: list[dict[str, Any]],
         v2_keep: list[dict[str, Any]],
         hindsight_list: list[dict[str, Any]] | None = None,
+        evict_list: list[dict[str, Any]] | None = None,
+        promote_list: list[dict[str, Any]] | None = None,
     ) -> dict[str, list]:
-        """执行清理：merge/compress/remove + Phase 2 三类判决 + hindsight。
+        """执行清理：merge/compress/remove + Phase 2 三类判决 + hindsight + evict/promote。
 
         延迟导入 hermes-agent MemoryStore，仅在 --apply 模式下触发。
         """
@@ -233,7 +254,14 @@ class MemoryFileStore:
                     continue
                 if idx in removed_already:
                     continue
-                if self._retain(entries[idx]):
+                tags = None
+                if self._config.keyword_backfill:
+                    raw_tags = h.get("关键词", [])
+                    if isinstance(raw_tags, list):
+                        tags = [t for t in raw_tags if t and isinstance(t, str)]
+                        if not tags:
+                            tags = None
+                if self._retain(entries[idx], tags=tags):
                     if _remove(idx):
                         results["ok"].append((source, idx, "hindsight"))
                     else:
@@ -253,5 +281,42 @@ class MemoryFileStore:
             if idx in skip_set or idx in keep_set or idx in removed_already:
                 continue
             _remove(idx)
+
+        # 8. 冷记忆淘汰（evict_to_hindsight）：从 L2 移到 Hindsight
+        if evict_list:
+            print(f"    evict_to_hindsight: {len(evict_list)} 条...", flush=True)
+            for e in evict_list:
+                idx = e.get("index", -1)
+                if idx < 0 or idx >= len(entries):
+                    continue
+                if idx in removed_already:
+                    continue
+                tags = None
+                if self._config.keyword_backfill:
+                    raw_tags = e.get("关键词", [])
+                    if isinstance(raw_tags, list):
+                        tags = [t for t in raw_tags if t and isinstance(t, str)]
+                        if not tags:
+                            tags = None
+                if self._retain(entries[idx], tags=tags):
+                    if _remove(idx):
+                        results["ok"].append((source, idx, "evict_to_hindsight"))
+                    else:
+                        results["fail"].append((source, idx, "evict_to_hindsight: remove failed after retain"))
+                else:
+                    logger.warning("evict_to_hindsight [%d]: retain 失败，保留原始条目", idx)
+                    results["fail"].append((source, idx, "evict_to_hindsight: retain failed"))
+
+        # 9. 高频回升（promote_to_l2）：从 Hindsight 移到 L2
+        if promote_list:
+            print(f"    promote_to_l2: {len(promote_list)} 条...", flush=True)
+            for p in promote_list:
+                content = p.get("content", "")
+                if not content:
+                    continue
+                if _add(content):
+                    results["ok"].append((source, -1, "promote_to_l2"))
+                else:
+                    results["fail"].append((source, -1, "promote_to_l2: add failed"))
 
         return results

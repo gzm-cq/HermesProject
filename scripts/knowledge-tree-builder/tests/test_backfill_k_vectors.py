@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -16,6 +16,8 @@ from knowledge_tree_builder.scripts.backfill_k_vectors import backfill_k_vectors
 def mock_adapter() -> MagicMock:
     adapter = MagicMock()
     adapter.cursor = MagicMock()
+    # 默认两次 fetchall 都返回空，测试可覆盖
+    adapter.cursor.fetchall.return_value = []
     return adapter
 
 
@@ -37,10 +39,10 @@ class TestBackfillKVectorsDryRun:
 
     def test_dry_run_counts_but_no_writes(self, mock_adapter: MagicMock) -> None:
         """dry-run 返回 total 但不调用 update_k_vector。"""
-        mock_adapter.cursor.fetchall.return_value = [
-            (1, "text A"),
-            (2, "text B"),
-            (3, "text C"),
+        # 3 个知识点，无 subject
+        mock_adapter.cursor.fetchall.side_effect = [
+            [(1, "text A"), (2, "text B"), (3, "text C")],  # 知识点
+            [],  # subject（空）
         ]
 
         stats = backfill_k_vectors(mock_adapter, dry_run=True, embed_api_key="test")
@@ -59,9 +61,10 @@ class TestBackfillKVectorsNormal:
         self, mock_embed: MagicMock, mock_adapter: MagicMock
     ) -> None:
         """全部成功回填。"""
-        mock_adapter.cursor.fetchall.return_value = [
-            (10, "text A"),
-            (20, "text B"),
+        # 两次 fetchall：知识点 + subject（空）
+        mock_adapter.cursor.fetchall.side_effect = [
+            [(10, "text A"), (20, "text B")],  # 知识点
+            [],  # subject（空）
         ]
         mock_embed.return_value = [[0.1] * 1024, [0.2] * 1024]
 
@@ -83,8 +86,11 @@ class TestBackfillKVectorsNormal:
         self, mock_embed: MagicMock, mock_adapter: MagicMock
     ) -> None:
         """batch_size 控制分批调用次数。"""
-        rows = [(i, f"text {i}") for i in range(1, 6)]  # 5 个节点
-        mock_adapter.cursor.fetchall.return_value = rows
+        # 5 个知识点，无 subject
+        mock_adapter.cursor.fetchall.side_effect = [
+            [(i, f"text {i}") for i in range(1, 6)],  # 知识点
+            [],  # subject（空）
+        ]
         mock_embed.return_value = [[0.1] * 1024] * 3  # 每批 3 个
 
         stats = backfill_k_vectors(
@@ -107,9 +113,10 @@ class TestBackfillKVectorsFailures:
         self, mock_embed: MagicMock, mock_adapter: MagicMock
     ) -> None:
         """batch_embed 返回 None 时整批计为 error。"""
-        mock_adapter.cursor.fetchall.return_value = [
-            (1, "text A"),
-            (2, "text B"),
+        # 2 个知识点，无 subject
+        mock_adapter.cursor.fetchall.side_effect = [
+            [(1, "text A"), (2, "text B")],  # 知识点
+            [],  # subject（空）
         ]
         mock_embed.return_value = None
 
@@ -125,10 +132,10 @@ class TestBackfillKVectorsFailures:
         self, mock_embed: MagicMock, mock_adapter: MagicMock
     ) -> None:
         """batch_embed 返回数量不匹配时 fail-soft 跳过整批。"""
-        mock_adapter.cursor.fetchall.return_value = [
-            (1, "text A"),
-            (2, "text B"),
-            (3, "text C"),
+        # 3 个知识点，无 subject
+        mock_adapter.cursor.fetchall.side_effect = [
+            [(1, "text A"), (2, "text B"), (3, "text C")],  # 知识点
+            [],  # subject（空）
         ]
         # 只返回 2 个 embedding（期望 3 个）
         mock_embed.return_value = [[0.1] * 1024, [0.2] * 1024]
@@ -145,8 +152,10 @@ class TestBackfillKVectorsFailures:
         self, mock_embed: MagicMock, mock_adapter: MagicMock
     ) -> None:
         """batch_embed 抛异常时整批计为 error。"""
-        mock_adapter.cursor.fetchall.return_value = [
-            (1, "text A"),
+        # 1 个知识点，无 subject
+        mock_adapter.cursor.fetchall.side_effect = [
+            [(1, "text A")],  # 知识点
+            [],  # subject（空）
         ]
         mock_embed.side_effect = RuntimeError("API down")
 
@@ -162,9 +171,10 @@ class TestBackfillKVectorsFailures:
         self, mock_embed: MagicMock, mock_adapter: MagicMock
     ) -> None:
         """部分 embedding 为 None 时，对应节点计为 error。"""
-        mock_adapter.cursor.fetchall.return_value = [
-            (1, "text A"),
-            (2, "text B"),
+        # 2 个知识点，无 subject
+        mock_adapter.cursor.fetchall.side_effect = [
+            [(1, "text A"), (2, "text B")],  # 知识点
+            [],  # subject（空）
         ]
         # 第二个 embedding 为 None（会被数量校验拦截，因为 len != texts）
         mock_embed.return_value = [[0.1] * 1024, None]
@@ -185,7 +195,11 @@ class TestBackfillSQLQuery:
 
     def test_sql_uses_distinct_on(self, mock_adapter: MagicMock) -> None:
         """验证 SQL 包含 DISTINCT ON 防止多 text 节点重复。"""
-        mock_adapter.cursor.fetchall.return_value = []
+        # 两次 fetchall 都返回空（只需验证 SQL 查询）
+        mock_adapter.cursor.fetchall.side_effect = [
+            [],  # 知识点
+            [],  # subject
+        ]
 
         backfill_k_vectors(mock_adapter, dry_run=False, embed_api_key="test")
 

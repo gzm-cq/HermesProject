@@ -1,0 +1,24 @@
+# Default configuration for recall-eval
+# 所有字段均可通过 RECALL_EVAL_* 环境变量覆盖（见 config.py）
+
+# ── 输出模式 ──
+# output_mode: "human"    # "human" 或 "json"（可通过 RECALL_EVAL_OUTPUT_MODE 设置）
+
+# ── 文件路径 ──
+dataset_path: "data/eval_queries.json"
+output_path: "reports"
+
+# ── LLM 评估参数 ──
+eval_api_url: "http://127.0.0.1:4142/v1/chat/completions"
+eval_model: "s-deepseek-v4-flash"
+# eval_api_key: 通过 LITELLM_MASTER_KEY 环境变量注入
+
+# ── Hindsight API ──
+hindsight_url: "http://127.0.0.1:9177/v1/default/banks/hermes/memories/search"
+
+# ── 并发与批处理 ──
+batch_size: 10
+# max_workers: 自动根据 CPU 核心数计算（min(8, cpu+2)）
+
+# ── 日志 ──
+log_level: "INFO"

@@ -7,6 +7,7 @@ from memory_cleanup.core.classifier import (
     validate_compress_quality,
     validate_merge_quality,
 )
+from memory_cleanup.core.lifecycle import detect_cold_memories, detect_hot_memories
 from memory_cleanup.core.prompts import build_system_prompt
 from memory_cleanup.core.reporter import print_report, print_v2_detail
 from memory_cleanup.core.verifier import phase2_verify
@@ -16,6 +17,8 @@ __all__ = [
     "build_system_prompt",
     "calc_remove_candidates",
     "classify_all",
+    "detect_cold_memories",
+    "detect_hot_memories",
     "phase2_verify",
     "print_report",
     "print_v2_detail",

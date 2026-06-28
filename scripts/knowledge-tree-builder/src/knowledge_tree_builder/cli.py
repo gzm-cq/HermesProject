@@ -34,6 +34,7 @@ from knowledge_tree_builder.commands.crud import (
     cmd_move,
 )
 from knowledge_tree_builder.commands.complex import cmd_consolidate
+from knowledge_tree_builder.commands.lineage import cmd_lineage_show, cmd_lineage_export
 from knowledge_tree_builder.commands.run import _run_pipeline
 from knowledge_tree_builder.commands.deprecated import (
     cmd_run_old,
@@ -315,6 +316,34 @@ def consolidate(
       整合在 consolidate 中，无需独立命令。
     """
     cmd_consolidate(action, config_path, dry_run, merge_domains, min_domain_nodes, domain_merge_threshold, build_edges)
+
+
+lineage_app = typer.Typer(
+    name="lineage",
+    help="数据血缘管理 — 查看和导出知识节点的血缘信息",
+    add_completion=False,
+)
+app.add_typer(lineage_app, name="lineage")
+
+
+@lineage_app.command("show")
+def lineage_show(
+    node_id: str = typer.Argument(..., help="知识点ID"),
+    input_dir: str = typer.Option("references", "--input-dir", help="输入目录（用于定位血缘文件）"),
+    detail: bool = typer.Option(False, "--detail", "-d", help="显示详细信息（包含原文片段）"),
+) -> None:
+    """查看某个知识点的血缘信息。"""
+    cmd_lineage_show(node_id, input_dir, detail)
+
+
+@lineage_app.command("export")
+def lineage_export(
+    input_dir: str = typer.Option("references", "--input-dir", help="输入目录（用于定位血缘文件）"),
+    output: str = typer.Option("", "--output", "-o", help="输出文件路径（默认打印到控制台）"),
+    detail: bool = typer.Option(False, "--detail", "-d", help="导出详细信息（包含原文）"),
+) -> None:
+    """导出全量血缘记录。"""
+    cmd_lineage_export(input_dir, output, detail)
 
 
 @app.command(hidden=True)

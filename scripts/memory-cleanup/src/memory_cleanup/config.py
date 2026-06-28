@@ -24,6 +24,31 @@ def _safe_int_env(key: str, field: str, values: dict) -> None:
         logger.warning("环境变量 %s 不是有效整数: %r，已忽略", key, v)
 
 
+def _safe_float_env(key: str, field: str, values: dict) -> None:
+    """安全解析浮点型环境变量，失败时记录警告。"""
+    v = os.getenv(key)
+    if v is None:
+        return None
+    try:
+        values[field] = float(v)
+    except ValueError:
+        logger.warning("环境变量 %s 不是有效浮点数: %r，已忽略", key, v)
+
+
+def _safe_bool_env(key: str, field: str, values: dict) -> None:
+    """安全解析布尔型环境变量，失败时记录警告。"""
+    v = os.getenv(key)
+    if v is None:
+        return None
+    v_lower = v.lower()
+    if v_lower in ("true", "1", "yes", "on"):
+        values[field] = True
+    elif v_lower in ("false", "0", "no", "off"):
+        values[field] = False
+    else:
+        logger.warning("环境变量 %s 不是有效布尔值: %r，已忽略", key, v)
+
+
 class JSONFormatter(logging.Formatter):
     """统一 JSON 日志格式器。"""
 
@@ -124,6 +149,25 @@ class AppConfig:
     # ── 日志 ──
     log_level: str = "INFO"
 
+    # ── 压缩质量校验 ──
+    compress_strict_mode: bool = True
+    compress_min_ratio_memory: float = 8.0
+    compress_min_ratio_user: float = 5.0
+    compress_keyword_overlap_memory: float = 0.30
+    compress_keyword_overlap_user: float = 0.25
+    compress_entity_retention_memory: float = 0.50
+
+    # ── Hindsight 关键词回填 ──
+    keyword_backfill: bool = True
+    hindsight_keyword_count: int = 5
+
+    # ── 生命周期管理（P3-4） ──
+    cold_memory_eviction: bool = False
+    cold_memory_days: int = 30
+    hot_memory_promotion: bool = False
+    hot_memory_access_count: int = 10
+    l2_max_entries: int = 200
+
     # ── 校验配置 ──
     _VALID_OUTPUT_MODES: ClassVar[set[str]] = {"human", "json"}
 
@@ -143,6 +187,24 @@ class AppConfig:
             raise ValueError(f"user_char_limit must be >= 100, got {self.user_char_limit}")
         if self.output_mode not in self._VALID_OUTPUT_MODES:
             raise ValueError(f"output_mode must be one of {self._VALID_OUTPUT_MODES}, got {self.output_mode!r}")
+        if self.compress_min_ratio_memory < 1.0:
+            raise ValueError(f"compress_min_ratio_memory must be >= 1.0, got {self.compress_min_ratio_memory}")
+        if self.compress_min_ratio_user < 1.0:
+            raise ValueError(f"compress_min_ratio_user must be >= 1.0, got {self.compress_min_ratio_user}")
+        if not 0.0 <= self.compress_keyword_overlap_memory <= 1.0:
+            raise ValueError(f"compress_keyword_overlap_memory must be in [0, 1], got {self.compress_keyword_overlap_memory}")
+        if not 0.0 <= self.compress_keyword_overlap_user <= 1.0:
+            raise ValueError(f"compress_keyword_overlap_user must be in [0, 1], got {self.compress_keyword_overlap_user}")
+        if not 0.0 <= self.compress_entity_retention_memory <= 1.0:
+            raise ValueError(f"compress_entity_retention_memory must be in [0, 1], got {self.compress_entity_retention_memory}")
+        if self.hindsight_keyword_count < 3 or self.hindsight_keyword_count > 8:
+            raise ValueError(f"hindsight_keyword_count must be in [3, 8], got {self.hindsight_keyword_count}")
+        if self.cold_memory_days < 1:
+            raise ValueError(f"cold_memory_days must be >= 1, got {self.cold_memory_days}")
+        if self.hot_memory_access_count < 1:
+            raise ValueError(f"hot_memory_access_count must be >= 1, got {self.hot_memory_access_count}")
+        if self.l2_max_entries < 10:
+            raise ValueError(f"l2_max_entries must be >= 10, got {self.l2_max_entries}")
 
     @classmethod
     def from_env(cls, defaults: dict[str, Any] | None = None) -> "AppConfig":
@@ -184,6 +246,19 @@ class AppConfig:
             values["log_level"] = v
         if v := os.getenv("MEMORY_CLEANUP_OUTPUT_MODE"):
             values["output_mode"] = v
+        _safe_bool_env("MEMORY_CLEANUP_COMPRESS_STRICT_MODE", "compress_strict_mode", values)
+        _safe_float_env("MEMORY_CLEANUP_COMPRESS_MIN_RATIO_MEMORY", "compress_min_ratio_memory", values)
+        _safe_float_env("MEMORY_CLEANUP_COMPRESS_MIN_RATIO_USER", "compress_min_ratio_user", values)
+        _safe_float_env("MEMORY_CLEANUP_COMPRESS_KEYWORD_OVERLAP_MEMORY", "compress_keyword_overlap_memory", values)
+        _safe_float_env("MEMORY_CLEANUP_COMPRESS_KEYWORD_OVERLAP_USER", "compress_keyword_overlap_user", values)
+        _safe_float_env("MEMORY_CLEANUP_COMPRESS_ENTITY_RETENTION_MEMORY", "compress_entity_retention_memory", values)
+        _safe_bool_env("MEMORY_CLEANUP_KEYWORD_BACKFILL", "keyword_backfill", values)
+        _safe_int_env("MEMORY_CLEANUP_HINDSIGHT_KEYWORD_COUNT", "hindsight_keyword_count", values)
+        _safe_bool_env("MEMORY_CLEANUP_COLD_MEMORY_EVICTION", "cold_memory_eviction", values)
+        _safe_int_env("MEMORY_CLEANUP_COLD_MEMORY_DAYS", "cold_memory_days", values)
+        _safe_bool_env("MEMORY_CLEANUP_HOT_MEMORY_PROMOTION", "hot_memory_promotion", values)
+        _safe_int_env("MEMORY_CLEANUP_HOT_MEMORY_ACCESS_COUNT", "hot_memory_access_count", values)
+        _safe_int_env("MEMORY_CLEANUP_L2_MAX_ENTRIES", "l2_max_entries", values)
 
         return cls(**values)
 

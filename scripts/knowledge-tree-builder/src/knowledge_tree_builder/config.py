@@ -76,6 +76,15 @@ class AppConfig:
     cold_start_text_dedup_count: int = 50       # 冷启动纯文本去重阈值
     subject_match_threshold: float = 0.70       # 科目匹配阈值
     cold_start_article_count: int = 3           # 冷启动科目创建阈值
+    kb_dedup_pgvector: bool = True              # 是否启用 pgvector 去重（Feature Flag）
+    kb_merged_domain: bool = True               # 是否启用合并模式领域判断（Feature Flag）
+    enhanced_admission: bool = True             # 是否启用增强门控（Feature Flag）
+    admission_whitelist_sources: list[str] = field(default_factory=list)  # 白名单来源前缀列表
+    admission_low_quality_patterns: bool = True  # 是否启用低质量模式检测
+    domain_cache_use_path_hash: bool = True     # 是否使用路径 hash 作为领域缓存 key（Feature Flag）
+    # P3-3: 数据血缘
+    enable_data_lineage: bool = False           # 是否启用数据血缘记录（Feature Flag）
+    lineage_detail_level: str = "basic"         # 血缘详细程度: basic / full
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
@@ -102,6 +111,19 @@ def load_config(config_path: str) -> dict[str, Any]:
         "max_candidates_per_article": "KT_MAX_CANDIDATES_PER_ARTICLE",
         "split_max_rounds": "KT_SPLIT_MAX_ROUNDS",
         "self_explanatory_rules": "KT_SELF_EXPLANATORY_RULES",
+        # P0-2: pgvector 去重
+        "kb_dedup_pgvector": "KB_DEDUP_PGVECTOR",
+        # P0-3: 合并模式领域判断
+        "kb_merged_domain": "KB_MERGED_DOMAIN",
+        # P2-1: 增强门控
+        "enhanced_admission": "KT_ENHANCED_ADMISSION",
+        "admission_whitelist_sources": "KT_ADMISSION_WHITELIST_SOURCES",
+        "admission_low_quality_patterns": "KT_ADMISSION_LOW_QUALITY_PATTERNS",
+        # P2-4: 领域缓存路径 hash
+        "domain_cache_use_path_hash": "KT_DOMAIN_CACHE_USE_PATH_HASH",
+        # P3-3: 数据血缘
+        "enable_data_lineage": "KT_ENABLE_DATA_LINEAGE",
+        "lineage_detail_level": "KT_LINEAGE_DETAIL_LEVEL",
     }
     for key, env_var in env_mapping.items():
         if env_var in os.environ:
@@ -109,7 +131,15 @@ def load_config(config_path: str) -> dict[str, Any]:
 
     # Phase A: ENV 值类型转换（ENV 值都是字符串）
     _int_env_fields = {"max_candidates_per_article", "split_max_rounds"}
-    _bool_env_fields = {"self_explanatory_rules"}
+    _bool_env_fields = {
+        "self_explanatory_rules", "kb_dedup_pgvector", "kb_merged_domain",
+        "enhanced_admission", "admission_low_quality_patterns",
+        "domain_cache_use_path_hash", "enable_data_lineage",
+    }
+    _list_env_fields = {"admission_whitelist_sources"}
+    for key in _list_env_fields:
+        if key in config and isinstance(config[key], str):
+            config[key] = [s.strip() for s in config[key].split(",") if s.strip()]
     for key in _int_env_fields:
         if key in config and isinstance(config[key], str):
             try:

@@ -151,6 +151,12 @@ class KnowledgeNavigationConfig:
     # demote: 降低已注入记忆的分数而非完全移除
     # remove: 原行为，硬删除
 
+    # Cross-domain dedup action (2026-06-28)
+    cross_domain_dedup_action: str = field(default="demote")  # demote | remove
+    # demote: 重复的知识树结果降权但保留，由后续分数过滤/top-k 自然淘汰
+    # remove: 原行为，硬删除重复的知识树结果
+    cross_domain_dedup_demote_factor: float = field(default=0.5)  # 降权系数
+
     # Notification (Feishu Open API)
     feishu_app_id: str = field(default="")
     feishu_app_secret: str = field(default="")
@@ -161,6 +167,25 @@ class KnowledgeNavigationConfig:
     router_api_url: str = field(default="http://127.0.0.1:4142/v1")
     router_api_key: str = field(default="")
     router_timeout: int = field(default=5)
+
+    # Skill Matcher: 关键词预筛选 + LLM 精排两级架构
+    kn_skill_keyword_prescreen: bool = field(default=True)
+
+    # Token budget gatekeeping (P1-1)
+    enable_token_budget: bool = field(default=True)
+    token_budget_total: int = field(default=4000)
+    token_budget_hindsight_ratio: float = field(default=0.4)
+    token_budget_kt_ratio: float = field(default=0.4)
+    token_budget_skill_ratio: float = field(default=0.2)
+
+    # Memory use log (P2-2 Phase A)
+    enable_use_log: bool = field(default=True)
+    use_log_batch_size: int = field(default=10)
+    use_log_flush_interval_seconds: int = field(default=30)
+    use_log_path: str = field(default="")
+
+    # Skill index incremental update (P2-3)
+    skill_index_incremental: bool = field(default=True)
 
     @classmethod
     def from_env(cls, defaults: dict | None = None) -> "KnowledgeNavigationConfig":
@@ -221,6 +246,10 @@ class KnowledgeNavigationConfig:
             values["eval_match_enabled"] = env_eval.lower() in ("1", "true", "yes")
         if env_ttd := os.getenv("KN_TURN_TO_TURN_MODE"):
             values["turn_to_turn_dedup_mode"] = env_ttd
+        if env := os.getenv("KN_CROSS_DOMAIN_DEDUP_ACTION"):
+            values["cross_domain_dedup_action"] = env
+        if env := os.getenv("KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR"):
+            values["cross_domain_dedup_demote_factor"] = float(env)
         if env := os.getenv("KN_ROUTER_MODEL"):
             values["router_model"] = env
         if env := os.getenv("KN_ROUTER_API_URL"):
@@ -229,6 +258,28 @@ class KnowledgeNavigationConfig:
             values["router_api_key"] = env
         if env := os.getenv("KN_ROUTER_TIMEOUT"):
             values["router_timeout"] = int(env)
+        if env := os.getenv("KN_SKILL_KEYWORD_PRESCREEN"):
+            values["kn_skill_keyword_prescreen"] = env.lower() in ("1", "true", "yes")
+        if env := os.getenv("KN_ENABLE_TOKEN_BUDGET"):
+            values["enable_token_budget"] = env.lower() in ("1", "true", "yes")
+        if env := os.getenv("KN_TOKEN_BUDGET_TOTAL"):
+            values["token_budget_total"] = int(env)
+        if env := os.getenv("KN_TOKEN_BUDGET_HINDSIGHT_RATIO"):
+            values["token_budget_hindsight_ratio"] = float(env)
+        if env := os.getenv("KN_TOKEN_BUDGET_KT_RATIO"):
+            values["token_budget_kt_ratio"] = float(env)
+        if env := os.getenv("KN_TOKEN_BUDGET_SKILL_RATIO"):
+            values["token_budget_skill_ratio"] = float(env)
+        if env := os.getenv("KN_ENABLE_USE_LOG"):
+            values["enable_use_log"] = env.lower() in ("1", "true", "yes")
+        if env := os.getenv("KN_USE_LOG_BATCH_SIZE"):
+            values["use_log_batch_size"] = int(env)
+        if env := os.getenv("KN_USE_LOG_FLUSH_INTERVAL"):
+            values["use_log_flush_interval_seconds"] = int(env)
+        if env := os.getenv("KN_USE_LOG_PATH"):
+            values["use_log_path"] = env
+        if env := os.getenv("KN_SKILL_INDEX_INCREMENTAL"):
+            values["skill_index_incremental"] = env.lower() in ("1", "true", "yes")
         return cls(**values)
 
 

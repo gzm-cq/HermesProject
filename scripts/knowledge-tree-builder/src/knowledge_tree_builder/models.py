@@ -139,6 +139,7 @@ class Candidate(TypedDict):
 class AnalysisReport(TypedDict):
     """阶段1 分析产物"""
     article_title: str
+    article_path: str       # 文章文件路径，用于 Phase 4 缓存 key
     analysis: dict[str, Any]   # {"content_summary": str, "empty_article": bool}
     candidates: list[Candidate]
 

@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 os.environ["KN_TRACE_LOG_PATH"] = os.path.join(
     tempfile.gettempdir(), "knowledge-navigation-pytest-trace.log"
 )
+# 测试环境默认禁用 use log，避免产生副作用（专门的 use log 测试会单独启用）
+os.environ["KN_ENABLE_USE_LOG"] = "false"
 
 import pytest
 
@@ -32,7 +34,21 @@ def cleanup_hooks_globals() -> None:
     nav_hooks._injected_ids.clear()
     nav_hooks._hit_counter = nav_hooks._HitCounter()
     nav_hooks._task_tracker = nav_hooks._TaskTracker()
+    # 清理 use_logger
+    if nav_hooks._use_logger is not None:
+        try:
+            nav_hooks._use_logger.close()
+        except Exception:
+            pass
+        nav_hooks._use_logger = None
     yield
+    # 测试后再次清理
+    if nav_hooks._use_logger is not None:
+        try:
+            nav_hooks._use_logger.close()
+        except Exception:
+            pass
+        nav_hooks._use_logger = None
 
 
 @pytest.fixture

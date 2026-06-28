@@ -19,6 +19,7 @@ import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
+from hashlib import md5
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,34 @@ from knowledge_tree_builder.place import place_knowledge, _write_to_db
 from knowledge_tree_builder.manifest import Manifest, ManifestItem, STATUS_EXTRACTED
 from knowledge_tree_builder.phase.merged import analyze_and_split as merged_analyze_and_split
 from knowledge_tree_builder.core.embeddings import batch_embed, cosine_similarity
+from knowledge_tree_builder.core.lineage import LineageTracker
 from knowledge_tree_builder.llm.client import call_llm_json
+
+
+def _domain_cache_key(article_path: str, article_title: str, input_dir: str, use_path_hash: bool) -> str:
+    """生成领域缓存 key。
+
+    Args:
+        article_path: 文章文件路径（绝对或相对）
+        article_title: 文章标题
+        input_dir: 输入目录路径
+        use_path_hash: 是否使用路径 hash
+
+    Returns:
+        缓存 key。启用路径 hash 时为 "hash_标题"，否则为标题本身。
+    """
+    if not use_path_hash:
+        return article_title
+    path_obj = Path(article_path)
+    input_dir_obj = Path(input_dir)
+    if not path_obj.is_absolute():
+        path_obj = input_dir_obj / path_obj
+    try:
+        rel_path = str(path_obj.resolve().relative_to(input_dir_obj.resolve()))
+    except ValueError:
+        rel_path = str(path_obj.resolve())
+    path_hash = md5(rel_path.encode("utf-8")).hexdigest()[:12]
+    return f"{path_hash}_{article_title}"
 
 
 def _run_pipeline(
@@ -70,6 +98,11 @@ def _run_pipeline(
     _all_reports: list[Any] = []
     _all_atomics: list[Any] = []
     _admit_result: Any = None
+    _lineage_tracker: LineageTracker | None = None
+
+    if config.enable_data_lineage:
+        _lineage_tracker = LineageTracker(detail_level=config.lineage_detail_level)
+        print("\n📊 数据血缘记录已启用")
 
     if "all" in phases or "scan" in phases:
         print("\n📂 Pre-phase: 扫描输入目录...")
@@ -86,6 +119,7 @@ def _run_pipeline(
             concurrent=concurrent,
             config=config,
             config_dict=config_dict,
+            lineage_tracker=_lineage_tracker,
         )
         _analyze_or_split_done = True
     else:
@@ -95,6 +129,7 @@ def _run_pipeline(
         _all_reports = _run_analyze_phase(
             scan_result=scan_result,
             config=config,
+            lineage_tracker=_lineage_tracker,
         )
 
     if "all" in phases or "split" in phases:
@@ -106,6 +141,7 @@ def _run_pipeline(
                 all_reports=_all_reports,
                 config=config,
                 verbose=verbose,
+                lineage_tracker=_lineage_tracker,
             )
 
     if "all" in phases or "admit" in phases:
@@ -113,6 +149,7 @@ def _run_pipeline(
             all_atomics=_all_atomics,
             db=_db,
             config_dict=config_dict,
+            lineage_tracker=_lineage_tracker,
         )
 
     if "all" in phases or "place" in phases:
@@ -124,6 +161,7 @@ def _run_pipeline(
             concurrent=concurrent,
             input_dir=input_dir,
             config_dict=config_dict,
+            lineage_tracker=_lineage_tracker,
         )
 
     if not dry_run and merged and "_manifest" in dir():
@@ -138,6 +176,14 @@ def _run_pipeline(
     if not dry_run:
         _cleanup_cache(input_dir)
 
+    if _lineage_tracker is not None and _lineage_tracker.count() > 0:
+        lineage_file = f".kb_lineage_{Path(input_dir).name}.json"
+        try:
+            _lineage_tracker.save_to_file(lineage_file)
+            print(f"\n📊 血缘记录已保存到: {lineage_file} ({_lineage_tracker.count()} 条)")
+        except Exception as e:
+            print(f"\n⚠️ 血缘记录保存失败: {e}")
+
     if _db is not None:
         _db.close()
 
@@ -150,6 +196,7 @@ def _run_merged_phase(
     concurrent: int,
     config: AppConfig,
     config_dict: dict[str, Any],
+    lineage_tracker: LineageTracker | None = None,
 ) -> tuple[list[Any], list[Any], Any]:
     """合并模式：分析+拆解单次 LLM 调用。
 
@@ -174,10 +221,27 @@ def _run_merged_phase(
         def _extract_one(item: ManifestItem) -> None:
             try:
                 text = Path(item.path).read_text(encoding="utf-8")
-                atomics, summary = merged_analyze_and_split(text, item.title, config=config)
+                atomics, summary, suggested_domain = merged_analyze_and_split(text, item.title, config=config)
                 with _extract_lock:
                     _manifest.save_atomics(item, [dict(a) for a in atomics])
-                    _all_reports.append({"article_title": item.title, "analysis": {"content_summary": summary}})
+                    _all_reports.append({
+                        "article_title": item.title,
+                        "article_path": item.path,
+                        "analysis": {"content_summary": summary},
+                        "suggested_domain": suggested_domain,
+                    })
+                    if lineage_tracker is not None:
+                        for idx, atomic in enumerate(atomics):
+                            node_id = f"{item.title}_{idx}"
+                            record = lineage_tracker.create_record(
+                                node_id=node_id,
+                                source_article=item.title,
+                                source_text=atomic.get("text", ""),
+                                extraction_method="llm_extract",
+                            )
+                            record.add_step("analyze")
+                            record.add_step("split")
+                            record.metadata["source_path"] = item.path
                 print(f"   ✅ {item.title[:35]}: {len(atomics)} 条")
             except Exception as e:
                 with _extract_lock:
@@ -205,7 +269,11 @@ def _run_merged_phase(
     for item in _manifest.items:
         already = any(r.get("article_title") == item.title for r in _all_reports)
         if item.status == STATUS_EXTRACTED and not already:
-            _all_reports.append({"article_title": item.title, "analysis": {"content_summary": ""}})
+            _all_reports.append({
+                "article_title": item.title,
+                "article_path": item.path,
+                "analysis": {"content_summary": ""},
+            })
 
     return _all_atomics, _all_reports, _manifest
 
@@ -213,6 +281,7 @@ def _run_merged_phase(
 def _run_analyze_phase(
     scan_result: dict[str, Any],
     config: AppConfig,
+    lineage_tracker: LineageTracker | None = None,
 ) -> list[Any]:
     """Phase 1: 分析文章。"""
     print("\n📝 阶段1: 分析文章...")
@@ -227,7 +296,20 @@ def _run_analyze_phase(
             print(f"   ⚠️ 读取失败 {fpath}: {e}")
             continue
         report = analyze_article(text, title, config=config)
+        report["article_path"] = fpath
         candidates = report.get("candidates", [])
+        if lineage_tracker is not None:
+            for idx, candidate in enumerate(candidates):
+                node_id = f"{title}_candidate_{idx}"
+                record = lineage_tracker.create_record(
+                    node_id=node_id,
+                    source_article=title,
+                    source_text=candidate.get("text", ""),
+                    extraction_method="llm_extract",
+                )
+                record.add_step("analyze")
+                record.metadata["source_path"] = fpath
+                record.metadata["candidate_index"] = idx
         print(f"   📄 {title}: {len(candidates)} 条候选")
         _all_reports.append(report)
 
@@ -242,6 +324,7 @@ def _run_split_phase(
     all_reports: list[Any],
     config: AppConfig,
     verbose: bool,
+    lineage_tracker: LineageTracker | None = None,
 ) -> tuple[list[Any], list[Any]]:
     """Phase 2: 拆解与质量评估。"""
     print("\n✂️  阶段2: 拆解与质量评估...")
@@ -253,7 +336,33 @@ def _run_split_phase(
         atomics = split_result.get("atomic_knowledge", [])
         reviews = split_result.get("review_queue_items", [])
         stats = split_result.get("stats", {})
-        print(f"   📄 {report['article_title']}: 拆出 {len(atomics)} 条原子，"
+        title = report["article_title"]
+        if lineage_tracker is not None:
+            for idx, atomic in enumerate(atomics):
+                old_node_id = f"{title}_candidate_{atomic.get('source_candidate_index', 0)}"
+                new_node_id = f"{title}_atomic_{idx}"
+                old_record = lineage_tracker.get_record(old_node_id)
+                if old_record is not None:
+                    lineage_tracker._records.pop(old_node_id, None)
+                    record = lineage_tracker.create_record(
+                        node_id=new_node_id,
+                        source_article=title,
+                        source_text=atomic.get("text", ""),
+                        extraction_method="llm_extract",
+                    )
+                    record.processing_steps = list(old_record.processing_steps)
+                    record.metadata = dict(old_record.metadata)
+                    record.add_step("split", {"atomic_index": idx})
+                else:
+                    record = lineage_tracker.create_record(
+                        node_id=new_node_id,
+                        source_article=title,
+                        source_text=atomic.get("text", ""),
+                        extraction_method="llm_extract",
+                    )
+                    record.add_step("split")
+                record.metadata["atomic_index"] = idx
+        print(f"   📄 {title}: 拆出 {len(atomics)} 条原子，"
               f"{stats.get('review', 0)} 条入审查队列")
         _all_atomics.extend(atomics)
         _all_reviews.extend(reviews)
@@ -272,6 +381,7 @@ def _run_admit_phase(
     all_atomics: list[Any],
     db: Any,
     config_dict: dict[str, Any],
+    lineage_tracker: LineageTracker | None = None,
 ) -> Any:
     """Phase 3: 准入与去重。"""
     print("\n🔍 阶段3: 准入与去重...")
@@ -302,7 +412,42 @@ def _run_admit_phase(
         threshold_direct=config_dict.get("dedup_threshold_direct", 0.95),
         threshold_llm=config_dict.get("dedup_threshold_llm", 0.90),
         cold_start_text_dedup=cold_start,
+        db_adapter=db if config_dict.get("kb_dedup_pgvector", True) else None,
+        enable_pgvector_dedup=config_dict.get("kb_dedup_pgvector", True),
     )
+
+    if lineage_tracker is not None:
+        for passed in _admit_result.passed:
+            source_title = passed.get("source_title", "")
+            text = passed.get("text", "")
+            matched = False
+            for record in lineage_tracker.all_records():
+                if record.source_article == source_title and record.source_text == text:
+                    record.add_step("admit", {"result": "passed"})
+                    matched = True
+                    break
+            if not matched:
+                for idx, atomic in enumerate(all_atomics):
+                    if atomic.get("text") == text and atomic.get("source_title") == source_title:
+                        old_node_id = f"{source_title}_atomic_{idx}"
+                        old_record = lineage_tracker.get_record(old_node_id)
+                        if old_record is not None:
+                            old_record.add_step("admit", {"result": "passed"})
+                        break
+        for deduped in _admit_result.deduped:
+            source_title = deduped.get("source_title", "")
+            text = deduped.get("text", "")
+            for record in lineage_tracker.all_records():
+                if record.source_article == source_title and record.source_text == text:
+                    record.add_step("admit", {"result": "deduped"})
+                    break
+        for conflict in _admit_result.conflicts:
+            source_title = conflict.get("source_title", "")
+            text = conflict.get("text", "")
+            for record in lineage_tracker.all_records():
+                if record.source_article == source_title and record.source_text == text:
+                    record.add_step("admit", {"result": "conflict"})
+                    break
 
     print(f"   通过 {_admit_result.stats['passed']} 条，"
           f"去重合并 {_admit_result.stats['dedup_merged']} 条，"
@@ -319,6 +464,7 @@ def _run_place_phase(
     concurrent: int,
     input_dir: str,
     config_dict: dict[str, Any],
+    lineage_tracker: LineageTracker | None = None,
 ) -> None:
     """Phase 4: 树定位。"""
     print("\n🌲 阶段4: 树定位...")
@@ -338,6 +484,7 @@ def _run_place_phase(
     _p4_placed: set[str] = set()
     _p4_records: list[dict[str, Any]] = []
     _p4_dirty = False
+    _use_path_hash = config_dict.get("domain_cache_use_path_hash", True)
 
     if os.path.exists(_p4_cache_path):
         try:
@@ -346,6 +493,29 @@ def _run_place_phase(
             _p4_domains = _ckpt.get("domains", {})
             _p4_placed = set(_ckpt.get("placed_titles", []))
             _p4_records = _ckpt.get("records", [])
+            if _use_path_hash:
+                _migrated_domains: dict[str, str] = {}
+                for _k, _v in _p4_domains.items():
+                    _new_k = _k
+                    for _r in all_reports:
+                        if _r.get("article_title") == _k and _r.get("article_path"):
+                            _new_k = _domain_cache_key(_r["article_path"], _k, input_dir, True)
+                            break
+                    _migrated_domains[_new_k] = _v
+                    if _new_k != _k:
+                        _p4_dirty = True
+                _p4_domains = _migrated_domains
+                _migrated_placed: set[str] = set()
+                for _t in _p4_placed:
+                    _new_t = _t
+                    for _r in all_reports:
+                        if _r.get("article_title") == _t and _r.get("article_path"):
+                            _new_t = _domain_cache_key(_r["article_path"], _t, input_dir, True)
+                            break
+                    _migrated_placed.add(_new_t)
+                    if _new_t != _t:
+                        _p4_dirty = True
+                _p4_placed = _migrated_placed
             print(f"   📦 Phase 4 缓存: {len(_p4_domains)} 个领域, {len(_p4_placed)} 篇已定位")
         except Exception as _e:
             print(f"   ⚠️ 缓存读取失败: {_e}")
@@ -401,25 +571,31 @@ def _run_place_phase(
     if concurrent <= 1:
         for report in all_reports:
             title = report["article_title"]
-            if title in _p4_placed:
+            article_path = report.get("article_path", "")
+            cache_key = _domain_cache_key(article_path, title, input_dir, _use_path_hash)
+            if cache_key in _p4_placed:
                 continue
 
             summary = report.get("analysis", {}).get("content_summary", "")
+            suggested_domain = report.get("suggested_domain", "")
             admitted = [a for a in (admit_result.passed if admit_result else [])
                        if a.get("source_title") == title]
             if not admitted:
-                _p4_placed.add(title)
+                _p4_placed.add(cache_key)
                 _p4_dirty = True
                 continue
 
-            if title not in _p4_domains:
-                _p4_domains[title] = _llm_domain(
-                    (title[:80] + " " + (summary or "")[:200]).strip(),
-                    list(_p4_domains.values()),
-                )
+            if cache_key not in _p4_domains:
+                if config_dict.get("kb_merged_domain", True) and suggested_domain:
+                    _p4_domains[cache_key] = suggested_domain
+                else:
+                    _p4_domains[cache_key] = _llm_domain(
+                        (title[:80] + " " + (summary or "")[:200]).strip(),
+                        list(_p4_domains.values()),
+                    )
                 _p4_dirty = True
 
-            domain = _p4_domains[title]
+            domain = _p4_domains[cache_key]
             try:
                 _embed_fn = partial(
                     batch_embed,
@@ -434,8 +610,19 @@ def _run_place_phase(
                     llm_domain_fn=lambda _ts, _ed: domain, write_db=False)
                 for r in _pr.records:
                     r["_article_title"] = title
+                if lineage_tracker is not None:
+                    for r in _pr.records:
+                        text = r.get("text", "")
+                        for record in lineage_tracker.all_records():
+                            if record.source_article == title and record.source_text == text:
+                                record.add_step("place", {
+                                    "domain": r.get("domain", ""),
+                                    "subject": r.get("subject", ""),
+                                    "parent": r.get("parent", ""),
+                                })
+                                break
                 _p4_records.extend(_pr.records)
-                _p4_placed.add(title)
+                _p4_placed.add(cache_key)
                 _p4_dirty = True
                 print(f"   📄 {title}: {_pr.stats['placed']} 条")
             except Exception as e:
@@ -450,26 +637,32 @@ def _run_place_phase(
 
         def _process_one(report: dict[str, Any]) -> bool:
             title = report["article_title"]
+            article_path = report.get("article_path", "")
+            cache_key = _domain_cache_key(article_path, title, input_dir, _use_path_hash)
             summary = report.get("analysis", {}).get("content_summary", "")
+            suggested_domain = report.get("suggested_domain", "")
             admitted = [a for a in (admit_result.passed if admit_result else [])
                        if a.get("source_title") == title]
 
             with _p4_lock:
-                if title in _p4_placed:
+                if cache_key in _p4_placed:
                     return False
                 if not admitted:
-                    _p4_placed.add(title)
+                    _p4_placed.add(cache_key)
                     return False
-                domain = _p4_domains.get(title)
+                domain = _p4_domains.get(cache_key)
                 existing_domains_snapshot = list(_p4_domains.values())
 
             if domain is None:
-                computed_domain = _llm_domain(
-                    (title[:80] + " " + (summary or "")[:200]).strip(),
-                    existing_domains_snapshot,
-                )
+                if config_dict.get("kb_merged_domain", True) and suggested_domain:
+                    computed_domain = suggested_domain
+                else:
+                    computed_domain = _llm_domain(
+                        (title[:80] + " " + (summary or "")[:200]).strip(),
+                        existing_domains_snapshot,
+                    )
                 with _p4_lock:
-                    domain = _p4_domains.setdefault(title, computed_domain)
+                    domain = _p4_domains.setdefault(cache_key, computed_domain)
 
             try:
                 _embed_fn = partial(
@@ -486,8 +679,19 @@ def _run_place_phase(
                 with _p4_lock:
                     for r in _pr.records:
                         r["_article_title"] = title
+                    if lineage_tracker is not None:
+                        for r in _pr.records:
+                            text = r.get("text", "")
+                            for record in lineage_tracker.all_records():
+                                if record.source_article == title and record.source_text == text:
+                                    record.add_step("place", {
+                                        "domain": r.get("domain", ""),
+                                        "subject": r.get("subject", ""),
+                                        "parent": r.get("parent", ""),
+                                    })
+                                    break
                     _p4_records.extend(_pr.records)
-                    _p4_placed.add(title)
+                    _p4_placed.add(cache_key)
                 print(f"   📄 {title}: {_pr.stats['placed']} 条")
                 return True
             except Exception as e:
@@ -550,4 +754,5 @@ __all__ = [
     "_run_admit_phase",
     "_run_place_phase",
     "_cleanup_cache",
+    "_domain_cache_key",
 ]

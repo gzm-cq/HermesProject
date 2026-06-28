@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from memory_cleanup.adapters.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
-
 # 包含这些关键词的条目直接删除，跳过 Phase 2 验证
 AUTO_REMOVE_PATTERNS = [
     "清理",
@@ -162,6 +161,11 @@ def _classify_single_round(
     hindsight = _dedup(all_hindsight, lambda h: h.get("index", -1))
     # hindsight 仅适用于 USER
     if source_type == "USER":
+        from memory_cleanup.config import CONFIG
+        if CONFIG.keyword_backfill:
+            hindsight = backfill_hindsight_keywords(
+                entries, hindsight, keyword_count=CONFIG.hindsight_keyword_count
+            )
         hindsight = validate_hindsight_quality(entries, hindsight)
     return {
         "merge": validate_merge_quality(entries, merged),
@@ -421,33 +425,121 @@ def _chinese_bigrams(text: str) -> set[str]:
     return result
 
 
+def _extract_dates(text: str) -> set[str]:
+    """提取文本中的日期字符串。
+
+    支持格式：
+    - YYYY-MM-DD (2026-06-28)
+    - YYYY/MM/DD (2026/06/28)
+    - MM月DD日 (6月28日、06月28日)
+    """
+    result: set[str] = set()
+    # YYYY-MM-DD
+    dates1 = re.findall(r"\d{4}-\d{1,2}-\d{1,2}", text)
+    result.update(dates1)
+    # YYYY/MM/DD
+    dates2 = re.findall(r"\d{4}/\d{1,2}/\d{1,2}", text)
+    result.update(dates2)
+    # MM月DD日
+    dates3 = re.findall(r"\d{1,2}月\d{1,2}日", text)
+    result.update(dates3)
+    return result
+
+
+def _extract_key_numbers(text: str) -> set[str]:
+    """提取带单位的关键数字。
+
+    匹配模式：数字（整数或小数）+ 可选单位（中英文单位、常见缩写）
+    例如：100ms、5000条、3.14、100个、50%
+    """
+    result: set[str] = set()
+    pattern = re.compile(
+        r"\d+\.?\d*"  # 数字（整数或小数）
+        r"(?:"  # 单位组（可选）
+        r"[a-zA-Z]+"  # 英文单位：ms、s、min、h、KB、MB、GB 等
+        r"|[\u4e00-\u9fff]{1,3}"  # 中文单位：条、个、次、天 等
+        r"|%"  # 百分号
+        r")?",
+        re.IGNORECASE,
+    )
+    matches = pattern.findall(text)
+    result.update(matches)
+    return result
+
+
+def _extract_proper_nouns(text: str) -> set[str]:
+    """提取英文专有名词（大写开头，长度 >= 4）。
+
+    例如：Python、PostgreSQL、HDBSCAN、TensorFlow
+    """
+    result: set[str] = set()
+    # 匹配大写字母开头，后跟至少 3 个字母（总长度 >= 4）
+    pattern = re.compile(r"\b[A-Z][a-zA-Z]{3,}\b")
+    matches = pattern.findall(text)
+    result.update(matches)
+    return result
+
+
 def validate_compress_quality(
-    entries: list[str], compress_list: list[dict[str, Any]], source: str = "MEMORY"
+    entries: list[str],
+    compress_list: list[dict[str, Any]],
+    source: str = "MEMORY",
+    strict_mode: bool | None = None,
+    min_ratio_memory: float = 12.0,
+    min_ratio_user: float = 12.0,
+    keyword_overlap_memory: float = 0.20,
+    keyword_overlap_user: float = 0.10,
+    entity_retention_memory: float = 0.30,
 ) -> list[dict[str, Any]]:
     """校验 compress 输出的信息完整性 —— 确保关键事实不被丢弃。
 
     质量规则：
     - 压缩版长度不能小于 10 字符（过短说明过度压缩）
-    - 原文/压缩版的压缩比不得超过 12:1
+    - 原文/压缩版的压缩比不得超过上限
     - 关键实体（IP/端口/版本号）必须 100% 保留（仅 MEMORY）
-    - 所有实体（含非关键路径/URL）允许最多 70% 遗漏（仅 MEMORY）
+    - 所有实体（含非关键路径/URL）的保留率需满足下限（仅 MEMORY）
     - 压缩版必须比原文更短（至少有 5% 的实际节省）
-    - 压缩版关键词重叠要求：MEMORY ≥20%，USER ≥10%
+    - 压缩版关键词重叠要求
       * MEMORY 使用 [\u4e00-\u9fff]{2,} 提取中文关键词
       * USER 使用中文 bigram（2-字滑动窗口），对 LLM 重述更鲁棒
+    - 严格模式下新增检查：
+      * 日期保留：原文中的日期必须 100% 保留
+      * 数字保留：原文中的关键数字必须 100% 保留
+      * 专有名词保留：原文中的英文专有名词必须 100% 保留
+
+    Args:
+        entries: 原始条目列表
+        compress_list: 压缩候选列表
+        source: "MEMORY" 或 "USER"
+        strict_mode: 是否启用严格模式（None 时使用全局配置）
+        min_ratio_memory: MEMORY 压缩比上限（原文/压缩版）
+        min_ratio_user: USER 压缩比上限
+        keyword_overlap_memory: MEMORY 关键词重叠下限
+        keyword_overlap_user: USER 关键词重叠下限
+        entity_retention_memory: MEMORY 实体保留率下限
 
     Returns:
         仅保留通过校验的 compress 条目
     """
+    from memory_cleanup.config import CONFIG
 
-    # 关键实体（IP/端口/版本号）— 必须 100%保留
-    # 端口加 (?!\.\d) 避免匹配 decimal 中的 :0（如 ratio:0.67）
+    if strict_mode is None:
+        strict_mode = CONFIG.compress_strict_mode
+
+    if strict_mode:
+        max_ratio = CONFIG.compress_min_ratio_memory if source == "MEMORY" else CONFIG.compress_min_ratio_user
+        kw_threshold = CONFIG.compress_keyword_overlap_memory if source == "MEMORY" else CONFIG.compress_keyword_overlap_user
+        entity_retention = CONFIG.compress_entity_retention_memory if source == "MEMORY" else 0.0
+    else:
+        max_ratio = min_ratio_memory if source == "MEMORY" else min_ratio_user
+        kw_threshold = keyword_overlap_memory if source == "MEMORY" else keyword_overlap_user
+        entity_retention = entity_retention_memory if source == "MEMORY" else 0.0
+
     CRITICAL_PATTERN = re.compile(
         r"\d+\.\d+\.\d+\.\d+"
         r"|:\d{2,5}(?!\.\d)"
         r"|v\d+\.\d+"
     )
-    # 非关键实体（URL/路径）— 与关键实体合计允许最多 70% 遗漏
     NON_CRITICAL_PATTERN = re.compile(
         r"https?://[^\s]+"
         r"|/[\w/]+(?:\.[\w]+)?"
@@ -462,18 +554,15 @@ def validate_compress_quality(
 
         original = entries[idx]
 
-        # 检查1：长度下限
         if len(compressed) < 10:
             logger.info("compress 质量过滤 [%d]: 过短 (%d)", idx, len(compressed))
             continue
 
-        # 检查2：压缩比上限（原文 / 压缩版 <= 12）
         ratio = len(original) / max(len(compressed), 1)
-        if ratio > 12:
-            logger.info("compress 质量过滤 [%d]: 压缩比过高 (%.1f)", idx, ratio)
+        if ratio > max_ratio:
+            logger.info("compress 质量过滤 [%d]: 压缩比过高 (%.1f > %.1f)", idx, ratio, max_ratio)
             continue
 
-        # 检查3a：关键实体（IP/端口/版本号）必须 100% 保留（仅 MEMORY）
         if source == "MEMORY":
             orig_critical = CRITICAL_PATTERN.findall(original)
             if orig_critical:
@@ -485,22 +574,20 @@ def validate_compress_quality(
                     )
                     continue
 
-        # 检查3b：所有实体（含非关键路径/URL）允许最多 70% 遗漏（仅 MEMORY）
         if source == "MEMORY":
             orig_noncritical = NON_CRITICAL_PATTERN.findall(original)
             orig_all = orig_critical + orig_noncritical
             if orig_all:
                 comp_all = CRITICAL_PATTERN.findall(compressed) + NON_CRITICAL_PATTERN.findall(compressed)
-                missing_all = set(orig_all) - set(comp_all)
-                missing_ratio = len(missing_all) / len(orig_all)
-                if missing_ratio > 0.7:
+                retained = set(orig_all) & set(comp_all)
+                retention_ratio = len(retained) / len(orig_all)
+                if retention_ratio < entity_retention:
                     logger.info(
-                        "compress 质量过滤 [%d]: 实体遗漏率 %.0f%% > 70%%",
-                        idx, missing_ratio * 100,
+                        "compress 质量过滤 [%d]: 实体保留率 %.0f%% < %.0f%%",
+                        idx, retention_ratio * 100, entity_retention * 100,
                     )
                     continue
 
-        # 检查4：压缩必须有实际节省（至少 5%）
         if len(compressed) >= len(original) * 0.95:
             logger.info(
                 "compress 质量过滤 [%d]: 几乎未压缩 (%d→%d)",
@@ -508,11 +595,7 @@ def validate_compress_quality(
             )
             continue
 
-        # 检查5：关键词重叠
-        # MEMORY 要求 ≥20%，USER 要求 ≥10%
-        kw_threshold = 0.10 if source == "USER" else 0.20
         if source == "USER":
-            # USER 使用中文 bigram，对 LLM 重述更鲁棒
             orig_kw = _chinese_bigrams(original)
             comp_kw = _chinese_bigrams(compressed)
         else:
@@ -523,13 +606,137 @@ def validate_compress_quality(
             kw_overlap = len(orig_kw & comp_kw) / max(len(orig_kw), 1)
             if kw_overlap < kw_threshold:
                 logger.info(
-                    "compress 质量过滤 [%d]: 关键词重叠过低 %.2f", idx, kw_overlap
+                    "compress 质量过滤 [%d]: 关键词重叠过低 %.2f < %.2f", idx, kw_overlap, kw_threshold
                 )
                 continue
+
+        if strict_mode:
+            orig_dates = _extract_dates(original)
+            if orig_dates:
+                comp_dates = _extract_dates(compressed)
+                missing_dates = orig_dates - comp_dates
+                if missing_dates:
+                    logger.info(
+                        "compress 质量过滤 [%d]: 遗漏日期 %s", idx, missing_dates
+                    )
+                    continue
+
+            orig_numbers = _extract_key_numbers(original)
+            if orig_numbers:
+                comp_numbers = _extract_key_numbers(compressed)
+                missing_numbers = orig_numbers - comp_numbers
+                if missing_numbers:
+                    logger.info(
+                        "compress 质量过滤 [%d]: 遗漏关键数字 %s", idx, missing_numbers
+                    )
+                    continue
+
+            orig_nouns = _extract_proper_nouns(original)
+            if orig_nouns:
+                comp_nouns = _extract_proper_nouns(compressed)
+                missing_nouns = orig_nouns - comp_nouns
+                if missing_nouns:
+                    logger.info(
+                        "compress 质量过滤 [%d]: 遗漏专有名词 %s", idx, missing_nouns
+                    )
+                    continue
 
         passed.append(c)
 
     return passed
+
+
+def extract_hindsight_keywords(text: str, max_count: int = 5) -> list[str]:
+    """从条目中提取关键词，用于 hindsight 回填。
+
+    提取策略（优先级从高到低）：
+    1. 英文专有名词（大写开头，长度 >= 4）
+    2. 中文 2-词序列（[\u4e00-\u9fff]{2,}）
+    3. 英文单词（[a-zA-Z]{4,}）
+
+    最终去重并限制数量。
+
+    Args:
+        text: 条目原文
+        max_count: 最大关键词数量（3-8）
+
+    Returns:
+        关键词列表
+    """
+    keywords: list[str] = []
+    seen: set[str] = set()
+
+    def _add(words: list[str]) -> None:
+        for w in words:
+            w = w.strip()
+            if not w or len(w) < 2:
+                continue
+            norm = w.lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            keywords.append(w)
+
+    proper_nouns = list(_extract_proper_nouns(text))
+    _add(proper_nouns)
+
+    cn_words = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+    _add(cn_words)
+
+    en_words = re.findall(r"[a-zA-Z]{4,}", text)
+    _add(en_words)
+
+    max_count = max(3, min(8, max_count))
+    return keywords[:max_count]
+
+
+def backfill_hindsight_keywords(
+    entries: list[str],
+    hindsight_list: list[dict[str, Any]],
+    keyword_count: int = 5,
+) -> list[dict[str, Any]]:
+    """为 hindsight 条目回填关键词标签。
+
+    对缺少关键词字段或关键词数量不足的条目，使用规则提取补充。
+    已有的 LLM 生成关键词优先保留，仅在不足时补齐。
+
+    Args:
+        entries: 原始条目列表
+        hindsight_list: hindsight 分类结果列表
+        keyword_count: 每个条目的目标关键词数量
+
+    Returns:
+        回填后的 hindsight 列表（原地修改并返回）
+    """
+    for h in hindsight_list:
+        idx = h.get("index", -1)
+        if idx < 0 or idx >= len(entries):
+            continue
+
+        existing_tags = h.get("关键词", [])
+        if not isinstance(existing_tags, list):
+            existing_tags = []
+        existing_tags = [t for t in existing_tags if t and isinstance(t, str)]
+
+        if len(existing_tags) >= keyword_count:
+            continue
+
+        text = entries[idx]
+        extracted = extract_hindsight_keywords(text, max_count=keyword_count)
+
+        merged: list[str] = []
+        seen: set[str] = set()
+        for t in existing_tags + extracted:
+            norm = t.lower()
+            if norm not in seen:
+                seen.add(norm)
+                merged.append(t)
+            if len(merged) >= keyword_count:
+                break
+
+        h["关键词"] = merged
+
+    return hindsight_list
 
 
 def validate_hindsight_quality(

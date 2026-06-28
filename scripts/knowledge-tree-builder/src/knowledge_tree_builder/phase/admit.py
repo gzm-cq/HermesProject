@@ -116,6 +116,93 @@ def _guard_filter(atomic: AtomicKnowledge) -> tuple[bool, str]:
     return True, ""
 
 
+# ========== 1.5 低质量模式检测 ==========
+
+
+_LOW_QUALITY_VAGUE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"很重要"),
+    re.compile(r"很关键"),
+    re.compile(r"很有用"),
+    re.compile(r"非常重要"),
+    re.compile(r"非常关键"),
+    re.compile(r"非常有用"),
+    re.compile(r"十分重要"),
+    re.compile(r"十分关键"),
+]
+
+
+def _detect_low_quality(atomic: AtomicKnowledge) -> tuple[bool, str]:
+    """检测低质量知识点。返回 (is_low_quality, reason)。
+
+    检测规则:
+    1. 纯代码片段无解释（代码占比 > 80% 且无自然语言解释）
+    2. 只有标题无实质内容（长度 < 20 字且是名词短语）
+    3. 重复句式（同一短语重复 > 3 次）
+    4. 过度抽象（"很重要/很关键/很有用"等无实质内容）
+
+    注意：检测到低质量只标记不丢弃，放入审查队列。
+    """
+    text = atomic["text"]
+    text_len = len(text)
+
+    code_chars = len(re.findall(r"[a-zA-Z0-9{}()\[\];.<>=+\-*/&|!@#$%^_\\]", text))
+    code_ratio = code_chars / max(text_len, 1)
+    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+    if code_ratio > 0.8 and chinese_chars < 10:
+        return True, f"纯代码片段无解释 (代码占比 {code_ratio:.0%})"
+
+    if text_len < 20:
+        has_predicate = bool(re.search(
+            r"[是有在为将能会可以应该需要必须通过使让把被给从到向往由于因为所以但是而且并且或者如果虽然即使无论不管只要除非以及还是也都又再还就才已经正在将要曾经一直总是经常偶尔突然渐渐终于最终原来其实当然显然自然确实真正最更加比较非常十分特别极其相当]",
+            text,
+        ))
+        has_punctuation = bool(re.search(r"[，。！？；：、,.!?;:]", text))
+        if not has_predicate and not has_punctuation:
+            return True, f"只有标题无实质内容 (长度 {text_len} 字)"
+
+    chinese_text = re.findall(r"[\u4e00-\u9fff]", text)
+    if len(chinese_text) >= 4:
+        from collections import Counter
+        two_char_phrases = []
+        for i in range(len(chinese_text) - 1):
+            two_char_phrases.append(chinese_text[i] + chinese_text[i + 1])
+        counter = Counter(two_char_phrases)
+        most_common_phrase, most_common_count = counter.most_common(1)[0]
+        if most_common_count > 3:
+            return True, f"重复句式 (\"{most_common_phrase}\" 重复 {most_common_count} 次)"
+
+    for pat in _LOW_QUALITY_VAGUE_PATTERNS:
+        if pat.search(text):
+            has_concrete = bool(re.search(r"[0-9%％]|[\u4e00-\u9fff]{4,}", text))
+            if not has_concrete or len(text) < 25:
+                return True, f"过度抽象 ({pat.pattern})"
+
+    return False, ""
+
+
+# ========== 1.6 白名单匹配 ==========
+
+
+def _is_whitelisted(atomic: AtomicKnowledge, whitelist_sources: list[str]) -> bool:
+    """检查知识点来源是否在白名单中。
+
+    匹配逻辑：文章标题或 source_title 中包含白名单关键词。
+    """
+    if not whitelist_sources:
+        return False
+
+    source_title = atomic.get("source_title", "")
+    entities = atomic.get("entities", [])
+    combined_text = source_title
+    if entities:
+        combined_text += " " + " ".join(entities)
+
+    for keyword in whitelist_sources:
+        if keyword and keyword in combined_text:
+            return True
+    return False
+
+
 # ========== 2. 两段式去重 ==========
 
 
@@ -127,17 +214,21 @@ def _dedup_single(
     threshold_direct: float = 0.95,
     threshold_llm: float = 0.90,
     llm_judge_fn: Callable[[str, str], bool] | None = None,
+    db_adapter: Any = None,
 ) -> tuple[bool, str | None, float]:
     """两段式去重检查。
 
+    优先使用 pgvector 近邻搜索（如果 db_adapter 可用），否则走内存扫描。
+
     Args:
         text: 新知识点文本
-        existing_vectors: 已有知识列表 [{id, name, k_vector}]
+        existing_vectors: 已有知识列表 [{id, name, k_vector}]（内存扫描用）
         embed_fn: embedding 函数
         cosine_sim_fn: 余弦相似度函数
         threshold_direct: 直接判重阈值 (0.95)
         threshold_llm: LLM 确认区间下界 (0.90)
         llm_judge_fn: LLM 确认函数 (new_text, existing_text) → bool (是否等价)
+        db_adapter: DatabaseAdapter 实例，提供 pgvector 近邻搜索
 
     Returns:
         (is_dup, matched_id, max_similarity)
@@ -148,6 +239,23 @@ def _dedup_single(
 
     new_vec = new_emb[0]
 
+    # 优先走 pgvector 近邻搜索（仅查库中已有向量，快速判重）
+    if db_adapter is not None:
+        try:
+            neighbors = db_adapter.find_nearest_neighbors(
+                new_vec,
+                threshold=threshold_direct,  # 只找 >= threshold_direct 的，直接判重用
+                limit=5,
+            )
+            if neighbors:
+                # 有 >= threshold_direct 的近邻，直接判重
+                top = neighbors[0]
+                return True, str(top.get("id")), top.get("similarity", 0.0)
+            # 没有直接命中的，继续走内存扫描（检查批次内去重 + 灰区 LLM 确认）
+        except Exception as e:
+            logger.debug("pgvector 去重失败，降级为内存扫描: %s", e)
+
+    # 内存扫描：检查库中向量（灰区）+ 批次内向量（全量）
     for existing in existing_vectors:
         k_vec = existing.get("k_vector")
         if k_vec is None:
@@ -160,12 +268,11 @@ def _dedup_single(
 
         if sim >= threshold_llm and llm_judge_fn is not None:
             existing_text = existing.get("name", "")
-            # 超时保护：避免 LLM 调用卡住导致去重流程挂起
             from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(llm_judge_fn, text, existing_text)
-                    if future.result(timeout=30):  # 30秒超时
+                    if future.result(timeout=30):
                         return True, existing.get("id"), sim
             except FuturesTimeout:
                 logger.warning("LLM 去重判断超时，跳过本轮")
@@ -198,16 +305,34 @@ def _add_to_batch_pool(
 # ========== 3. 条件化矛盾检测 ==========
 
 
+_CONDITION_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"如果([^，。]{2,40})(则|那么)"),
+    re.compile(r"假设([^，。]{2,40})(则|那么)"),
+    re.compile(r"假如([^，。]{2,40})(则|那么)"),
+    re.compile(r"倘若([^，。]{2,40})(则|那么)"),
+    re.compile(r"当([^，。]{2,40})(时|情况下)"),
+    re.compile(r"在([^，。]{2,40})(环境|条件|前提|基础)下"),
+    re.compile(r"在([^，。]{2,40})(上|下|时|后|中)"),
+    re.compile(r"对于([^，。]{2,40})(来说|而言)"),
+    re.compile(r"基于([^，。]{2,40})"),
+    re.compile(r"鉴于([^，。]{2,40})"),
+    re.compile(r"由于([^，。]{2,40})"),
+    re.compile(r"因为([^，。]{2,40})"),
+]
+
+
 def _extract_condition(text: str) -> str:
     """从知识点文本中提取条件部分。
 
     策略:
-    - "在...上/下/时/后"  → 提取条件短语
+    - 按顺序匹配多种条件模式
+    - 返回第一个匹配到的条件短语
     - 如果找不到 → 返回空字符串
     """
-    m = re.search(r"在([^，。]{2,30})(上|下|时|后|中)", text)
-    if m:
-        return m.group(0)
+    for pat in _CONDITION_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(0)
     return ""
 
 
@@ -369,7 +494,7 @@ class AdmitResult:
     review_items: list[ReviewItem] = field(default_factory=list)
     stats: dict[str, int] = field(default_factory=lambda: {
         "total": 0, "guard_dropped": 0, "dedup_merged": 0,
-        "conflicts": 0, "passed": 0, "review": 0,
+        "conflicts": 0, "passed": 0, "review": 0, "low_quality": 0,
     })
 
 
@@ -387,11 +512,16 @@ def admit_knowledge(
     conflict_threshold: float = 0.80,
     enable_conflict_detection: bool = True,
     cold_start_text_dedup: bool = False,
+    db_adapter: Any = None,
+    enable_pgvector_dedup: bool = True,
+    enhanced_admission: bool = True,
+    whitelist_sources: list[str] | None = None,
+    enable_low_quality_detection: bool = True,
 ) -> AdmitResult:
     """阶段3 主函数：准入 + 去重 + 矛盾检测。
 
     流程:
-    [atomic_list] → [兜底拦截] → [两段去重] → [矛盾检测] → [passed]
+    [atomic_list] → [兜底拦截] → [低质量检测] → [两段去重] → [矛盾检测] → [passed]
 
     Args:
         atomic_list: 阶段2 原子知识列表
@@ -406,11 +536,19 @@ def admit_knowledge(
         conflict_threshold: 矛盾检测阈值
         enable_conflict_detection: 是否启用矛盾检测
         cold_start_text_dedup: 冷启动模式（纯文本去重）
+        db_adapter: DatabaseAdapter 实例
+        enable_pgvector_dedup: 是否启用 pgvector 去重
+        enhanced_admission: 是否启用增强门控（Feature Flag）
+        whitelist_sources: 白名单来源前缀列表
+        enable_low_quality_detection: 是否启用低质量模式检测
 
     Returns:
         AdmitResult
     """
     result = AdmitResult()
+
+    if whitelist_sources is None:
+        whitelist_sources = []
 
     result.stats["total"] = len(atomic_list)
 
@@ -426,6 +564,30 @@ def admit_knowledge(
 
     if not passed_guard:
         return result
+
+    # Step 1.5: 低质量模式检测（仅标记不丢弃，放入审查队列）
+    low_quality_atomics: list[tuple[AtomicKnowledge, str]] = []
+    if enhanced_admission and enable_low_quality_detection:
+        remaining_after_lq: list[AtomicKnowledge] = []
+        for atomic in passed_guard:
+            is_whitelisted = _is_whitelisted(atomic, whitelist_sources)
+            if is_whitelisted:
+                remaining_after_lq.append(atomic)
+                continue
+            is_lq, lq_reason = _detect_low_quality(atomic)
+            if is_lq:
+                low_quality_atomics.append((atomic, lq_reason))
+                result.stats["low_quality"] += 1
+                result.review_items.append(ReviewItem(
+                    type="low_quality",
+                    text=atomic["text"],
+                    original_text=atomic["text"],
+                    original_claims_count=atomic.get("claims_count", 1),
+                    reason=lq_reason,
+                ))
+            else:
+                remaining_after_lq.append(atomic)
+        passed_guard = remaining_after_lq
 
     # Step 1.5: 磁盘级 embedding 缓存 + 批量 pre-embed
     _embed_cache: dict[str, list[float]] = {}
@@ -510,7 +672,18 @@ def admit_knowledge(
         llm_judge = llm_dedup_judge_fn or _default_llm_judge
         llm_need_confirm: list[tuple[AtomicKnowledge, str, float]] = []
 
+        # 是否启用 pgvector 全库去重
+        use_pgvector = enable_pgvector_dedup and db_adapter is not None
+
         for atomic in passed_guard:
+            # 白名单放宽阈值：直接判重阈值从 0.95 放宽到 0.97
+            is_wl = enhanced_admission and _is_whitelisted(atomic, whitelist_sources)
+            effective_threshold_direct = threshold_direct
+            effective_threshold_llm = threshold_llm
+            if is_wl:
+                effective_threshold_direct = min(threshold_direct + 0.02, 0.99)
+                effective_threshold_llm = min(threshold_llm + 0.02, 0.97)
+
             # 合并对比池：已有向量 + 本批次已通过的向量（跨文章去重）
             compare_vectors = existing_vectors + batch_passed_vectors
             is_dup, matched_id, sim = _dedup_single(
@@ -518,14 +691,15 @@ def admit_knowledge(
                 compare_vectors,
                 embed_fn,
                 cosine_sim_fn,
-                threshold_direct=threshold_direct,
-                threshold_llm=threshold_llm,
+                threshold_direct=effective_threshold_direct,
+                threshold_llm=effective_threshold_llm,
                 llm_judge_fn=llm_judge if not llm_batch_judge_fn else None,
+                db_adapter=db_adapter if use_pgvector else None,
             )
             if is_dup:
                 result.dedup_merged.append(atomic)
                 result.stats["dedup_merged"] += 1
-            elif sim >= threshold_llm and sim <= threshold_direct and llm_batch_judge_fn:
+            elif sim >= effective_threshold_llm and sim <= effective_threshold_direct and llm_batch_judge_fn:
                 # 需要批量 LLM 确认
                 llm_need_confirm.append((atomic, matched_id or "", sim))
             else:

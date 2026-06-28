@@ -23,8 +23,14 @@ from knowledge_tree_builder.models import (
 logger = logging.getLogger(__name__)
 
 
-_SYSTEM_PROMPT: str = """你是一个知识提取专家。请从文章中提取所有符合以下五类定义的知识点。
-直接输出原子化的知识点（每条 claims_count=1），不需要拆分步骤。
+_SYSTEM_PROMPT: str = """你是一个知识提取专家。请从文章中提取所有符合以下五类定义的知识点，
+同时判断文章所属的知识领域。直接输出原子化的知识点（每条 claims_count=1），不需要拆分步骤。
+
+## 领域判断要求
+- 从文章标题和内容中提炼出 1-2 级的领域分类
+- 格式：用 "/" 分隔，如 "机器学习/transformer"、"分布式系统/共识算法"
+- 如果文章内容太泛化无法归类，输出 "unsorted"
+- 领域名称使用中文或英文均可，尽量简洁（每级 2-6 个词）
 
 ## 五类知识点定义
 
@@ -69,6 +75,7 @@ _SYSTEM_PROMPT: str = """你是一个知识提取专家。请从文章中提取�
     "content_summary": "一句话概括",
     "empty_article": false
   },
+  "suggested_domain": "领域名/子领域",
   "atomic_knowledge": [
     {
       "text": "知识点文本",
@@ -84,9 +91,11 @@ _SYSTEM_PROMPT: str = """你是一个知识提取专家。请从文章中提取�
 }
 ```
 
-4. 每条知识点的 "entities" 字段：从知识点中提取 2-8 个命名实体（名词性关键概念），中英文均可。没有可提取实体时返回空数组 []。
+4. "suggested_domain" 字段：文章所属的知识领域，1-2 级分类，用 "/" 分隔。
 
-5. 最多输出 15 条。只提取有知识价值的内容。
+5. 每条知识点的 "entities" 字段：从知识点中提取 2-8 个命名实体（名词性关键概念），中英文均可。没有可提取实体时返回空数组 []。
+
+6. 最多输出 15 条。只提取有知识价值的内容。
 
 ## 不应提取的内容
 
@@ -104,8 +113,8 @@ def analyze_and_split(
     title: str,
     *,
     config: AppConfig,
-) -> tuple[list[AtomicKnowledge], str]:
-    """阶段1+2 合并：一次 LLM 调用，直接输出原子知识列表。
+) -> tuple[list[AtomicKnowledge], str, str]:
+    """阶段1+2 合并：一次 LLM 调用，直接输出原子知识列表 + 领域建议。
 
     Args:
         article_text: 文章全文
@@ -113,7 +122,7 @@ def analyze_and_split(
         config: AppConfig 实例
 
     Returns:
-        (atomic_knowledge_list, content_summary)
+        (atomic_knowledge_list, content_summary, suggested_domain)
     """
     truncated = article_text
     if len(article_text) > config.article_max_chars:
@@ -135,15 +144,20 @@ def analyze_and_split(
 
     if "error" in response:
         logger.warning("LLM 合并分析失败: %s", response["error"])
-        return [], ""
+        return [], "", ""
 
     # 解析 atomic_knowledge
     raw_atomics = response.get("atomic_knowledge", [])
     analysis = response.get("analysis", {})
     content_summary = str(analysis.get("content_summary", "")) if isinstance(analysis, dict) else ""
 
+    # 解析 suggested_domain
+    suggested_domain = str(response.get("suggested_domain", "")).strip()
+    if suggested_domain in ("general", "无", "unsorted", ""):
+        suggested_domain = ""
+
     if not isinstance(raw_atomics, list):
-        return [], content_summary
+        return [], content_summary, suggested_domain
 
     atomics: list[AtomicKnowledge] = []
     for i, raw in enumerate(raw_atomics):
@@ -175,4 +189,4 @@ def analyze_and_split(
         if len(atomics) >= config.max_candidates_per_article:
             break
 
-    return atomics, content_summary
+    return atomics, content_summary, suggested_domain

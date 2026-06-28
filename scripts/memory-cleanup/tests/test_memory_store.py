@@ -94,6 +94,51 @@ class TestRetain:
             result = store._retain("test content")
             assert result is True
 
+    def test_retain_with_tags(self, app_config: AppConfig) -> None:
+        """带 tags 的 retain 请求体应包含 tags 字段。"""
+        store = MemoryFileStore(app_config)
+        captured_request = {}
+
+        def _capture_request(req: urllib.request.Request, **kwargs: object) -> MagicMock:
+            captured_request["data"] = json.loads(req.data.decode())
+            return MagicMock()
+
+        with patch.object(urllib.request, "urlopen", side_effect=_capture_request):
+            result = store._retain("test content", tags=["tag1", "tag2"])
+            assert result is True
+            assert "items" in captured_request["data"]
+            assert len(captured_request["data"]["items"]) == 1
+            assert captured_request["data"]["items"][0]["content"] == "test content"
+            assert captured_request["data"]["items"][0]["tags"] == ["tag1", "tag2"]
+
+    def test_retain_without_tags_no_tags_field(self, app_config: AppConfig) -> None:
+        """不带 tags 的 retain 请求体不应包含 tags 字段。"""
+        store = MemoryFileStore(app_config)
+        captured_request = {}
+
+        def _capture_request(req: urllib.request.Request, **kwargs: object) -> MagicMock:
+            captured_request["data"] = json.loads(req.data.decode())
+            return MagicMock()
+
+        with patch.object(urllib.request, "urlopen", side_effect=_capture_request):
+            result = store._retain("test content")
+            assert result is True
+            assert "tags" not in captured_request["data"]["items"][0]
+
+    def test_retain_with_empty_tags_no_tags_field(self, app_config: AppConfig) -> None:
+        """空 tags 列表不应包含 tags 字段。"""
+        store = MemoryFileStore(app_config)
+        captured_request = {}
+
+        def _capture_request(req: urllib.request.Request, **kwargs: object) -> MagicMock:
+            captured_request["data"] = json.loads(req.data.decode())
+            return MagicMock()
+
+        with patch.object(urllib.request, "urlopen", side_effect=_capture_request):
+            result = store._retain("test content", tags=[])
+            assert result is True
+            assert "tags" not in captured_request["data"]["items"][0]
+
 
 class TestExecuteCleanup:
     """execute_cleanup() 测试。"""
@@ -228,3 +273,156 @@ class TestExecuteCleanup:
         remove_list = [{"index": -1, "原因": "无效"}]
         self._execute(store, entries, remove_list=remove_list, mock_ms=mock_memory_store)
         mock_memory_store.remove.assert_not_called()
+
+    def _execute_with_hindsight(
+        self,
+        store: MemoryFileStore,
+        entries: list[str],
+        hindsight_list: list | None = None,
+        mock_ms: MagicMock | None = None,
+    ) -> dict:
+        """辅助方法：带 hindsight_list 的 execute_cleanup。"""
+        if mock_ms is None:
+            mock_ms = MagicMock()
+            mock_ms.remove.return_value = {"success": True}
+            mock_ms.add.return_value = {"success": True}
+
+        with patch.dict(sys.modules, {
+            "tools": MagicMock(),
+            "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_ms),
+        }):
+            with patch("shutil.copy2"):
+                with patch.object(MemoryFileStore, "_retain", return_value=True) as mock_retain:
+                    result = store.execute_cleanup(
+                        entries=entries,
+                        source="USER.md",
+                        target="user",
+                        merge_list=[],
+                        compress_list=[],
+                        remove_list=[],
+                        v2_correct=[],
+                        v2_corrected=[],
+                        v2_keep=[],
+                        hindsight_list=hindsight_list or [],
+                    )
+                    return result, mock_retain
+
+    def test_hindsight_retain_passes_tags_when_backfill_enabled(
+        self, app_config: AppConfig, mock_memory_store: MagicMock
+    ) -> None:
+        """keyword_backfill=true 时，hindsight retain 应传入 tags。"""
+        store = MemoryFileStore(app_config)
+        entries = ["审计方法论：采用10+轮递进检查模式，逐步深入"]
+        hindsight_list = [
+            {"index": 0, "关键词": ["审计", "方法论", "风险"]},
+        ]
+        result, mock_retain = self._execute_with_hindsight(
+            store, entries, hindsight_list=hindsight_list, mock_ms=mock_memory_store
+        )
+        assert mock_retain.call_count == 1
+        call_args = mock_retain.call_args
+        assert call_args[0][0] == entries[0]
+        assert call_args.kwargs.get("tags") == ["审计", "方法论", "风险"]
+
+    def test_hindsight_retain_no_tags_when_backfill_disabled(
+        self, mock_memory_store: MagicMock
+    ) -> None:
+        """keyword_backfill=false 时，hindsight retain 不应传入 tags。"""
+        cfg = AppConfig(keyword_backfill=False)
+        store = MemoryFileStore(cfg)
+        entries = ["审计方法论：采用10+轮递进检查模式，逐步深入"]
+        hindsight_list = [
+            {"index": 0, "关键词": ["审计", "方法论", "风险"]},
+        ]
+        result, mock_retain = self._execute_with_hindsight(
+            store, entries, hindsight_list=hindsight_list, mock_ms=mock_memory_store
+        )
+        assert mock_retain.call_count == 1
+        call_args = mock_retain.call_args
+        assert call_args.kwargs.get("tags") is None
+
+    def test_hindsight_retain_no_tags_when_no_keywords_field(
+        self, app_config: AppConfig, mock_memory_store: MagicMock
+    ) -> None:
+        """hindsight 条目无关键词字段时，tags 应为 None。"""
+        store = MemoryFileStore(app_config)
+        entries = ["审计方法论：采用10+轮递进检查模式，逐步深入"]
+        hindsight_list = [
+            {"index": 0},  # 没有关键词字段
+        ]
+        result, mock_retain = self._execute_with_hindsight(
+            store, entries, hindsight_list=hindsight_list, mock_ms=mock_memory_store
+        )
+        assert mock_retain.call_count == 1
+        call_args = mock_retain.call_args
+        assert call_args.kwargs.get("tags") is None
+
+    def test_hindsight_retain_no_tags_when_keywords_empty(
+        self, app_config: AppConfig, mock_memory_store: MagicMock
+    ) -> None:
+        """hindsight 条目关键词列表为空时，tags 应为 None。"""
+        store = MemoryFileStore(app_config)
+        entries = ["审计方法论：采用10+轮递进检查模式，逐步深入"]
+        hindsight_list = [
+            {"index": 0, "关键词": []},
+        ]
+        result, mock_retain = self._execute_with_hindsight(
+            store, entries, hindsight_list=hindsight_list, mock_ms=mock_memory_store
+        )
+        assert mock_retain.call_count == 1
+        call_args = mock_retain.call_args
+        assert call_args.kwargs.get("tags") is None
+
+    def test_hindsight_retain_filters_non_string_tags(
+        self, app_config: AppConfig, mock_memory_store: MagicMock
+    ) -> None:
+        """hindsight 关键词中的非字符串项应被过滤。"""
+        store = MemoryFileStore(app_config)
+        entries = ["审计方法论：采用10+轮递进检查模式，逐步深入"]
+        hindsight_list = [
+            {"index": 0, "关键词": ["审计", None, "", 123, "方法论"]},
+        ]
+        result, mock_retain = self._execute_with_hindsight(
+            store, entries, hindsight_list=hindsight_list, mock_ms=mock_memory_store
+        )
+        assert mock_retain.call_count == 1
+        call_args = mock_retain.call_args
+        tags = call_args.kwargs.get("tags")
+        assert tags == ["审计", "方法论"]
+
+    def test_hindsight_skips_already_removed(
+        self, app_config: AppConfig, mock_memory_store: MagicMock
+    ) -> None:
+        """已被 compress 删除的条目不应再执行 hindsight retain。"""
+        store = MemoryFileStore(app_config)
+        entries = ["条目A内容需要压缩处理", "条目B"]
+        hindsight_list = [
+            {"index": 0, "关键词": ["标签1"]},
+        ]
+        compress_list = [
+            {"index": 0, "精简为": "压缩后的条目A"},
+        ]
+        with patch.dict(sys.modules, {
+            "tools": MagicMock(),
+            "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_memory_store),
+        }):
+            with patch("shutil.copy2"):
+                with patch.object(MemoryFileStore, "_retain", return_value=True) as mock_retain:
+                    store.execute_cleanup(
+                        entries=entries,
+                        source="USER.md",
+                        target="user",
+                        merge_list=[],
+                        compress_list=compress_list,
+                        remove_list=[],
+                        v2_correct=[],
+                        v2_corrected=[],
+                        v2_keep=[],
+                        hindsight_list=hindsight_list,
+                    )
+                    # index 0 已被 compress 删掉了，hindsight 应跳过
+                    retain_contents = [
+                        c.args[0] if c.args else ""
+                        for c in mock_retain.call_args_list
+                    ]
+                    assert entries[0] not in retain_contents

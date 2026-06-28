@@ -1,0 +1,451 @@
+{
+  "dataset_name": "eval_queries",
+  "total_queries": 8,
+  "successful_queries": 8,
+  "failed_queries": 0,
+  "avg_faithfulness": 0.5922,
+  "avg_relevance": 0.5209,
+  "avg_coverage": 0.5209,
+  "overall_score": 0.5494,
+  "category_scores": {
+    "api": {
+      "count": 1,
+      "faithfulness": 0.787,
+      "relevance": 0.75,
+      "coverage": 0.75,
+      "overall": 0.7648
+    },
+    "causal": {
+      "count": 1,
+      "faithfulness": 0.25,
+      "relevance": 0.5,
+      "coverage": 0.5,
+      "overall": 0.4
+    },
+    "debug": {
+      "count": 1,
+      "faithfulness": 0.54,
+      "relevance": 0.667,
+      "coverage": 0.667,
+      "overall": 0.6162
+    },
+    "entity": {
+      "count": 2,
+      "faithfulness": 0.6235,
+      "relevance": 0.5,
+      "coverage": 0.5,
+      "overall": 0.5494
+    },
+    "semantic": {
+      "count": 2,
+      "faithfulness": 0.5,
+      "relevance": 0.25,
+      "coverage": 0.25,
+      "overall": 0.35
+    },
+    "tool": {
+      "count": 1,
+      "faithfulness": 0.914,
+      "relevance": 0.75,
+      "coverage": 0.75,
+      "overall": 0.8156
+    }
+  },
+  "results": [
+    {
+      "query_id": "api_01",
+      "query": "Hindsight REST API 的端点有哪些",
+      "category": "api",
+      "context": "Hindsight REST API 端点：/v1/default/banks/hermes/memories/search（搜索）、/v1/default/banks/hermes/memories（upsert）。",
+      "answer": "Hindsight API 主要端点包括搜索和 upsert，路径为 /v1/default/banks/hermes/memories。",
+      "faithfulness": {
+        "score": 0.787,
+        "reason": "基于关键词重叠率 0.78 和关键词覆盖率 0.80",
+        "supported_claims": [
+          "memories",
+          "default",
+          "hermes",
+          "hindsight"
+        ],
+        "unsupported_claims": [
+          "主要端点包括搜索和"
+        ],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.75,
+        "reason": "基于查询关键词重叠率 0.75 和主题匹配率 0.75",
+        "relevant_topics": [
+          "hindsight",
+          "rest",
+          "api"
+        ],
+        "irrelevant_topics": [
+          "的端点有哪些"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.75,
+        "reason": "查询 4 个要点中覆盖 3 个",
+        "query_points": [
+          "hindsight",
+          "的端点有哪些",
+          "rest",
+          "api"
+        ],
+        "covered_points": [
+          "hindsight",
+          "rest",
+          "api"
+        ],
+        "missing_points": [
+          "的端点有哪些"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    },
+    {
+      "query_id": "causal_01",
+      "query": "Gateway 崩溃的原因和修复",
+      "category": "causal",
+      "context": "Gateway 504 超时可能由后端服务不稳定、连接池耗尽、网络问题等导致。排查步骤：检查日志、确认后端服务状态、查看连接池配置。",
+      "answer": "Gateway 崩溃常见原因包括后端服务不稳定、连接池耗尽等，需检查日志和服务状态。",
+      "faithfulness": {
+        "score": 0.25,
+        "reason": "基于关键词重叠率 0.25 和关键词覆盖率 0.25",
+        "supported_claims": [
+          "gateway"
+        ],
+        "unsupported_claims": [
+          "崩溃常见原因包括后端服务不稳定",
+          "需检查日志和服务状态",
+          "连接池耗尽等"
+        ],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.5,
+        "reason": "基于查询关键词重叠率 0.50 和主题匹配率 0.50",
+        "relevant_topics": [
+          "gateway"
+        ],
+        "irrelevant_topics": [
+          "崩溃的原因和修复"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.5,
+        "reason": "查询 2 个要点中覆盖 1 个",
+        "query_points": [
+          "崩溃的原因和修复",
+          "gateway"
+        ],
+        "covered_points": [
+          "gateway"
+        ],
+        "missing_points": [
+          "崩溃的原因和修复"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    },
+    {
+      "query_id": "debug_01",
+      "query": "Hindsight recall 返回空结果的排查",
+      "category": "debug",
+      "context": "Hindsight recall 返回空结果可能原因：embedding 服务异常、索引损坏、查询向量维度不匹配。排查：检查 embedding 服务状态、重建索引、验证向量维度。",
+      "answer": "Hindsight recall 空结果排查：检查 embedding 服务、索引状态、向量维度是否匹配。",
+      "faithfulness": {
+        "score": 0.54,
+        "reason": "基于关键词重叠率 0.50 和关键词覆盖率 0.60",
+        "supported_claims": [
+          "hindsight",
+          "embedding",
+          "recall"
+        ],
+        "unsupported_claims": [
+          "向量维度是否匹配",
+          "空结果排查"
+        ],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.667,
+        "reason": "基于查询关键词重叠率 0.67 和主题匹配率 0.67",
+        "relevant_topics": [
+          "hindsight",
+          "recall"
+        ],
+        "irrelevant_topics": [
+          "返回空结果的排查"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.667,
+        "reason": "查询 3 个要点中覆盖 2 个",
+        "query_points": [
+          "hindsight",
+          "返回空结果的排查",
+          "recall"
+        ],
+        "covered_points": [
+          "hindsight",
+          "recall"
+        ],
+        "missing_points": [
+          "返回空结果的排查"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    },
+    {
+      "query_id": "entity_01",
+      "query": "shared-postgres 相关的技术配置",
+      "category": "entity",
+      "context": "shared-postgres 用于共享数据库服务，端口 5434，支持 pgvector 扩展用于向量搜索。",
+      "answer": "shared-postgres 配置：端口 5434，支持 pgvector 向量扩展，用于 Hindsight 等服务。",
+      "faithfulness": {
+        "score": 0.427,
+        "reason": "基于关键词重叠率 0.44 和关键词覆盖率 0.40",
+        "supported_claims": [
+          "pgvector",
+          "shared-postgres"
+        ],
+        "unsupported_claims": [
+          "hindsight",
+          "向量扩展",
+          "等服务"
+        ],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.5,
+        "reason": "基于查询关键词重叠率 0.50 和主题匹配率 0.50",
+        "relevant_topics": [
+          "shared-postgres"
+        ],
+        "irrelevant_topics": [
+          "相关的技术配置"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.5,
+        "reason": "查询 2 个要点中覆盖 1 个",
+        "query_points": [
+          "shared-postgres",
+          "相关的技术配置"
+        ],
+        "covered_points": [
+          "shared-postgres"
+        ],
+        "missing_points": [
+          "相关的技术配置"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    },
+    {
+      "query_id": "entity_02",
+      "query": "DeepSeek 模型的调用方式",
+      "category": "entity",
+      "context": "DeepSeek 模型通过 LiteLLM 网关调用，模型名 s-deepseek-v4-flash，API 地址 http://127.0.0.1:4142/v1/chat/completions。",
+      "answer": "DeepSeek 模型通过 LiteLLM 网关调用，模型名为 s-deepseek-v4-flash。",
+      "faithfulness": {
+        "score": 0.82,
+        "reason": "基于关键词重叠率 0.83 和关键词覆盖率 0.80",
+        "supported_claims": [
+          "litellm",
+          "s-deepseek-v4-flash",
+          "deepseek",
+          "模型通过"
+        ],
+        "unsupported_claims": [
+          "模型名为"
+        ],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.5,
+        "reason": "基于查询关键词重叠率 0.50 和主题匹配率 0.50",
+        "relevant_topics": [
+          "deepseek"
+        ],
+        "irrelevant_topics": [
+          "模型的调用方式"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.5,
+        "reason": "查询 2 个要点中覆盖 1 个",
+        "query_points": [
+          "deepseek",
+          "模型的调用方式"
+        ],
+        "covered_points": [
+          "deepseek"
+        ],
+        "missing_points": [
+          "模型的调用方式"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    },
+    {
+      "query_id": "semantic_01",
+      "query": "LiteLLM 配置相关的问题怎么处理",
+      "category": "semantic",
+      "context": "LiteLLM 网关地址: http://127.0.0.1:4142，通过 LiteLLM 统一代理所有 Provider。API Key 通过 LITELLM_MASTER_KEY 环境变量注入。",
+      "answer": "LiteLLM 配置问题可以检查网关地址（默认 http://127.0.0.1:4142）和 API Key（通过 LITELLM_MASTER_KEY 环境变量设置）。",
+      "faithfulness": {
+        "score": 0.64,
+        "reason": "基于关键词重叠率 0.67 和关键词覆盖率 0.60",
+        "supported_claims": [
+          "http",
+          "litellm",
+          "litellm_master_key"
+        ],
+        "unsupported_claims": [
+          "配置问题可以检查网关地址",
+          "环境变量设置"
+        ],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.5,
+        "reason": "基于查询关键词重叠率 0.50 和主题匹配率 0.50",
+        "relevant_topics": [
+          "litellm"
+        ],
+        "irrelevant_topics": [
+          "配置相关的问题怎么处理"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.5,
+        "reason": "查询 2 个要点中覆盖 1 个",
+        "query_points": [
+          "配置相关的问题怎么处理",
+          "litellm"
+        ],
+        "covered_points": [
+          "litellm"
+        ],
+        "missing_points": [
+          "配置相关的问题怎么处理"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    },
+    {
+      "query_id": "semantic_02",
+      "query": "PG 连接错误怎么排查",
+      "category": "semantic",
+      "context": "PG 端口: 5434，数据库名: hindsight。连接错误需检查端口、数据库名、用户名密码。",
+      "answer": "PG 连接错误排查步骤：检查端口（默认5434）、数据库名（hindsight）、用户名密码是否正确。",
+      "faithfulness": {
+        "score": 0.36,
+        "reason": "基于关键词重叠率 0.33 和关键词覆盖率 0.40",
+        "supported_claims": [
+          "数据库名",
+          "hindsight"
+        ],
+        "unsupported_claims": [
+          "用户名密码是否正确",
+          "连接错误排查步骤",
+          "检查端口"
+        ],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.0,
+        "reason": "基于查询关键词重叠率 0.00 和主题匹配率 0.00",
+        "relevant_topics": [],
+        "irrelevant_topics": [
+          "连接错误怎么排查"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.0,
+        "reason": "查询 1 个要点中覆盖 0 个",
+        "query_points": [
+          "连接错误怎么排查"
+        ],
+        "covered_points": [],
+        "missing_points": [
+          "连接错误怎么排查"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    },
+    {
+      "query_id": "tool_01",
+      "query": "systemctl 查看 Gateway 状态",
+      "category": "tool",
+      "context": "使用 systemctl status hermes-gateway 查看 Gateway 服务状态，journalctl -u hermes-gateway 查看日志。",
+      "answer": "使用 systemctl status hermes-gateway 命令查看 Gateway 服务状态。",
+      "faithfulness": {
+        "score": 0.914,
+        "reason": "基于关键词重叠率 0.86 和关键词覆盖率 1.00",
+        "supported_claims": [
+          "服务状态",
+          "status",
+          "systemctl",
+          "gateway",
+          "hermes-gateway"
+        ],
+        "unsupported_claims": [],
+        "method": "heuristic"
+      },
+      "relevance": {
+        "score": 0.75,
+        "reason": "基于查询关键词重叠率 0.75 和主题匹配率 0.75",
+        "relevant_topics": [
+          "gateway",
+          "systemctl",
+          "查看"
+        ],
+        "irrelevant_topics": [
+          "状态"
+        ],
+        "method": "heuristic"
+      },
+      "coverage": {
+        "score": 0.75,
+        "reason": "查询 4 个要点中覆盖 3 个",
+        "query_points": [
+          "systemctl",
+          "gateway",
+          "状态",
+          "查看"
+        ],
+        "covered_points": [
+          "systemctl",
+          "gateway",
+          "查看"
+        ],
+        "missing_points": [
+          "状态"
+        ],
+        "method": "heuristic"
+      },
+      "error": ""
+    }
+  ],
+  "timestamp": "2026-06-28T14:08:33+0800",
+  "duration_seconds": 0.0,
+  "tokens": {}
+}

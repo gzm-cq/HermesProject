@@ -124,6 +124,135 @@ class DatabaseAdapter:
             for r in rows
         ]
 
+    # ========== pgvector 近邻搜索 ==========
+
+    def count_knowledge_points(self) -> int:
+        """统计 knowledge_point 类型节点数（用于判断是否需要建 HNSW 索引）。"""
+        self.cursor.execute(
+            "SELECT count(*) FROM knowledge_tree "
+            "WHERE node_type = 'knowledge_point' AND k_vector IS NOT NULL"
+        )
+        row = self.cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    def pgvector_extension_available(self) -> bool:
+        """检查 pgvector 扩展是否已安装。"""
+        try:
+            self.cursor.execute(
+                "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
+            )
+            return self.cursor.fetchone() is not None
+        except Exception:
+            return False
+
+    def _ensure_hnsw_index(self, min_rows_for_index: int = 10000) -> bool:
+        """按需创建 HNSW 索引（数据量 >= min_rows_for_index 时创建）。
+
+        返回 True 表示索引可用（已存在或刚创建），False 表示不可用。
+        """
+        if not PGVECTOR_AVAILABLE:
+            return False
+
+        try:
+            # 检查 pgvector 扩展
+            if not self.pgvector_extension_available():
+                logger.warning("pgvector 扩展未安装，HNSW 索引不可用")
+                return False
+
+            # 检查数据量
+            count = self.count_knowledge_points()
+            if count < min_rows_for_index:
+                # 数据量少时顺序扫描更快，不建索引
+                logger.debug(
+                    "knowledge_point 数量 %d < %d，不建 HNSW 索引（顺序扫描更快）",
+                    count, min_rows_for_index,
+                )
+                return False
+
+            # 检查索引是否已存在
+            self.cursor.execute(
+                "SELECT 1 FROM pg_indexes "
+                "WHERE indexname = 'idx_knowledge_tree_k_vector'"
+            )
+            if self.cursor.fetchone() is not None:
+                return True
+
+            # 创建 HNSW 索引
+            logger.info("创建 k_vector HNSW 索引（%d 条向量）...", count)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_tree_k_vector
+                ON knowledge_tree
+                USING hnsw (k_vector vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+                WHERE node_type = 'knowledge_point'
+            """)
+            self.conn.commit()
+            logger.info("HNSW 索引创建完成")
+            return True
+        except Exception as e:
+            logger.warning("HNSW 索引创建/检查失败（降级为内存扫描）: %s", e)
+            self.conn.rollback()
+            return False
+
+    def find_nearest_neighbors(
+        self,
+        embedding: list[float],
+        threshold: float = 0.95,
+        limit: int = 10,
+        ef_search: int = 200,
+    ) -> list[dict[str, Any]]:
+        """pgvector 近邻搜索（余弦相似度 >= threshold 的节点）。
+
+        余弦距离 = 1 - 余弦相似度，所以 threshold 对应 dist < 1 - threshold。
+
+        Args:
+            embedding: 查询向量
+            threshold: 余弦相似度阈值（默认 0.95，相似度 >= 0.95 即认为重复）
+            limit: 最多返回结果数
+            ef_search: HNSW 搜索时的 ef 参数（越大越精确但越慢）
+
+        Returns:
+            [{"id", "name", "similarity"}, ...] 按相似度降序排列
+        """
+        if not PGVECTOR_AVAILABLE or embedding is None:
+            return []
+
+        # 向量字面量
+        vec_str = "[" + ",".join(str(float(x)) for x in embedding) + "]"
+        dist_threshold = 1.0 - threshold  # 余弦距离 = 1 - 余弦相似度
+
+        try:
+            # 设置 HNSW 搜索参数（当前会话级别）
+            self.cursor.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
+
+            self.cursor.execute(
+                """
+                SELECT id, name, (k_vector <=> %s::vector) AS dist
+                FROM knowledge_tree
+                WHERE k_vector IS NOT NULL
+                  AND node_type = 'knowledge_point'
+                ORDER BY dist
+                LIMIT %s
+                """,
+                (vec_str, limit),
+            )
+            rows = self.cursor.fetchall()
+
+            results = []
+            for r in rows:
+                dist = float(r[2]) if r[2] is not None else 1.0
+                similarity = 1.0 - dist
+                if similarity >= threshold:
+                    results.append({
+                        "id": r[0],
+                        "name": r[1],
+                        "similarity": round(similarity, 6),
+                    })
+            return results
+        except Exception as e:
+            logger.debug("pgvector 近邻搜索失败: %s", e)
+            return []
+
     def get_sibling_points(self, node_id: int) -> list[dict[str, Any]]:
         """获取同父节点下的所有兄弟知识点"""
         self.cursor.execute(

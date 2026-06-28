@@ -1,0 +1,10 @@
+[
+  {"query_id": "semantic_01", "query": "LiteLLM 配置相关的问题怎么处理", "category": "semantic", "expected_context": "LiteLLM 网关地址: http://127.0.0.1:4142，通过 LiteLLM 统一代理所有 Provider。API Key 通过 LITELLM_MASTER_KEY 环境变量注入。", "expected_answer": "LiteLLM 配置问题可以检查网关地址（默认 http://127.0.0.1:4142）和 API Key（通过 LITELLM_MASTER_KEY 环境变量设置）。"},
+  {"query_id": "semantic_02", "query": "PG 连接错误怎么排查", "category": "semantic", "expected_context": "PG 端口: 5434，数据库名: hindsight。连接错误需检查端口、数据库名、用户名密码。", "expected_answer": "PG 连接错误排查步骤：检查端口（默认5434）、数据库名（hindsight）、用户名密码是否正确。"},
+  {"query_id": "entity_01", "query": "shared-postgres 相关的技术配置", "category": "entity", "expected_context": "shared-postgres 用于共享数据库服务，端口 5434，支持 pgvector 扩展用于向量搜索。", "expected_answer": "shared-postgres 配置：端口 5434，支持 pgvector 向量扩展，用于 Hindsight 等服务。"},
+  {"query_id": "entity_02", "query": "DeepSeek 模型的调用方式", "category": "entity", "expected_context": "DeepSeek 模型通过 LiteLLM 网关调用，模型名 s-deepseek-v4-flash，API 地址 http://127.0.0.1:4142/v1/chat/completions。", "expected_answer": "DeepSeek 模型通过 LiteLLM 网关调用，模型名为 s-deepseek-v4-flash。"},
+  {"query_id": "causal_01", "query": "Gateway 崩溃的原因和修复", "category": "causal", "expected_context": "Gateway 504 超时可能由后端服务不稳定、连接池耗尽、网络问题等导致。排查步骤：检查日志、确认后端服务状态、查看连接池配置。", "expected_answer": "Gateway 崩溃常见原因包括后端服务不稳定、连接池耗尽等，需检查日志和服务状态。"},
+  {"query_id": "tool_01", "query": "systemctl 查看 Gateway 状态", "category": "tool", "expected_context": "使用 systemctl status hermes-gateway 查看 Gateway 服务状态，journalctl -u hermes-gateway 查看日志。", "expected_answer": "使用 systemctl status hermes-gateway 命令查看 Gateway 服务状态。"},
+  {"query_id": "debug_01", "query": "Hindsight recall 返回空结果的排查", "category": "debug", "expected_context": "Hindsight recall 返回空结果可能原因：embedding 服务异常、索引损坏、查询向量维度不匹配。排查：检查 embedding 服务状态、重建索引、验证向量维度。", "expected_answer": "Hindsight recall 空结果排查：检查 embedding 服务、索引状态、向量维度是否匹配。"},
+  {"query_id": "api_01", "query": "Hindsight REST API 的端点有哪些", "category": "api", "expected_context": "Hindsight REST API 端点：/v1/default/banks/hermes/memories/search（搜索）、/v1/default/banks/hermes/memories（upsert）。", "expected_answer": "Hindsight API 主要端点包括搜索和 upsert，路径为 /v1/default/banks/hermes/memories。"}
+]

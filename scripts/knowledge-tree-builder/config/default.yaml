@@ -36,6 +36,11 @@ dedup_batch_size: 5                # LLM 去重确认批大小
 conflict_threshold: 0.80           # 矛盾检测余弦阈值
 cold_start_text_dedup_count: 50    # < 此数量时启用纯文本去重
 
+# P2-1: 增强门控
+enhanced_admission: true           # 是否启用增强门控（Feature Flag）
+admission_whitelist_sources: []    # 白名单来源前缀列表（如 ["docs.python.org", "postgresql.org"]）
+admission_low_quality_patterns: true  # 是否启用低质量模式检测
+
 # 阶段4：树定位（无规则表，LLM 判断领域，有就入没有就建）
 subject_match_threshold: 0.70           # 科目匹配 cosine 阈值
 cold_start_article_count: 3             # < 此数量时启用冷启动建科目

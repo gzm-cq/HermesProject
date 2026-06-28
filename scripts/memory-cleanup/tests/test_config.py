@@ -152,3 +152,55 @@ class TestResolveConfigPath:
     def test_not_found_returns_resolved(self) -> None:
         result = _resolve_config_path("/definitely/not/exists.yaml")
         assert str(result).endswith("exists.yaml")
+
+
+class TestKeywordBackfillConfig:
+    """keyword_backfill 相关配置测试。"""
+
+    def test_default_keyword_backfill_true(self) -> None:
+        """keyword_backfill 默认值应为 true。"""
+        cfg = AppConfig()
+        assert cfg.keyword_backfill is True
+
+    def test_default_hindsight_keyword_count(self) -> None:
+        """hindsight_keyword_count 默认值应为 5。"""
+        cfg = AppConfig()
+        assert cfg.hindsight_keyword_count == 5
+
+    def test_hindsight_keyword_count_min_boundary(self) -> None:
+        """hindsight_keyword_count 不能小于 3。"""
+        with pytest.raises(ValueError, match="hindsight_keyword_count"):
+            AppConfig(hindsight_keyword_count=2)
+
+    def test_hindsight_keyword_count_max_boundary(self) -> None:
+        """hindsight_keyword_count 不能大于 8。"""
+        with pytest.raises(ValueError, match="hindsight_keyword_count"):
+            AppConfig(hindsight_keyword_count=9)
+
+    def test_hindsight_keyword_count_valid_values(self) -> None:
+        """hindsight_keyword_count 在 3-8 范围内应有效。"""
+        for n in (3, 5, 8):
+            cfg = AppConfig(hindsight_keyword_count=n)
+            assert cfg.hindsight_keyword_count == n
+
+    def test_keyword_backfill_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """环境变量 MEMORY_CLEANUP_KEYWORD_BACKFILL 应生效。"""
+        monkeypatch.setenv("MEMORY_CLEANUP_KEYWORD_BACKFILL", "false")
+        cfg = AppConfig.from_env()
+        assert cfg.keyword_backfill is False
+
+    def test_hindsight_keyword_count_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """环境变量 MEMORY_CLEANUP_HINDSIGHT_KEYWORD_COUNT 应生效。"""
+        monkeypatch.setenv("MEMORY_CLEANUP_HINDSIGHT_KEYWORD_COUNT", "6")
+        cfg = AppConfig.from_env()
+        assert cfg.hindsight_keyword_count == 6
+
+    def test_keyword_backfill_from_dict(self) -> None:
+        """from_dict 应支持 keyword_backfill。"""
+        cfg = AppConfig.from_dict({"keyword_backfill": False})
+        assert cfg.keyword_backfill is False
+
+    def test_hindsight_keyword_count_from_dict(self) -> None:
+        """from_dict 应支持 hindsight_keyword_count。"""
+        cfg = AppConfig.from_dict({"hindsight_keyword_count": 7})
+        assert cfg.hindsight_keyword_count == 7

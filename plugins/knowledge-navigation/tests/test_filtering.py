@@ -7,9 +7,11 @@ import pytest
 from knowledge_navigation.core.filtering import (
     _char_ngram_jaccard,
     _cosine_similarity_vec,
+    apply_token_budget,
     calculate_score_stats,
     calculate_time_score,
     cross_domain_dedup,
+    estimate_tokens,
     exclude_marked,
     extract_rerank_scores,
     filter_by_score,
@@ -420,7 +422,7 @@ class TestCrossDomainDedup:
             {"id": 1, "name": "A", "text": "强化学习在机器人中的应用", "score": 0.8},
             {"id": 2, "name": "B", "text": "微服务架构设计原则", "score": 0.7},
         ]
-        deduped, removed = cross_domain_dedup(hs, kt)
+        deduped, removed = cross_domain_dedup(hs, kt, action="remove")
         assert len(deduped) == 2
         assert removed == 0
 
@@ -431,7 +433,7 @@ class TestCrossDomainDedup:
             {"id": 1, "name": "A", "text": "DBSCAN 是一种基于密度的聚类算法", "score": 0.8},
             {"id": 2, "name": "B", "text": "微服务架构设计原则", "score": 0.7},
         ]
-        deduped, removed = cross_domain_dedup(hs, kt, threshold=0.85)
+        deduped, removed = cross_domain_dedup(hs, kt, threshold=0.85, action="remove")
         assert removed == 1
         assert len(deduped) == 1
         assert deduped[0]["id"] == 2
@@ -439,14 +441,14 @@ class TestCrossDomainDedup:
     def test_empty_hindsight_returns_all(self) -> None:
         """Hindsight 为空时返回所有知识树结果。"""
         kt = [{"id": 1, "name": "A", "text": "测试文本", "score": 0.8}]
-        deduped, removed = cross_domain_dedup([], kt)
+        deduped, removed = cross_domain_dedup([], kt, action="remove")
         assert deduped == kt
         assert removed == 0
 
     def test_empty_kt_returns_empty(self) -> None:
         """知识树为空时返回空列表。"""
         hs = [{"id": "h1", "text": "测试文本"}]
-        deduped, removed = cross_domain_dedup(hs, [])
+        deduped, removed = cross_domain_dedup(hs, [], action="remove")
         assert deduped == []
         assert removed == 0
 
@@ -460,7 +462,7 @@ class TestCrossDomainDedup:
         def fake_embed(texts: list[str]) -> list[list[float]]:
             return [[1.0, 0.0, 0.0]] * len(texts)
 
-        deduped, removed = cross_domain_dedup(hs, kt, embed_fn=fake_embed)
+        deduped, removed = cross_domain_dedup(hs, kt, embed_fn=fake_embed, action="remove")
         assert removed == 1
         assert len(deduped) == 0
 
@@ -476,7 +478,7 @@ class TestCrossDomainDedup:
             # hs 和 kt 向量正交
             return [[1.0, 0.0], [0.0, 1.0]]
 
-        deduped, removed = cross_domain_dedup(hs, kt, embed_fn=fake_embed)
+        deduped, removed = cross_domain_dedup(hs, kt, embed_fn=fake_embed, action="remove")
         assert removed == 0
         assert len(deduped) == 1
 
@@ -488,6 +490,252 @@ class TestCrossDomainDedup:
         def bad_embed(texts: list[str]) -> list[list[float]]:
             raise RuntimeError("API 失败")
 
-        deduped, removed = cross_domain_dedup(hs, kt, embed_fn=bad_embed)
+        deduped, removed = cross_domain_dedup(hs, kt, embed_fn=bad_embed, action="remove")
         assert removed == 0
         assert len(deduped) == 1
+
+    def test_demote_mode_keeps_duplicates(self) -> None:
+        """demote 模式：重复项保留但分数降低。"""
+        hs = [{"id": "h1", "text": "DBSCAN 是一种基于密度的聚类算法"}]
+        kt = [
+            {"id": 1, "name": "A", "text": "DBSCAN 是一种基于密度的聚类算法", "score": 0.8},
+            {"id": 2, "name": "B", "text": "微服务架构设计原则", "score": 0.7},
+        ]
+        deduped, demoted = cross_domain_dedup(hs, kt, threshold=0.85, action="demote", demote_factor=0.5)
+        assert demoted == 1
+        assert len(deduped) == 2
+        dup_item = next(r for r in deduped if r["id"] == 1)
+        assert dup_item["final_score"] == 0.4
+        assert dup_item["score"] == 0.4
+
+    def test_demote_mode_sorts_after_demote(self) -> None:
+        """demote 模式：降权后按 final_score 降序重新排序。"""
+        hs = [{"id": "h1", "text": "重复的知识内容"}]
+        kt = [
+            {"id": 1, "name": "A", "text": "重复的知识内容", "score": 0.9},
+            {"id": 2, "name": "B", "text": "不重复的内容", "score": 0.7},
+            {"id": 3, "name": "C", "text": "其他内容", "score": 0.5},
+        ]
+        deduped, demoted = cross_domain_dedup(hs, kt, threshold=0.85, action="demote", demote_factor=0.5)
+        assert demoted == 1
+        assert len(deduped) == 3
+        assert [r["id"] for r in deduped] == [2, 3, 1]
+        assert deduped[0]["id"] == 2
+        assert deduped[1]["id"] == 3
+        assert deduped[2]["id"] == 1
+        assert deduped[2]["final_score"] == 0.45
+
+    def test_demote_mode_with_embed_fn(self) -> None:
+        """demote 模式 + embed_fn：重复项降权但保留。"""
+        hs = [{"id": "h1", "text": "机器学习基础"}]
+        kt = [
+            {"id": 1, "name": "A", "text": "深度学习神经网络", "score": 0.8},
+            {"id": 2, "name": "B", "text": "不相关内容", "score": 0.6},
+        ]
+        def fake_embed(texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0, 0.0]] * len(texts)
+
+        deduped, demoted = cross_domain_dedup(hs, kt, embed_fn=fake_embed, action="demote", demote_factor=0.3)
+        assert demoted == 2
+        assert len(deduped) == 2
+        assert deduped[0]["final_score"] == pytest.approx(0.8 * 0.3)
+        assert deduped[1]["final_score"] == pytest.approx(0.6 * 0.3)
+        for r in deduped:
+            assert "final_score" in r
+            assert r["final_score"] == r["score"]
+
+    def test_remove_mode_backward_compatible(self) -> None:
+        """remove 模式：行为与旧版本完全一致。"""
+        hs = [{"id": "h1", "text": "DBSCAN 是一种基于密度的聚类算法"}]
+        kt = [
+            {"id": 1, "name": "A", "text": "DBSCAN 是一种基于密度的聚类算法", "score": 0.8},
+            {"id": 2, "name": "B", "text": "微服务架构设计原则", "score": 0.7},
+        ]
+        deduped, removed = cross_domain_dedup(hs, kt, threshold=0.85, action="remove")
+        assert removed == 1
+        assert len(deduped) == 1
+        assert deduped[0]["id"] == 2
+
+    def test_demote_mode_default_action(self) -> None:
+        """默认 action 为 demote。"""
+        hs = [{"id": "h1", "text": "重复文本"}]
+        kt = [
+            {"id": 1, "name": "A", "text": "重复文本", "score": 0.8},
+        ]
+        deduped, count = cross_domain_dedup(hs, kt, threshold=0.85)
+        assert count == 1
+        assert len(deduped) == 1
+        assert deduped[0]["final_score"] == 0.4
+
+
+class TestEstimateTokens:
+    """测试 token 估算函数。"""
+
+    def test_empty_text(self) -> None:
+        """空文本返回 0。"""
+        assert estimate_tokens("") == 0
+
+    def test_chinese_only(self) -> None:
+        """纯中文文本估算。"""
+        tokens = estimate_tokens("知识管理系统")
+        assert tokens > 0
+        assert tokens == int(6 * 1.5)
+
+    def test_english_only(self) -> None:
+        """纯英文文本估算。"""
+        tokens = estimate_tokens("hello world")
+        assert tokens > 0
+        assert tokens == int(2 * 1.3)
+
+    def test_mixed_text(self) -> None:
+        """中英文混合文本估算。"""
+        tokens = estimate_tokens("知识 management 系统")
+        cjk = 4
+        english = 1
+        expected = int(cjk * 1.5 + english * 1.3)
+        assert tokens == expected
+
+    def test_special_chars_ignored(self) -> None:
+        """特殊字符和数字被忽略。"""
+        tokens1 = estimate_tokens("测试")
+        tokens2 = estimate_tokens("测!@#$%^&*()试")
+        assert tokens1 == tokens2
+
+    def test_english_with_numbers(self) -> None:
+        """英文单词包含数字、下划线、连字符算一个词。"""
+        tokens = estimate_tokens("test_var hello-world")
+        assert tokens == int(2 * 1.3)
+
+
+class TestApplyTokenBudget:
+    """测试 token 预算裁剪逻辑。"""
+
+    def test_within_budget_keeps_all(self) -> None:
+        """预算充足时保留所有结果。"""
+        hs = [
+            {"id": "h1", "text": "短文本", "final_score": 0.9},
+            {"id": "h2", "text": "另一段", "final_score": 0.8},
+        ]
+        kt = [
+            {"id": "k1", "text": "知识", "score": 0.7},
+        ]
+        skill = [
+            {"text": "技能内容", "final_score": 1.0},
+        ]
+        hs_kept, kt_kept, skill_kept = apply_token_budget(
+            hs, kt, skill,
+            total_budget=10000,
+            hindsight_ratio=0.4,
+            kt_ratio=0.4,
+            skill_ratio=0.2,
+        )
+        assert len(hs_kept) == 2
+        assert len(kt_kept) == 1
+        assert len(skill_kept) == 1
+
+    def test_zero_budget_returns_empty(self) -> None:
+        """预算为 0 时返回空。"""
+        hs = [{"id": "h1", "text": "测试", "final_score": 0.9}]
+        hs_kept, kt_kept, skill_kept = apply_token_budget(
+            hs, [], [],
+            total_budget=0,
+            hindsight_ratio=0.4,
+            kt_ratio=0.4,
+            skill_ratio=0.2,
+        )
+        assert hs_kept == []
+        assert kt_kept == []
+        assert skill_kept == []
+
+    def test_trims_low_score_first(self) -> None:
+        """从低分开始裁剪。"""
+        hs = [
+            {"id": "h1", "text": "高分数高", "final_score": 0.9},
+            {"id": "h2", "text": "低分数低", "final_score": 0.5},
+        ]
+        hs_budget = estimate_tokens("高分数高")
+        total_budget = hs_budget
+        hs_kept, _, _ = apply_token_budget(
+            hs, [], [],
+            total_budget=total_budget,
+            hindsight_ratio=1.0,
+            kt_ratio=0.0,
+            skill_ratio=0.0,
+        )
+        assert len(hs_kept) == 1
+        assert hs_kept[0]["id"] == "h1"
+
+    def test_preserves_whole_items(self) -> None:
+        """每条结果完整保留，不做内容截断。"""
+        long_text = "非常长的文本内容" * 10
+        short_text = "短"
+        hs = [
+            {"id": "h1", "text": long_text, "final_score": 0.9},
+            {"id": "h2", "text": short_text, "final_score": 0.8},
+        ]
+        hs_budget = estimate_tokens(long_text)
+        total_budget = hs_budget
+        hs_kept, _, _ = apply_token_budget(
+            hs, [], [],
+            total_budget=total_budget,
+            hindsight_ratio=1.0,
+            kt_ratio=0.0,
+            skill_ratio=0.0,
+        )
+        assert len(hs_kept) == 1
+        assert hs_kept[0]["text"] == long_text
+
+    def test_leftover_redistribution(self) -> None:
+        """某域用不完预算时，剩余分配给其他域。"""
+        hs = [
+            {"id": "h1", "text": "只有一条", "final_score": 0.9},
+        ]
+        kt_texts = ["知识一", "知识二", "知识三", "知识四", "知识五"]
+        kt = [
+            {"id": f"k{i}", "text": t, "score": 0.9 - i * 0.1}
+            for i, t in enumerate(kt_texts)
+        ]
+        total_budget = 200
+        hs_kept, kt_kept, _ = apply_token_budget(
+            hs, kt, [],
+            total_budget=total_budget,
+            hindsight_ratio=0.5,
+            kt_ratio=0.5,
+            skill_ratio=0.0,
+        )
+        hs_tokens = sum(estimate_tokens(r["text"]) for r in hs_kept)
+        kt_tokens = sum(estimate_tokens(r["text"]) for r in kt_kept)
+        hs_budget_initial = int(total_budget * 0.5)
+        if hs_tokens < hs_budget_initial:
+            assert len(kt_kept) >= 2
+        assert hs_tokens + kt_tokens <= total_budget + 100
+
+    def test_empty_inputs(self) -> None:
+        """空输入返回空。"""
+        hs_kept, kt_kept, skill_kept = apply_token_budget(
+            [], [], [],
+            total_budget=1000,
+            hindsight_ratio=0.4,
+            kt_ratio=0.4,
+            skill_ratio=0.2,
+        )
+        assert hs_kept == []
+        assert kt_kept == []
+        assert skill_kept == []
+
+    def test_uses_candidate_score_fields(self) -> None:
+        """支持多种分数字段（final_score, rerank_score, base_score, score）。"""
+        hs1 = [{"id": "h1", "text": "测试", "final_score": 0.9}]
+        hs2 = [{"id": "h1", "text": "测试", "rerank_score": 0.9}]
+        hs3 = [{"id": "h1", "text": "测试", "base_score": 0.9}]
+        kt = [{"id": "k1", "text": "知识", "score": 0.8}]
+        for hs in [hs1, hs2, hs3]:
+            hs_kept, kt_kept, _ = apply_token_budget(
+                hs, kt, [],
+                total_budget=10000,
+                hindsight_ratio=0.5,
+                kt_ratio=0.5,
+                skill_ratio=0.0,
+            )
+            assert len(hs_kept) == 1
+            assert len(kt_kept) == 1

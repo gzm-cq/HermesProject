@@ -47,6 +47,11 @@ def _resolve_config_path(config_path: str) -> Path:
     return path.resolve()
 
 
+def _str_to_bool(value: str) -> bool:
+    """将字符串转换为布尔值。"""
+    return value.strip().lower() in ("true", "1", "yes", "on")
+
+
 @dataclass
 class AppConfig:
     """应用配置，支持 ENV 变量覆盖"""
@@ -62,6 +67,10 @@ class AppConfig:
     max_group_size: int = 20
     max_workers: int = field(default_factory=lambda: min(32, (os.cpu_count() or 4) + 4))
     min_llm_size: int = 10
+    # HDBSCAN 自适应参数
+    hdbscan_adaptive: bool = True
+    hdbscan_min_samples_min: int = 2
+    hdbscan_min_samples_max: int = 10
     # LLM 参数
     llm_api_url: str = "http://127.0.0.1:4142/v1/chat/completions"
     llm_api_key: str = ""
@@ -71,6 +80,17 @@ class AppConfig:
     embed_model: str | None = None
     embed_api_key: str | None = None
     embed_batch_size: int = 20
+    # 因果链增量检测
+    causal_incremental: bool = True
+    causal_new_only: bool = True
+    # 去重配置
+    dedup_use_minhash: bool = True
+    dedup_minhash_threshold: float = 0.85
+    dedup_minhash_num_perm: int = 128
+    # 质量评分配置
+    enable_quality_scoring: bool = False
+    quality_score_batch_size: int = 20
+    quality_score_model: str = "s-deepseek-v4-flash"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
@@ -97,9 +117,53 @@ def load_config(config_path: str) -> dict[str, Any]:
         "db_url": "CLUSTERING_DB_URL",
         "llm_api_key": "LITELLM_MASTER_KEY",
         "embed_api_key": "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+        "hdbscan_adaptive": "CLUSTERING_HDBSCAN_ADAPTIVE",
+        "hdbscan_min_samples_min": "CLUSTERING_HDBSCAN_MIN_SAMPLES_MIN",
+        "hdbscan_min_samples_max": "CLUSTERING_HDBSCAN_MIN_SAMPLES_MAX",
+        "sample_size": "CLUSTERING_SAMPLE_SIZE",
+        "min_samples": "CLUSTERING_MIN_SAMPLES",
+        "entity_boost_factor": "CLUSTERING_ENTITY_BOOST_FACTOR",
+        "bank_id": "CLUSTERING_BANK_ID",
+        "max_group_size": "CLUSTERING_MAX_GROUP_SIZE",
+        "min_llm_size": "CLUSTERING_MIN_LLM_SIZE",
+        "llm_api_url": "CLUSTERING_LLM_API_URL",
+        "llm_model": "CLUSTERING_LLM_MODEL",
+        "embed_base_url": "CLUSTERING_EMBED_BASE_URL",
+        "embed_model": "CLUSTERING_EMBED_MODEL",
+        "embed_batch_size": "CLUSTERING_EMBED_BATCH_SIZE",
+        "causal_incremental": "CLUSTERING_CAUSAL_INCREMENTAL",
+        "causal_new_only": "CLUSTERING_CAUSAL_NEW_ONLY",
+        "dedup_use_minhash": "CLUSTERING_DEDUP_USE_MINHASH",
+        "dedup_minhash_threshold": "CLUSTERING_DEDUP_MINHASH_THRESHOLD",
+        "dedup_minhash_num_perm": "CLUSTERING_DEDUP_MINHASH_NUM_PERM",
+        "enable_quality_scoring": "CLUSTERING_ENABLE_QUALITY_SCORING",
+        "quality_score_batch_size": "CLUSTERING_QUALITY_SCORE_BATCH_SIZE",
+        "quality_score_model": "CLUSTERING_QUALITY_SCORE_MODEL",
     }
+    bool_keys = {"hdbscan_adaptive", "causal_incremental", "causal_new_only", "dedup_use_minhash", "enable_quality_scoring"}
+    int_keys = {
+        "sample_size", "min_samples", "hdbscan_min_samples_min",
+        "hdbscan_min_samples_max", "max_group_size", "min_llm_size",
+        "embed_batch_size", "dedup_minhash_num_perm", "quality_score_batch_size",
+    }
+    float_keys = {"entity_boost_factor", "dedup_minhash_threshold"}
+
     for key, env_var in env_mapping.items():
         if env_var in os.environ:
-            config[key] = os.environ[env_var]
+            value = os.environ[env_var]
+            if key in bool_keys:
+                config[key] = _str_to_bool(value)
+            elif key in int_keys:
+                try:
+                    config[key] = int(value)
+                except ValueError:
+                    pass
+            elif key in float_keys:
+                try:
+                    config[key] = float(value)
+                except ValueError:
+                    pass
+            else:
+                config[key] = value
 
     return config

@@ -462,8 +462,10 @@ def cross_domain_dedup(
     *,
     threshold: float = 0.65,
     embed_fn: "callable | None" = None,
+    action: str = "demote",
+    demote_factor: float = 0.5,
 ) -> tuple[list[dict], int]:
-    """跨域语义去重：知识树结果与 Hindsight 结果比较，去除重复知识。
+    """跨域语义去重：知识树结果与 Hindsight 结果比较，处理重复知识。
 
     优先使用 embedding 余弦相似度（语义级），
     embed_fn 不可用时回退到字符 n-gram Jaccard（文本级）。
@@ -473,9 +475,12 @@ def cross_domain_dedup(
         kt_results: 知识树结构化结果 [{id, name, text, score}]
         threshold: 去重阈值（相似度 ≥ threshold 视为重复）
         embed_fn: embedding 函数 (texts: list[str]) -> list[list[float]] | None
+        action: 去重动作，"remove" 删除或 "demote" 降权
+        demote_factor: 降权系数，action="demote" 时使用
 
     Returns:
-        (deduped_kt_results, removed_count)
+        (processed_kt_results, count)
+        count: remove 模式下为删除数量，demote 模式下为降权数量
     """
     if not kt_results or not hindsight_results:
         return kt_results, 0
@@ -494,12 +499,12 @@ def cross_domain_dedup(
             if all_embeddings and len(all_embeddings) == len(all_texts):
                 hs_vecs = all_embeddings[:len(hs_texts)]
                 kt_vecs = all_embeddings[len(hs_texts):]
-                return _dedup_by_cosine(kt_results, kt_vecs, hs_vecs, threshold)
+                return _dedup_by_cosine(kt_results, kt_vecs, hs_vecs, threshold, action, demote_factor)
         except Exception:
             pass  # embedding 失败时回退到文本去重
 
     # 回退：字符 n-gram Jaccard
-    return _dedup_by_jaccard(kt_results, hs_texts, threshold)
+    return _dedup_by_jaccard(kt_results, hs_texts, threshold, action, demote_factor)
 
 
 def _dedup_by_cosine(
@@ -507,41 +512,236 @@ def _dedup_by_cosine(
     kt_vecs: list[list[float]],
     hs_vecs: list[list[float]],
     threshold: float,
+    action: str = "demote",
+    demote_factor: float = 0.5,
 ) -> tuple[list[dict], int]:
-    """使用 embedding 余弦相似度去重。"""
-    kept: list[dict] = []
-    removed = 0
-    for i, kp in enumerate(kt_results):
-        if i >= len(kt_vecs):
-            kept.append(kp)
-            continue
-        is_dup = False
-        for hs_vec in hs_vecs:
-            if _cosine_similarity_vec(kt_vecs[i], hs_vec) >= threshold:
-                is_dup = True
-                removed += 1
-                break
-        if not is_dup:
-            kept.append(kp)
-    return kept, removed
+    """使用 embedding 余弦相似度去重/降权。"""
+    if action == "remove":
+        kept: list[dict] = []
+        removed = 0
+        for i, kp in enumerate(kt_results):
+            if i >= len(kt_vecs):
+                kept.append(kp)
+                continue
+            is_dup = False
+            for hs_vec in hs_vecs:
+                if _cosine_similarity_vec(kt_vecs[i], hs_vec) >= threshold:
+                    is_dup = True
+                    removed += 1
+                    break
+            if not is_dup:
+                kept.append(kp)
+        return kept, removed
+    else:
+        demoted = 0
+        for i, kp in enumerate(kt_results):
+            if i >= len(kt_vecs):
+                continue
+            is_dup = False
+            for hs_vec in hs_vecs:
+                if _cosine_similarity_vec(kt_vecs[i], hs_vec) >= threshold:
+                    is_dup = True
+                    break
+            if is_dup:
+                demoted += 1
+                current = kp.get("final_score", kp.get("score", 0.0))
+                kp["final_score"] = current * demote_factor
+                kp["score"] = kp["final_score"]
+        kt_results.sort(key=lambda x: x.get("final_score", x.get("score", 0.0)), reverse=True)
+        return kt_results, demoted
 
 
 def _dedup_by_jaccard(
     kt_results: list[dict],
     hs_texts: list[str],
     threshold: float,
+    action: str = "demote",
+    demote_factor: float = 0.5,
 ) -> tuple[list[dict], int]:
-    """使用字符 n-gram Jaccard 相似度去重（embedding 不可用时的回退）。"""
+    """使用字符 n-gram Jaccard 相似度去重/降权（embedding 不可用时的回退）。"""
+    if action == "remove":
+        kept: list[dict] = []
+        removed = 0
+        for kp in kt_results:
+            kt_text = (kp.get("text", "") or kp.get("name", "")).strip()
+            is_dup = False
+            for hs_text in hs_texts:
+                if _char_ngram_jaccard(kt_text, hs_text) >= threshold:
+                    is_dup = True
+                    removed += 1
+                    break
+            if not is_dup:
+                kept.append(kp)
+        return kept, removed
+    else:
+        demoted = 0
+        for kp in kt_results:
+            kt_text = (kp.get("text", "") or kp.get("name", "")).strip()
+            is_dup = False
+            for hs_text in hs_texts:
+                if _char_ngram_jaccard(kt_text, hs_text) >= threshold:
+                    is_dup = True
+                    break
+            if is_dup:
+                demoted += 1
+                current = kp.get("final_score", kp.get("score", 0.0))
+                kp["final_score"] = current * demote_factor
+                kp["score"] = kp["final_score"]
+        kt_results.sort(key=lambda x: x.get("final_score", x.get("score", 0.0)), reverse=True)
+        return kt_results, demoted
+
+
+# ========== Token 预算守门 (P1-1) ==========
+
+
+def estimate_tokens(text: str) -> int:
+    """估算文本的 token 数。
+
+    估算规则（参考 cl100k_base 分词器统计规律）：
+    - 中文字符：1 字 ≈ 1.5 token（汉字平均 1.4-1.6）
+    - 英文单词：1 词 ≈ 1.3 token（wordpiece 平均 1.2-1.4）
+    - 数字/标点：1 字符 ≈ 0.25 token
+
+    误差范围约 ±15%，用于预算分配是足够的。
+    精确计算可用 tiktoken 库（需要额外依赖）。
+    """
+    if not text:
+        return 0
+
+    # 中日韩统一表意文字 + 全角标点
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]", text))
+    # 英文单词（3字符以上，避免短词干扰）
+    english_words = re.findall(r"[a-zA-Z][a-zA-Z0-9_\-']{2,}", text)
+    english_count = len(english_words)
+    # 数字和标点（1字符 ≈ 0.25 token）
+    other_count = len(re.findall(r"[\d.,;:!?()（）、。；：！？()]", text))
+
+    return int(cjk_count * 1.5 + english_count * 1.3 + other_count * 0.25)
+
+
+def _result_text(result: dict) -> str:
+    """从结果 dict 中提取用于 token 估算的文本。"""
+    return str(result.get("text", "") or result.get("name", "") or "")
+
+
+def _results_total_tokens(results: list[dict]) -> int:
+    """计算一组结果的总 token 数。"""
+    return sum(estimate_tokens(_result_text(r)) for r in results)
+
+
+def _sort_by_score(results: list[dict]) -> list[dict]:
+    """按分数降序排列结果。"""
+    def _score(r: dict) -> float:
+        for key in ("final_score", "rerank_score", "base_score", "score"):
+            val = r.get(key)
+            if val is not None:
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+    return sorted(results, key=_score, reverse=True)
+
+
+def apply_token_budget(
+    hindsight_results: list[dict],
+    kt_results: list[dict],
+    skill_results: list[dict],
+    total_budget: int,
+    hindsight_ratio: float,
+    kt_ratio: float,
+    skill_ratio: float,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """按 token 预算裁剪结果。
+
+    策略：
+    1. 按比例分配各域预算
+    2. 如果某域用不完，剩余预算按比例分配给其他域
+    3. 从低分开始裁剪，直到满足预算
+    4. 每条结果必须完整保留，不做内容截断
+
+    Args:
+        hindsight_results: Hindsight 结果列表
+        kt_results: 知识树结果列表
+        skill_results: 技能结果列表
+        total_budget: 总 token 预算
+        hindsight_ratio: Hindsight 占比
+        kt_ratio: 知识树占比
+        skill_ratio: 技能占比
+
+    Returns:
+        (裁剪后的 hindsight, 裁剪后的 kt, 裁剪后的 skill)
+    """
+    if total_budget <= 0:
+        return [], [], []
+
+    ratio_sum = hindsight_ratio + kt_ratio + skill_ratio
+    if ratio_sum <= 0:
+        return [], [], []
+
+    hs_sorted = _sort_by_score(hindsight_results)
+    kt_sorted = _sort_by_score(kt_results)
+    skill_sorted = _sort_by_score(skill_results)
+
+    hs_budget = int(total_budget * hindsight_ratio / ratio_sum)
+    kt_budget = int(total_budget * kt_ratio / ratio_sum)
+    skill_budget = int(total_budget * skill_ratio / ratio_sum)
+
+    hs_kept = _trim_to_budget(hs_sorted, hs_budget)
+    kt_kept = _trim_to_budget(kt_sorted, kt_budget)
+    skill_kept = _trim_to_budget(skill_sorted, skill_budget)
+
+    hs_used = _results_total_tokens(hs_kept)
+    kt_used = _results_total_tokens(kt_kept)
+    skill_used = _results_total_tokens(skill_kept)
+
+    hs_remain = max(0, hs_budget - hs_used)
+    kt_remain = max(0, kt_budget - kt_used)
+    skill_remain = max(0, skill_budget - skill_used)
+
+    leftover = hs_remain + kt_remain + skill_remain
+    if leftover > 0:
+        domains_needing_more = []
+        if hs_used >= hs_budget and len(hs_kept) < len(hs_sorted):
+            domains_needing_more.append(("hindsight", hindsight_ratio, hs_kept, hs_sorted))
+        if kt_used >= kt_budget and len(kt_kept) < len(kt_sorted):
+            domains_needing_more.append(("kt", kt_ratio, kt_kept, kt_sorted))
+        if skill_used >= skill_budget and len(skill_kept) < len(skill_sorted):
+            domains_needing_more.append(("skill", skill_ratio, skill_kept, skill_sorted))
+
+        if domains_needing_more:
+            ratio_total = sum(r for _, r, _, _ in domains_needing_more)
+            if ratio_total > 0:
+                for name, ratio, kept, full in domains_needing_more:
+                    extra = int(leftover * ratio / ratio_total)
+                    if extra > 0:
+                        current_used = _results_total_tokens(kept)
+                        new_budget = current_used + extra
+                        new_kept = _trim_to_budget(full, new_budget)
+                        if name == "hindsight":
+                            hs_kept = new_kept
+                        elif name == "kt":
+                            kt_kept = new_kept
+                        else:
+                            skill_kept = new_kept
+
+    return hs_kept, kt_kept, skill_kept
+
+
+def _trim_to_budget(sorted_results: list[dict], budget: int) -> list[dict]:
+    """从高分到低分累加，直到超过预算则停止，返回满足预算的结果列表。
+
+    每条结果完整保留，不做内容截断。
+    """
+    if budget <= 0:
+        return []
+
     kept: list[dict] = []
-    removed = 0
-    for kp in kt_results:
-        kt_text = (kp.get("text", "") or kp.get("name", "")).strip()
-        is_dup = False
-        for hs_text in hs_texts:
-            if _char_ngram_jaccard(kt_text, hs_text) >= threshold:
-                is_dup = True
-                removed += 1
-                break
-        if not is_dup:
-            kept.append(kp)
-    return kept, removed
+    total = 0
+    for r in sorted_results:
+        tokens = estimate_tokens(_result_text(r))
+        if total + tokens > budget and kept:
+            break
+        kept.append(r)
+        total += tokens
+    return kept

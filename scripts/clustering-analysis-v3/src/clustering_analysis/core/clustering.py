@@ -465,9 +465,47 @@ def compute_info_density_similarity(unit_texts: list[str]) -> np.ndarray:
 
 # ========== Clustering ==========
 
+def adaptive_hdbscan_params(
+    n_samples: int,
+    min_samples_min: int = 2,
+    min_samples_max: int = 10,
+) -> tuple[int, int]:
+    """根据数据点数量自适应计算 HDBSCAN 参数。
+
+    Args:
+        n_samples: 数据点数量
+        min_samples_min: min_samples 最小值限制
+        min_samples_max: min_samples 最大值限制
+
+    Returns:
+        (min_cluster_size, min_samples)
+    """
+    if n_samples < 20:
+        min_cluster_size = 2
+        min_samples = 2
+    elif n_samples < 100:
+        min_cluster_size = 3
+        min_samples = 3
+    elif n_samples < 500:
+        min_cluster_size = 5
+        min_samples = 4
+    elif n_samples < 2000:
+        min_cluster_size = 8
+        min_samples = 6
+    else:
+        min_cluster_size = 15
+        min_samples = 10
+
+    min_samples = max(min_samples_min, min(min_samples_max, min_samples))
+    min_cluster_size = max(min_samples_min, min_cluster_size)
+
+    return min_cluster_size, min_samples
+
+
 def run_hdbscan_clustering(
     embeddings: np.ndarray,
     min_cluster_size: int = 5,
+    min_samples: int | None = None,
     cluster_selection_method: str = "eom",
 ) -> tuple[np.ndarray, np.ndarray, float | None]:
     """单次 HDBSCAN 聚类，替代 DBSCAN 多 eps 扫描。
@@ -477,6 +515,7 @@ def run_hdbscan_clustering(
     Args:
         embeddings: embedding 矩阵 (n, dim)
         min_cluster_size: 最小簇大小
+        min_samples: 构建 core distance 时的邻域样本数（None 则用 sklearn 默认值）
         cluster_selection_method: 'eom' (Excess of Mass) 或 'leaf'
 
     Returns:
@@ -488,15 +527,19 @@ def run_hdbscan_clustering(
     if not HDBSCAN_AVAILABLE:
         raise ImportError("HDBSCAN is not available. Please install scikit-learn >= 1.3.")
 
+    hdb_kwargs = dict(
+        min_cluster_size=min_cluster_size,
+        cluster_selection_method=cluster_selection_method,
+        metric="euclidean",
+        copy=False,
+    )
+    if min_samples is not None:
+        hdb_kwargs["min_samples"] = min_samples
+
     # 抑制 sklearn 1.10+ 的 copy 默认值变更警告
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', message='The default value of `copy`')
-        hdb = HDBSCANCluster(
-            min_cluster_size=min_cluster_size,
-            cluster_selection_method=cluster_selection_method,
-            metric="euclidean",
-            copy=False,
-        )
+        hdb = HDBSCANCluster(**hdb_kwargs)
     labels = hdb.fit_predict(embeddings)
     probabilities = hdb.probabilities_
 
@@ -696,6 +739,114 @@ def merge_similar_entities(
             print(f"   [MERGE] 合并实体: {eids[idx]} \u2192 {keeper_id}")
 
     return merge_map
+
+
+def _detect_causal_in_group_incremental(
+    group_label: str,
+    new_members: list[int],
+    old_members: list[int],
+    unit_ids: list,
+    unit_texts: list[str],
+    seen_pairs: set,
+    group_prefix: str = "",
+) -> list[dict]:
+    """增量检测组内因果链：只检测 new×new 和 new×old，不重复检测 old×old。
+
+    Args:
+        group_label: 组标签（用于日志/reason）
+        new_members: 新成员在 unit_ids/unit_texts 中的索引列表
+        old_members: 旧成员在 unit_ids/unit_texts 中的索引列表
+        unit_ids: 全局 unit_id 列表
+        unit_texts: 全局文本列表
+        seen_pairs: 已见过的因果对集合（用于去重）
+        group_prefix: 组前缀
+
+    Returns:
+        新增的因果链列表
+    """
+    links: list[dict] = []
+    _cached_pairs: dict[int, list] = {}
+
+    all_new = list(new_members)
+    all_old = list(old_members)
+
+    def _get_cached_pairs(idx: int) -> list:
+        if idx not in _cached_pairs:
+            _cached_pairs[idx] = detect_causal_pairs(unit_texts[idx])
+        return _cached_pairs[idx]
+
+    def _add_link(
+        from_idx: int,
+        to_idx: int,
+        cause_subj: str,
+        effect_subj: str,
+        confidence: float,
+        link_type: str,
+    ) -> None:
+        key = (unit_ids[from_idx], unit_ids[to_idx], link_type)
+        if key in seen_pairs or confidence < 0.6:
+            return
+        seen_pairs.add(key)
+        links.append({
+            "from_id": unit_ids[from_idx],
+            "to_id": unit_ids[to_idx],
+            "link_type": link_type,
+            "weight": min(1.0, confidence),
+            "confidence": confidence,
+            "reason": f"[因果聚类] {group_prefix}组{group_label}内因果词匹配: {cause_subj} → {effect_subj}",
+            "enriched_to_text": enrich_text(
+                unit_texts[to_idx],
+                unit_texts[from_idx],
+                [cause_subj, effect_subj],
+            ),
+        })
+
+    # new × new 组合
+    for i_idx in range(len(all_new)):
+        for j_idx in range(i_idx + 1, len(all_new)):
+            mem_i, mem_j = all_new[i_idx], all_new[j_idx]
+            pairs_i = _get_cached_pairs(mem_i)
+            pairs_j = _get_cached_pairs(mem_j)
+            for cause_subj, effect_subj, confidence, link_type in pairs_i:
+                _add_link(mem_i, mem_j, cause_subj, effect_subj, confidence, link_type)
+            for cause_subj, effect_subj, confidence, link_type in pairs_j:
+                _add_link(mem_j, mem_i, cause_subj, effect_subj, confidence, link_type)
+
+    # new × old 组合
+    for new_idx in all_new:
+        for old_idx in all_old:
+            pairs_new = _get_cached_pairs(new_idx)
+            pairs_old = _get_cached_pairs(old_idx)
+            for cause_subj, effect_subj, confidence, link_type in pairs_new:
+                _add_link(new_idx, old_idx, cause_subj, effect_subj, confidence, link_type)
+            for cause_subj, effect_subj, confidence, link_type in pairs_old:
+                _add_link(old_idx, new_idx, cause_subj, effect_subj, confidence, link_type)
+
+    return links
+
+
+def dedup_memory_links(links: list[dict]) -> list[dict]:
+    """对 memory_links 去重，基于 (min(from_id, to_id), max(from_id, to_id), link_type)。
+
+    保留第一次出现的链接，后续重复的跳过。
+
+    Args:
+        links: memory_link 列表，每个 dict 需包含 from_id、to_id、link_type
+
+    Returns:
+        去重后的 links 列表
+    """
+    seen: set[tuple[str, str, str]] = set()
+    result: list[dict] = []
+    for link in links:
+        from_id = str(link.get("from_id", ""))
+        to_id = str(link.get("to_id", ""))
+        link_type = str(link.get("link_type", ""))
+        key = (min(from_id, to_id), max(from_id, to_id), link_type)
+        if key not in seen:
+            seen.add(key)
+            result.append(link)
+    return result
 
 
 def match_new_to_existing(

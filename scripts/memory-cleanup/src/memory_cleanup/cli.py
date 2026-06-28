@@ -19,6 +19,7 @@ from memory_cleanup.adapters.memory_store import MemoryFileStore
 from memory_cleanup.adapters.session_db import SessionDB
 from memory_cleanup.config import AppConfig, load_config, setup_logging
 from memory_cleanup.core.classifier import calc_remove_candidates, classify_all
+from memory_cleanup.core.lifecycle import detect_cold_memories, detect_hot_memories
 from memory_cleanup.core.reporter import print_report, print_v2_detail
 from memory_cleanup.core.verifier import phase2_verify
 
@@ -148,6 +149,54 @@ def run(
         user_entries = mem_store.load_file(cfg.user_path)
         print(f"\n📄 MEMORY.md: {len(mem_entries)} 条 + USER.md: {len(user_entries)} 条")
         print(f"  流水线：MEMORY Phase1 → 即时 MEMORY Phase2，不等 USER Phase1")
+
+        if not _running:
+            return
+
+        # ── Phase 0：生命周期检查（冷记忆淘汰 + 高频回升） ──
+        mem_evict_list: list[dict[str, Any]] = []
+        user_evict_list: list[dict[str, Any]] = []
+        promote_list: list[dict[str, Any]] = []
+        hindsight_entries: list[dict[str, Any]] = []
+
+        if cfg.cold_memory_eviction or cfg.hot_memory_promotion:
+            print(f"\n{'=' * 70}")
+            print(f"  🔄 Phase 0：生命周期检查")
+            print(f"{'=' * 70}")
+
+        if cfg.cold_memory_eviction:
+            total_l2 = len(mem_entries) + len(user_entries)
+            print(f"  冷记忆淘汰：已启用（阈值 {cfg.cold_memory_days} 天，L2 上限 {cfg.l2_max_entries} 条）")
+
+            mem_entry_dicts = [
+                {"index": i, "content": e, "source": "MEMORY"}
+                for i, e in enumerate(mem_entries)
+            ]
+            user_entry_dicts = [
+                {"index": i, "content": e, "source": "USER"}
+                for i, e in enumerate(user_entries)
+            ]
+
+            mem_cold = detect_cold_memories(mem_entry_dicts, cfg.cold_memory_days)
+            user_cold = detect_cold_memories(user_entry_dicts, cfg.cold_memory_days)
+
+            if total_l2 > cfg.l2_max_entries:
+                mem_evict_list = mem_cold
+                user_evict_list = user_cold
+            else:
+                mem_evict_list = []
+                user_evict_list = []
+                print(f"    L2 当前 {total_l2} 条，未超过上限 {cfg.l2_max_entries}，跳过冷记忆淘汰")
+
+            print(f"    MEMORY: 检测到 {len(mem_cold)} 条冷记忆，淘汰 {len(mem_evict_list)} 条")
+            print(f"    USER:   检测到 {len(user_cold)} 条冷记忆，淘汰 {len(user_evict_list)} 条")
+
+        if cfg.hot_memory_promotion:
+            print(f"  高频回升：已启用（阈值 {cfg.hot_memory_access_count} 次）")
+            hindsight_entries = mem_store.fetch_hindsight_entries()
+            hot_entries = detect_hot_memories(hindsight_entries, cfg.hot_memory_access_count)
+            promote_list = [{"content": e.get("content", "")} for e in hot_entries]
+            print(f"    Hindsight: {len(hindsight_entries)} 条，高频 {len(hot_entries)} 条，回升 {len(promote_list)} 条")
 
         if not _running:
             return
@@ -323,6 +372,8 @@ def run(
                 mem_result.get("merge", []), mem_result.get("compress", []),
                 mem_result.get("remove", []),
                 mem_v2["correct"], mem_v2["corrected"], mem_v2["keep"],
+                evict_list=mem_evict_list,
+                promote_list=promote_list,
             )
             hindsight_list = user_result.get("hindsight", [])
             user_r = mem_store.execute_cleanup(
@@ -331,6 +382,7 @@ def run(
                 user_result.get("remove", []),
                 user_v2["correct"], user_v2["corrected"], user_v2["keep"],
                 hindsight_list,
+                evict_list=user_evict_list,
             )
             exec_results["MEMORY.md"] = {
                 "ok": len(mem_r.get("ok", [])),

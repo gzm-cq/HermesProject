@@ -25,12 +25,17 @@ from clustering_analysis.adapters.database import DatabaseAdapter
 from clustering_analysis.config import AppConfig, load_config
 from clustering_analysis.core.clustering import (
     _detect_causal_in_group,
+    _detect_causal_in_group_incremental,
+    adaptive_hdbscan_params,
+    dedup_memory_links,
     match_new_to_existing,
     merge_similar_entities,
     process_clusters,
     run_hdbscan_clustering,
 )
+from clustering_analysis.core.dedup import HAS_DATASKETCH, dedup_memories as _dedup_memories_core
 from clustering_analysis.core.embeddings import batch_embed
+from clustering_analysis.core.quality import batch_score_memories, estimate_quality_keywords
 
 # Entity merge thresholds
 _MERGE_SIMILAR_THRESHOLD = 0.88  # 新实体间合并阈值
@@ -167,6 +172,7 @@ def dedup_memories(
     threshold: float = typer.Option(0.85, '--threshold', help='Jaccard 相似度阈值'),
     batch_size: int = typer.Option(500, '--batch-size', help='每次扫描条数'),
     db_url: str = typer.Option('', help='PG 连接串（默认从 CLUSTERING_DB_URL 读取）'),
+    minhash: bool = typer.Option(True, '--minhash/--no-minhash', help='使用 MinHash LSH 去重（默认开启）'),
 ) -> None:
     """扫描 memory_units，合并 text 高度相似的重复记忆。
 
@@ -174,11 +180,20 @@ def dedup_memories(
     治本方案：一次性的数据清洗，后续聚类时自动避免重复。
     """
     import os as _os
+    import time as _time
+
     if not db_url:
         db_url = _os.environ.get('CLUSTERING_DB_URL', '')
         if not db_url:
             print('❌ 请设置 CLUSTERING_DB_URL 环境变量或传入 --db-url')
             raise typer.Exit(1)
+
+    use_minhash = minhash and HAS_DATASKETCH
+    if minhash and not HAS_DATASKETCH:
+        print('⚠️  datasketch 未安装，降级为 Jaccard O(n²) 比较')
+        print('   (pip install datasketch 可大幅提速)')
+    method_label = 'MinHash LSH' if use_minhash else 'Jaccard O(n²)'
+    print(f'🔧 去重方式: {method_label}')
 
     try:
         import psycopg2 as _pg
@@ -188,6 +203,7 @@ def dedup_memories(
         offset = 0
         total_merged = 0
         total_scanned = 0
+        total_time = 0.0
 
         while True:
             cursor.execute(
@@ -201,52 +217,42 @@ def dedup_memories(
                 break
             total_scanned += len(rows)
 
-            def _bigrams(text: str) -> set[str]:
-                """字符 bigram 集合，对中文更友好。"""
-                return {text[i:i+2] for i in range(len(text) - 1)} if len(text) > 1 else {text}
+            memories = [
+                {'id': r[0], 'text': r[1] or '', 'created_at': r[2]}
+                for r in rows
+            ]
 
-            def _jaccard(a: str, b: str) -> float:
-                set_a, set_b = _bigrams(a), _bigrams(b)
-                if not set_a or not set_b:
-                    return 0.0
-                return len(set_a & set_b) / len(set_a | set_b)
+            t0 = _time.time()
+            deduped, removed_count, method = _dedup_memories_core(
+                memories,
+                threshold=threshold,
+                use_minhash=use_minhash,
+            )
+            batch_time = _time.time() - t0
+            total_time += batch_time
 
+            deduped_ids = {str(m['id']) for m in deduped}
             merged_in_batch = 0
-            for i in range(len(rows)):
-                id_i, text_i, created_i = rows[i]
-                if text_i == '[redundant]':
-                    continue
-                for j in range(i + 1, len(rows)):
-                    id_j, text_j, created_j = rows[j]
-                    if text_j == '[redundant]':
-                        continue
-                    if _jaccard(text_i, text_j) > threshold:
-                        if created_i and created_j and created_j < created_i:
-                            if not dry_run:
-                                cursor.execute(
-                                    "UPDATE memory_units SET text = '[redundant]' WHERE id = %s",
-                                    (id_i,),
-                                )
-                            merged_in_batch += 1
-                            break
-                        else:
-                            if not dry_run:
-                                cursor.execute(
-                                    "UPDATE memory_units SET text = '[redundant]' WHERE id = %s",
-                                    (id_j,),
-                                )
-                            merged_in_batch += 1
-                            rows[j] = (id_j, '[redundant]', created_j)
+
+            for mem in memories:
+                if str(mem['id']) not in deduped_ids:
+                    if not dry_run:
+                        cursor.execute(
+                            "UPDATE memory_units SET text = '[redundant]' WHERE id = %s",
+                            (mem['id'],),
+                        )
+                    merged_in_batch += 1
 
             total_merged += merged_in_batch
             if merged_in_batch:
-                print(f'   批次 {offset}~{offset + len(rows)}: 合并 {merged_in_batch} 条')
+                print(f'   批次 {offset}~{offset + len(rows)}: 合并 {merged_in_batch} 条 ({batch_time:.2f}s, {method})')
             offset += batch_size
 
         if not dry_run:
             conn.commit()
 
-        print(f"   📊 扫描 {total_scanned} 条，合并 {total_merged} 条重复记忆")
+        print(f"   📊 扫描 {total_scanned} 条，合并 {total_merged} 条重复记忆，总耗时 {total_time:.2f}s")
+        print(f"   🔧 使用方式: {method_label}")
         if dry_run:
             print('   🔍 dry-run 模式，未实际修改')
 
@@ -255,6 +261,140 @@ def dedup_memories(
 
     except Exception as e:
         print(f'   ❌ 记忆去重失败: {e}')
+        raise
+
+
+@app.command()
+def quality_score(
+    sample_size: int = typer.Option(0, '--sample-size', help='采样数量，0 表示全量'),
+    min_score: float = typer.Option(0.0, '--min-score', help='最低分过滤（仅输出低于此分数的记忆）'),
+    dry_run: bool = typer.Option(False, '--dry-run', help='仅生成报告，不写入数据库'),
+    use_llm: bool = typer.Option(False, '--use-llm/--heuristic', help='使用 LLM 评分（默认启发式）'),
+    db_url: str = typer.Option('', help='PG 连接串（默认从 CLUSTERING_DB_URL 读取）'),
+    config_path: str = typer.Option('config/default.yaml', '--config', help='配置文件路径'),
+) -> None:
+    """全库记忆语义质量评分，生成质量分布报告。
+
+    根据 enable_quality_scoring 配置决定是否启用（Feature Flag）。
+    Feature Flag 关闭时输出提示并退出。
+    默认使用启发式快速估算；开启 --use-llm 可调用 LLM 精确评分。
+    """
+    import os as _os
+    import time as _time
+    from collections import Counter
+
+    # 加载配置
+    if config_path:
+        config = load_config(config_path)
+    else:
+        config = AppConfig()
+
+    # Feature Flag 检查
+    if not config.enable_quality_scoring:
+        print(
+            '⚠️  全库质量评分已禁用。\n'
+            '   启用方式：设置 CLUSTERING_ENABLE_QUALITY_SCORING=true\n'
+            '   或在配置文件中设置 enable_quality_scoring: true'
+        )
+        raise typer.Exit(code=0)
+
+    cfg = AppConfig.from_dict(config)
+
+    if not db_url:
+        db_url = _os.environ.get('CLUSTERING_DB_URL', '')
+        if not db_url:
+            print('❌ 请设置 CLUSTERING_DB_URL 环境变量或传入 --db-url')
+            raise typer.Exit(1)
+
+    batch_size = config.get('quality_score_batch_size', cfg.quality_score_batch_size)
+    llm_api_url = config.get('llm_api_url', cfg.llm_api_url)
+    llm_api_key = config.get('llm_api_key', cfg.llm_api_key)
+    llm_model = config.get('quality_score_model', cfg.quality_score_model)
+
+    method_label = 'LLM 精确评分' if use_llm else '启发式快速估算'
+    print(f'📊 记忆质量评分')
+    print(f'   方式: {method_label}')
+    print(f'   批大小: {batch_size}')
+
+    try:
+        adapter = DatabaseAdapter(db_url)
+        units = adapter.fetch_memory_units(sample_size)
+        total = len(units)
+        print(f'   待评分记忆数: {total}')
+
+        if total == 0:
+            print('   ⚠️  没有可评分的记忆')
+            adapter.close()
+            return
+
+        memories = [
+            {'id': str(u[0]), 'text': u[2] or ''}
+            for u in units
+        ]
+
+        t0 = _time.time()
+        scored = batch_score_memories(
+            memories,
+            batch_size=batch_size,
+            api_url=llm_api_url,
+            api_key=llm_api_key,
+            model=llm_model,
+            use_llm=use_llm,
+        )
+        duration = _time.time() - t0
+
+        scores = [m['quality_score'] for m in scored]
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+
+        buckets = [
+            ('0.0-0.2', 0.0, 0.2),
+            ('0.2-0.4', 0.2, 0.4),
+            ('0.4-0.6', 0.4, 0.6),
+            ('0.6-0.8', 0.6, 0.8),
+            ('0.8-1.0', 0.8, 1.01),
+        ]
+        bucket_counts: dict[str, int] = {}
+        for label, lo, hi in buckets:
+            count = sum(1 for s in scores if lo <= s < hi)
+            bucket_counts[label] = count
+
+        print(f'\n📈 质量分布统计')
+        print(f'   平均分: {avg_score:.3f}')
+        print(f'   最高分: {max(scores):.3f}')
+        print(f'   最低分: {min(scores):.3f}')
+        print(f'   评分耗时: {duration:.2f}s')
+        print(f'\n   各分段占比:')
+        for label, _, _ in buckets:
+            count = bucket_counts[label]
+            pct = count / total * 100 if total > 0 else 0
+            bar = '█' * int(pct / 5)
+            print(f'     {label}: {count:5d} ({pct:5.1f}%) {bar}')
+
+        low_quality = [m for m in scored if m['quality_score'] < min_score] if min_score > 0 else []
+        if min_score > 0:
+            print(f'\n🔻 低质量记忆（< {min_score}）: {len(low_quality)} 条')
+            for i, mem in enumerate(low_quality[:10]):
+                text_preview = mem['text'][:80].replace('\n', ' ')
+                print(f'   [{i+1}] id={mem["id"]}, score={mem["quality_score"]:.3f}')
+                print(f'        {text_preview}...')
+            if len(low_quality) > 10:
+                print(f'   ... 还有 {len(low_quality) - 10} 条')
+
+        if not dry_run:
+            updates = [
+                (m['id'], m['quality_score'], m['quality_details'])
+                for m in scored
+            ]
+            updated = adapter.batch_update_quality_scores(updates)
+            if updated > 0:
+                print(f'\n💾 已写入数据库: {updated} 条')
+            else:
+                print(f'\nℹ️  数据库无 quality_score 字段，跳过写入（仅生成报告）')
+
+        adapter.close()
+
+    except Exception as e:
+        print(f'   ❌ 质量评分失败: {e}')
         raise
 
 
@@ -288,6 +428,11 @@ def run(
     llm_api_url = config.get("llm_api_url", cfg.llm_api_url)
     llm_api_key = config.get("llm_api_key", cfg.llm_api_key)
     llm_model = config.get("llm_model", cfg.llm_model)
+    hdbscan_adaptive = config.get("hdbscan_adaptive", cfg.hdbscan_adaptive)
+    hdbscan_min_samples_min = config.get("hdbscan_min_samples_min", cfg.hdbscan_min_samples_min)
+    hdbscan_min_samples_max = config.get("hdbscan_min_samples_max", cfg.hdbscan_min_samples_max)
+    causal_incremental = config.get("causal_incremental", cfg.causal_incremental)
+    causal_new_only = config.get("causal_new_only", cfg.causal_new_only)
 
     # Embedding 配置
     embed_base_url, embed_model, embed_api_key = _load_embedding_config(config)
@@ -449,7 +594,22 @@ def run(
     remaining = np.where(~processed)[0]
     hdbscan_silhouette_val: float | None = None
     hdbscan_cluster_count: int = 0
-    if len(remaining) > min_samples:
+
+    if hdbscan_adaptive:
+        hdb_min_cluster_size, hdb_min_samples = adaptive_hdbscan_params(
+            len(remaining),
+            min_samples_min=hdbscan_min_samples_min,
+            min_samples_max=hdbscan_min_samples_max,
+        )
+        print(f"   [自适应] HDBSCAN 参数: n_samples={len(remaining)}, "
+              f"min_cluster_size={hdb_min_cluster_size}, min_samples={hdb_min_samples}")
+    else:
+        hdb_min_cluster_size = min_samples
+        hdb_min_samples = None
+
+    min_samples_threshold = hdb_min_cluster_size if hdbscan_adaptive else min_samples
+
+    if len(remaining) > min_samples_threshold:
         print(f"\n--- Round 2: HDBSCAN 聚类（剩余 {len(remaining)} 条） ---")
 
         sub_emb = embeddings[remaining]
@@ -458,7 +618,10 @@ def run(
         sub_entity_sets = [unit_entity_sets[i] for i in remaining]
 
         r_labels, _, hdbscan_silhouette_val = run_hdbscan_clustering(
-            sub_emb, min_cluster_size=min_samples, cluster_selection_method="leaf"
+            sub_emb,
+            min_cluster_size=hdb_min_cluster_size,
+            min_samples=hdb_min_samples,
+            cluster_selection_method="leaf",
         )
         hdbscan_cluster_count = len(set(r_labels) - {-1})
 
@@ -501,7 +664,7 @@ def run(
         else:
             print(f"   Round 2 无有效簇")
     else:
-        print(f"   剩余 {len(remaining)} 条，小于 min_samples={min_samples}，跳过 Round 2")
+        print(f"   剩余 {len(remaining)} 条，小于 min_cluster_size={min_samples_threshold}，跳过 Round 2")
 
     # 剩余未处理的标记为噪声
 
@@ -567,6 +730,8 @@ def run(
     # ----------------------------------------------------------
     if entities_with_new_members:
         print(f"\n🔗 因果链增强（{len(entities_with_new_members)} 个实体有新成员）...")
+        print(f"   增量模式: {'开启' if causal_incremental else '关闭'}" + (f"（仅新成员相关）" if causal_incremental and causal_new_only else ""))
+
         # 构建已有因果链的去重集合（包含本轮 + DB 历史）
         existing_seen: set = set()
         for link in memory_link_plan:
@@ -578,6 +743,8 @@ def run(
 
         enhanced_links: list[dict] = []
         enhanced_enriched: dict[str, list[str]] = {}
+        total_pairs_checked = 0
+        causal_enhance_start = time.time()
 
         # 大型实体只对新增成员 + 采样旧成员做因果检测，避免 n² 爆炸
         MAX_FULL_MEMBERS = 50
@@ -591,17 +758,37 @@ def run(
                 continue
 
             # 确定参与因果检测的成员范围
-            if len(old_members) <= MAX_FULL_MEMBERS:
-                # 小实体：全量 old + new
-                all_members = old_members + new_members
+            if not causal_incremental or not causal_new_only:
+                # 非增量模式 或 全量模式：全量 old + new（小实体）或 new + 采样 old（大实体）
+                if len(old_members) <= MAX_FULL_MEMBERS:
+                    all_members = old_members + new_members
+                    sampled_old_for_log = old_members
+                else:
+                    import random
+                    sampled_old = random.sample(old_members, min(MAX_SAMPLE_OLD, len(old_members)))
+                    all_members = sampled_old + new_members
+                    sampled_old_for_log = sampled_old
             else:
-                # 大实体：new + 采样 old
-                import random
-                sampled_old = random.sample(old_members, min(MAX_SAMPLE_OLD, len(old_members)))
-                all_members = sampled_old + new_members
+                # 增量 + 仅新成员相关：检测 new×new + new×old
+                # 小实体：用全部 old；大实体：用采样 old
+                if len(old_members) <= MAX_FULL_MEMBERS:
+                    sampled_old_for_log = old_members
+                else:
+                    import random
+                    sampled_old_for_log = random.sample(old_members, min(MAX_SAMPLE_OLD, len(old_members)))
+                all_members = sampled_old_for_log + new_members
 
             if len(all_members) < 2:
                 continue
+
+            # 统计检测对数（用于日志）
+            if causal_incremental and causal_new_only:
+                n_new = len(new_members)
+                n_old_eff = min(len(old_members), MAX_SAMPLE_OLD if len(old_members) > MAX_FULL_MEMBERS else len(old_members))
+                total_pairs_checked += n_new * (n_new - 1) // 2 + n_new * n_old_eff
+            else:
+                n_all = len(all_members)
+                total_pairs_checked += n_all * (n_all - 1) // 2
 
             # 分离：当前 batch 内 vs 需要从 DB 查的
             local_indices: list[int] = []
@@ -615,36 +802,69 @@ def run(
             # 从 DB 批量取外部成员文本
             ext_texts = adapter.fetch_unit_texts_batch(external_ids) if external_ids else {}
 
-            # 构建完整的 members / unit_ids / unit_texts 三数组
-            full_members: list[int] = []
+            # 构建完整的 unit_ids / unit_texts 数组，并区分 new / old 的索引
             full_uids: list[str] = []
             full_texts: list[str] = []
+            uid_to_full_idx: dict[str, int] = {}
 
-            # 先放本地成员
-            for local_idx in local_indices:
-                full_members.append(len(full_uids))
-                full_uids.append(unit_ids[local_idx])
-                full_texts.append(unit_texts[local_idx])
+            # 先放旧成员（采样后的）
+            old_full_indices: list[int] = []
+            for old_uid in sampled_old_for_log:
+                if old_uid in uid_to_local_idx and unit_texts[uid_to_local_idx[old_uid]]:
+                    full_idx = len(full_uids)
+                    full_uids.append(unit_ids[uid_to_local_idx[old_uid]])
+                    full_texts.append(unit_texts[uid_to_local_idx[old_uid]])
+                    uid_to_full_idx[old_uid] = full_idx
+                    old_full_indices.append(full_idx)
+                elif old_uid in ext_texts:
+                    full_idx = len(full_uids)
+                    full_uids.append(old_uid)
+                    full_texts.append(ext_texts[old_uid])
+                    uid_to_full_idx[old_uid] = full_idx
+                    old_full_indices.append(full_idx)
 
-            # 再放外部成员
-            for ext_id in external_ids:
-                if ext_id in ext_texts:
-                    full_members.append(len(full_uids))
-                    full_uids.append(ext_id)
-                    full_texts.append(ext_texts[ext_id])
+            # 再放新成员
+            new_full_indices: list[int] = []
+            for new_uid in new_members:
+                if new_uid in uid_to_local_idx and unit_texts[uid_to_local_idx[new_uid]]:
+                    full_idx = len(full_uids)
+                    full_uids.append(unit_ids[uid_to_local_idx[new_uid]])
+                    full_texts.append(unit_texts[uid_to_local_idx[new_uid]])
+                    uid_to_full_idx[new_uid] = full_idx
+                    new_full_indices.append(full_idx)
+                elif new_uid in ext_texts:
+                    full_idx = len(full_uids)
+                    full_uids.append(new_uid)
+                    full_texts.append(ext_texts[new_uid])
+                    uid_to_full_idx[new_uid] = full_idx
+                    new_full_indices.append(full_idx)
 
-            if len(full_members) < 2:
+            if len(new_full_indices) + len(old_full_indices) < 2:
                 continue
 
             try:
-                new_links = _detect_causal_in_group(
-                    group_label=eid,
-                    members=full_members,
-                    unit_ids=full_uids,
-                    unit_texts=full_texts,
-                    seen_pairs=existing_seen,
-                    group_prefix="",
-                )
+                if causal_incremental and causal_new_only:
+                    # 增量模式：只检测 new×new 和 new×old
+                    new_links = _detect_causal_in_group_incremental(
+                        group_label=eid,
+                        new_members=new_full_indices,
+                        old_members=old_full_indices,
+                        unit_ids=full_uids,
+                        unit_texts=full_texts,
+                        seen_pairs=existing_seen,
+                        group_prefix="",
+                    )
+                else:
+                    # 非增量或全量模式：全量两两比较
+                    full_members = list(range(len(full_uids)))
+                    new_links = _detect_causal_in_group(
+                        group_label=eid,
+                        members=full_members,
+                        unit_ids=full_uids,
+                        unit_texts=full_texts,
+                        seen_pairs=existing_seen,
+                        group_prefix="",
+                    )
                 if new_links:
                     enhanced_links.extend(new_links)
                     for link in new_links:
@@ -656,16 +876,27 @@ def run(
             except Exception as exc:
                 print(f"   ⚠ 实体 {eid} 因果链增强失败: {exc}")
 
+        # 去重保护
         if enhanced_links:
+            before_dedup = len(enhanced_links)
+            enhanced_links = dedup_memory_links(enhanced_links)
+            after_dedup = len(enhanced_links)
+            if before_dedup != after_dedup:
+                print(f"   去重: {before_dedup} → {after_dedup}（移除 {before_dedup - after_dedup} 条重复）")
+
             memory_link_plan.extend(enhanced_links)
             for uid, texts in enhanced_enriched.items():
                 if uid in enriched_texts:
                     enriched_texts[uid].extend(texts)
                 else:
                     enriched_texts[uid] = texts
+
+            causal_enhance_duration = time.time() - causal_enhance_start
             print(f"   ✅ 增强 {len(enhanced_links)} 条因果链（{len(enhanced_enriched)} 个 enrichment）")
+            print(f"   📊 检测约 {total_pairs_checked} 对，耗时 {causal_enhance_duration:.2f}s")
         else:
-            print("   无新增因果链")
+            causal_enhance_duration = time.time() - causal_enhance_start
+            print(f"   无新增因果链（检测约 {total_pairs_checked} 对，耗时 {causal_enhance_duration:.2f}s）")
 
     # ============================================================
     # Phase 3: 写入数据库

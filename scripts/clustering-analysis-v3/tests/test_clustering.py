@@ -6,10 +6,14 @@ import pytest
 from clustering_analysis.core.clustering import (
     HDBSCAN_AVAILABLE,
     NOISE_WORDS,
+    _detect_causal_in_group,
+    _detect_causal_in_group_incremental,
+    adaptive_hdbscan_params,
     compute_entity_similarity,
     compute_info_density_similarity,
     compute_semantic_similarity,
     convert_llm_causal_pairs,
+    dedup_memory_links,
     detect_causal_pairs,
     enrich_text,
     process_clusters,
@@ -292,3 +296,396 @@ class TestConvertLLMCausalPairs:
             group_label="test",
         )
         assert len(links) == 1
+
+
+class TestAdaptiveHdbscanParams:
+    """测试 HDBSCAN 自适应参数函数"""
+
+    def test_small_dataset_under_20(self) -> None:
+        """n_samples < 20: min_cluster_size=2, min_samples=2"""
+        mcs, ms = adaptive_hdbscan_params(10)
+        assert mcs == 2
+        assert ms == 2
+
+    def test_small_dataset_boundary_19(self) -> None:
+        """边界值: n_samples=19"""
+        mcs, ms = adaptive_hdbscan_params(19)
+        assert mcs == 2
+        assert ms == 2
+
+    def test_20_to_99(self) -> None:
+        """20 <= n_samples < 100: min_cluster_size=3, min_samples=3"""
+        mcs, ms = adaptive_hdbscan_params(50)
+        assert mcs == 3
+        assert ms == 3
+
+    def test_boundary_20(self) -> None:
+        """边界值: n_samples=20"""
+        mcs, ms = adaptive_hdbscan_params(20)
+        assert mcs == 3
+        assert ms == 3
+
+    def test_boundary_99(self) -> None:
+        """边界值: n_samples=99"""
+        mcs, ms = adaptive_hdbscan_params(99)
+        assert mcs == 3
+        assert ms == 3
+
+    def test_100_to_499(self) -> None:
+        """100 <= n_samples < 500: min_cluster_size=5, min_samples=4"""
+        mcs, ms = adaptive_hdbscan_params(200)
+        assert mcs == 5
+        assert ms == 4
+
+    def test_boundary_100(self) -> None:
+        """边界值: n_samples=100"""
+        mcs, ms = adaptive_hdbscan_params(100)
+        assert mcs == 5
+        assert ms == 4
+
+    def test_boundary_499(self) -> None:
+        """边界值: n_samples=499"""
+        mcs, ms = adaptive_hdbscan_params(499)
+        assert mcs == 5
+        assert ms == 4
+
+    def test_500_to_1999(self) -> None:
+        """500 <= n_samples < 2000: min_cluster_size=8, min_samples=6"""
+        mcs, ms = adaptive_hdbscan_params(1000)
+        assert mcs == 8
+        assert ms == 6
+
+    def test_boundary_500(self) -> None:
+        """边界值: n_samples=500"""
+        mcs, ms = adaptive_hdbscan_params(500)
+        assert mcs == 8
+        assert ms == 6
+
+    def test_boundary_1999(self) -> None:
+        """边界值: n_samples=1999"""
+        mcs, ms = adaptive_hdbscan_params(1999)
+        assert mcs == 8
+        assert ms == 6
+
+    def test_large_dataset_2000_plus(self) -> None:
+        """n_samples >= 2000: min_cluster_size=15, min_samples=10"""
+        mcs, ms = adaptive_hdbscan_params(5000)
+        assert mcs == 15
+        assert ms == 10
+
+    def test_boundary_2000(self) -> None:
+        """边界值: n_samples=2000"""
+        mcs, ms = adaptive_hdbscan_params(2000)
+        assert mcs == 15
+        assert ms == 10
+
+    def test_min_samples_clamped_by_min(self) -> None:
+        """min_samples 受 min_samples_min 限制"""
+        mcs, ms = adaptive_hdbscan_params(10, min_samples_min=5, min_samples_max=10)
+        assert ms == 5
+        assert mcs >= 5
+
+    def test_min_samples_clamped_by_max(self) -> None:
+        """min_samples 受 min_samples_max 限制"""
+        mcs, ms = adaptive_hdbscan_params(5000, min_samples_min=2, min_samples_max=5)
+        assert ms == 5
+        assert mcs >= 2
+
+    def test_zero_samples(self) -> None:
+        """n_samples=0 也应该返回有效值"""
+        mcs, ms = adaptive_hdbscan_params(0)
+        assert mcs == 2
+        assert ms == 2
+
+    def test_one_sample(self) -> None:
+        """n_samples=1"""
+        mcs, ms = adaptive_hdbscan_params(1)
+        assert mcs == 2
+        assert ms == 2
+
+
+class TestDetectCausalInGroupIncremental:
+    """测试增量因果链检测"""
+
+    def test_new_new_pairs_detected(self) -> None:
+        """新成员之间的因果对应被检测到"""
+        unit_ids = ["old1", "old2", "new1", "new2"]
+        unit_texts = [
+            "旧文本一",
+            "旧文本二",
+            "服务器过载导致系统崩溃",
+            "数据库连接失败引发告警",
+        ]
+        new_members = [2, 3]
+        old_members = [0, 1]
+        seen_pairs: set = set()
+
+        links = _detect_causal_in_group_incremental(
+            group_label="test",
+            new_members=new_members,
+            old_members=old_members,
+            unit_ids=unit_ids,
+            unit_texts=unit_texts,
+            seen_pairs=seen_pairs,
+        )
+
+        new_new_pairs = [
+            l for l in links
+            if l["from_id"] in ("new1", "new2") and l["to_id"] in ("new1", "new2")
+        ]
+        assert len(new_new_pairs) > 0, "应检测到新成员之间的因果对"
+
+    def test_new_old_pairs_detected(self) -> None:
+        """新成员与旧成员之间的因果对应被检测到"""
+        unit_ids = ["old1", "new1"]
+        unit_texts = [
+            "服务器过载导致系统崩溃",
+            "系统崩溃引发重启",
+        ]
+        new_members = [1]
+        old_members = [0]
+        seen_pairs: set = set()
+
+        links = _detect_causal_in_group_incremental(
+            group_label="test",
+            new_members=new_members,
+            old_members=old_members,
+            unit_ids=unit_ids,
+            unit_texts=unit_texts,
+            seen_pairs=seen_pairs,
+        )
+
+        new_old_pairs = [
+            l for l in links
+            if (l["from_id"] == "new1" and l["to_id"] == "old1")
+            or (l["from_id"] == "old1" and l["to_id"] == "new1")
+        ]
+        assert len(new_old_pairs) > 0, "应检测到新成员与旧成员之间的因果对"
+
+    def test_old_old_pairs_skipped(self) -> None:
+        """旧成员之间的因果对不应被检测到（增量模式）"""
+        unit_ids = ["old1", "old2", "new1"]
+        unit_texts = [
+            "服务器过载导致系统崩溃",
+            "系统崩溃引发重启",
+            "新的记忆内容",
+        ]
+        new_members = [2]
+        old_members = [0, 1]
+        seen_pairs: set = set()
+
+        links = _detect_causal_in_group_incremental(
+            group_label="test",
+            new_members=new_members,
+            old_members=old_members,
+            unit_ids=unit_ids,
+            unit_texts=unit_texts,
+            seen_pairs=seen_pairs,
+        )
+
+        old_old_pairs = [
+            l for l in links
+            if l["from_id"] in ("old1", "old2") and l["to_id"] in ("old1", "old2")
+        ]
+        assert len(old_old_pairs) == 0, "增量模式下不应检测旧-旧因果对"
+
+    def test_seen_pairs_dedup(self) -> None:
+        """已在 seen_pairs 中的因果对应被跳过"""
+        unit_ids = ["old1", "new1"]
+        unit_texts = [
+            "服务器过载导致系统崩溃",
+            "系统崩溃引发重启",
+        ]
+        new_members = [1]
+        old_members = [0]
+        seen_pairs: set = {("new1", "old1", "causes")}
+
+        links = _detect_causal_in_group_incremental(
+            group_label="test",
+            new_members=new_members,
+            old_members=old_members,
+            unit_ids=unit_ids,
+            unit_texts=unit_texts,
+            seen_pairs=seen_pairs,
+        )
+
+        duplicate_pairs = [
+            l for l in links
+            if l["from_id"] == "new1" and l["to_id"] == "old1" and l["link_type"] == "causes"
+        ]
+        assert len(duplicate_pairs) == 0, "已见过的因果对应被跳过"
+
+    def test_empty_new_members_returns_empty(self) -> None:
+        """新成员为空时返回空列表"""
+        links = _detect_causal_in_group_incremental(
+            group_label="test",
+            new_members=[],
+            old_members=[0, 1],
+            unit_ids=["a", "b"],
+            unit_texts=["文本A", "文本B"],
+            seen_pairs=set(),
+        )
+        assert links == []
+
+    def test_empty_old_members_still_detects_new_new(self) -> None:
+        """旧成员为空时仍应检测新-新组合"""
+        unit_ids = ["new1", "new2"]
+        unit_texts = [
+            "服务器过载导致系统崩溃",
+            "系统崩溃引发重启",
+        ]
+        new_members = [0, 1]
+        old_members: list[int] = []
+        seen_pairs: set = set()
+
+        links = _detect_causal_in_group_incremental(
+            group_label="test",
+            new_members=new_members,
+            old_members=old_members,
+            unit_ids=unit_ids,
+            unit_texts=unit_texts,
+            seen_pairs=seen_pairs,
+        )
+        assert len(links) > 0, "只有新成员时也应检测新-新因果对"
+
+    def test_consistent_with_full_detection(self) -> None:
+        """增量检测结果应与全量检测中涉及新成员的结果一致"""
+        unit_ids = ["old1", "old2", "new1", "new2"]
+        unit_texts = [
+            "服务器过载导致系统崩溃",
+            "数据库连接失败引发告警",
+            "系统崩溃引发重启",
+            "告警触发通知",
+        ]
+        all_members = [0, 1, 2, 3]
+        new_members = [2, 3]
+        old_members = [0, 1]
+
+        seen_full: set = set()
+        links_full = _detect_causal_in_group(
+            group_label="test",
+            members=all_members,
+            unit_ids=unit_ids,
+            unit_texts=unit_texts,
+            seen_pairs=seen_full,
+        )
+
+        seen_incr: set = set()
+        links_incr = _detect_causal_in_group_incremental(
+            group_label="test",
+            new_members=new_members,
+            old_members=old_members,
+            unit_ids=unit_ids,
+            unit_texts=unit_texts,
+            seen_pairs=seen_incr,
+        )
+
+        def involves_new(link: dict) -> bool:
+            return link["from_id"] in ("new1", "new2") or link["to_id"] in ("new1", "new2")
+
+        full_with_new = [l for l in links_full if involves_new(l)]
+        incr_keys = {(l["from_id"], l["to_id"], l["link_type"]) for l in links_incr}
+        full_keys = {(l["from_id"], l["to_id"], l["link_type"]) for l in full_with_new}
+
+        assert incr_keys == full_keys, "增量检测应覆盖所有涉及新成员的因果对"
+
+
+class TestDedupMemoryLinks:
+    """测试 memory_links 去重函数"""
+
+    def test_no_duplicates_unchanged(self) -> None:
+        """无重复时列表不变"""
+        links = [
+            {"from_id": "a", "to_id": "b", "link_type": "causes", "weight": 0.9},
+            {"from_id": "c", "to_id": "d", "link_type": "causes", "weight": 0.8},
+        ]
+        result = dedup_memory_links(links)
+        assert len(result) == 2
+        assert result[0]["from_id"] == "a"
+        assert result[1]["from_id"] == "c"
+
+    def test_exact_duplicate_removed(self) -> None:
+        """完全相同的因果对（同方向）应被去重"""
+        links = [
+            {"from_id": "a", "to_id": "b", "link_type": "causes", "weight": 0.9},
+            {"from_id": "a", "to_id": "b", "link_type": "causes", "weight": 0.9},
+        ]
+        result = dedup_memory_links(links)
+        assert len(result) == 1
+        assert result[0]["from_id"] == "a"
+        assert result[0]["to_id"] == "b"
+
+    def test_reverse_direction_duplicate_removed(self) -> None:
+        """反向因果对（min/max 相同）应被去重"""
+        links = [
+            {"from_id": "a", "to_id": "b", "link_type": "causes", "weight": 0.9},
+            {"from_id": "b", "to_id": "a", "link_type": "causes", "weight": 0.8},
+        ]
+        result = dedup_memory_links(links)
+        assert len(result) == 1, "方向相反但 min/max 相同的对应被去重"
+        assert result[0]["from_id"] == "a"
+
+    def test_different_link_type_not_duplicate(self) -> None:
+        """不同 link_type 的不算重复"""
+        links = [
+            {"from_id": "a", "to_id": "b", "link_type": "causes", "weight": 0.9},
+            {"from_id": "a", "to_id": "b", "link_type": "caused_by", "weight": 0.8},
+        ]
+        result = dedup_memory_links(links)
+        assert len(result) == 2
+
+    def test_keeps_first_occurrence(self) -> None:
+        """保留第一次出现的链接"""
+        links = [
+            {"from_id": "a", "to_id": "b", "link_type": "causes", "weight": 0.9, "reason": "first"},
+            {"from_id": "b", "to_id": "a", "link_type": "causes", "weight": 0.8, "reason": "second"},
+        ]
+        result = dedup_memory_links(links)
+        assert len(result) == 1
+        assert result[0]["reason"] == "first"
+
+    def test_empty_list_returns_empty(self) -> None:
+        """空列表返回空列表"""
+        result = dedup_memory_links([])
+        assert result == []
+
+    def test_string_id_normalization(self) -> None:
+        """ID 应被转为字符串后比较"""
+        links = [
+            {"from_id": 1, "to_id": 2, "link_type": "causes", "weight": 0.9},
+            {"from_id": "1", "to_id": "2", "link_type": "causes", "weight": 0.9},
+        ]
+        result = dedup_memory_links(links)
+        assert len(result) == 1
+
+    def test_multiple_duplicates(self) -> None:
+        """多个重复项都应被去重"""
+        links = [
+            {"from_id": "a", "to_id": "b", "link_type": "causes"},
+            {"from_id": "b", "to_id": "a", "link_type": "causes"},
+            {"from_id": "a", "to_id": "b", "link_type": "causes"},
+            {"from_id": "c", "to_id": "d", "link_type": "causes"},
+        ]
+        result = dedup_memory_links(links)
+        assert len(result) == 2
+
+
+class TestCausalIncrementalConfig:
+    """测试因果链增量配置项"""
+
+    def test_default_values(self) -> None:
+        """默认值应为开启增量且仅新成员相关"""
+        from clustering_analysis.config import AppConfig
+        cfg = AppConfig()
+        assert cfg.causal_incremental is True
+        assert cfg.causal_new_only is True
+
+    def test_from_dict_overrides(self) -> None:
+        """from_dict 应能覆盖默认值"""
+        from clustering_analysis.config import AppConfig
+        cfg = AppConfig.from_dict({
+            "causal_incremental": False,
+            "causal_new_only": False,
+        })
+        assert cfg.causal_incremental is False
+        assert cfg.causal_new_only is False

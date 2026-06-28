@@ -6,8 +6,14 @@ import pytest
 
 from memory_cleanup.core.classifier import (
     AUTO_REMOVE_PATTERNS,
+    _chinese_bigrams,
+    _extract_dates,
+    _extract_key_numbers,
+    _extract_proper_nouns,
+    backfill_hindsight_keywords,
     calc_remove_candidates,
     classify_all,
+    extract_hindsight_keywords,
     validate_compress_quality,
     validate_hindsight_quality,
     validate_merge_quality,
@@ -245,24 +251,24 @@ class TestValidateMergeQuality:
 
 
 class TestValidateCompressQuality:
-    """测试 validate_compress_quality 校验函数。"""
+    """测试 validate_compress_quality 校验函数（非严格模式，向后兼容）。"""
 
     def test_valid_compress_preserves_entities(self, sample_entries: list[str]) -> None:
         """保留关键实体的压缩应通过。"""
         compress_list = [{"index": 5, "精简为": "PG 端口 5434，库 hindsight"}]
-        result = validate_compress_quality(sample_entries, compress_list)
+        result = validate_compress_quality(sample_entries, compress_list, strict_mode=False)
         assert len(result) == 1
 
     def test_too_short_compress_is_rejected(self, sample_entries: list[str]) -> None:
         """过短的压缩应被过滤。"""
         compress_list = [{"index": 3, "精简为": "不要并发"}]
-        result = validate_compress_quality(sample_entries, compress_list)
+        result = validate_compress_quality(sample_entries, compress_list, strict_mode=False)
         assert len(result) == 0
 
     def test_entity_dropped_compress_is_rejected(self, sample_entries: list[str]) -> None:
         """遗漏 IP/URL/端口的压缩应被过滤。"""
         compress_list = [{"index": 0, "精简为": "LiteLLM 网关地址已配置"}]
-        result = validate_compress_quality(sample_entries, compress_list)
+        result = validate_compress_quality(sample_entries, compress_list, strict_mode=False)
         assert len(result) == 0
 
     def test_compress_allows_partial_path_loss(self) -> None:
@@ -272,7 +278,7 @@ class TestValidateCompressQuality:
         ]
         # 压缩后保留了版本号但省略了路径（遗漏率 50% ≤ 70%）
         compress_list = [{"index": 0, "精简为": "版本 v1.2.0，已 配置"}]
-        result = validate_compress_quality(entries, compress_list)
+        result = validate_compress_quality(entries, compress_list, strict_mode=False)
         assert len(result) == 1
 
     def test_compress_allows_high_noncritical_loss(self) -> None:
@@ -282,7 +288,7 @@ class TestValidateCompressQuality:
         ]
         # 关键实体 v2.0 保留；非关键 2 条路径全部丢失 = 遗漏率 2/3≈67% ≤ 70%
         compress_list = [{"index": 0, "精简为": "版本 v2.0.0 已 部署"}]
-        result = validate_compress_quality(entries, compress_list)
+        result = validate_compress_quality(entries, compress_list, strict_mode=False)
         assert len(result) == 1
 
     def test_compress_rejects_excessive_noncritical_loss(self) -> None:
@@ -292,7 +298,7 @@ class TestValidateCompressQuality:
         ]
         # 无关键实体；5 条路径全部丢失 = 5/5=100% > 70%
         compress_list = [{"index": 0, "精简为": "已 配置 完成"}]
-        result = validate_compress_quality(entries, compress_list)
+        result = validate_compress_quality(entries, compress_list, strict_mode=False)
         assert len(result) == 0
 
     def test_compress_rejects_critical_entity_loss(self) -> None:
@@ -302,11 +308,11 @@ class TestValidateCompressQuality:
         ]
         # 压缩后去掉了 IP 和端口
         compress_list = [{"index": 0, "精简为": "路径 /home/user/project"}]
-        result = validate_compress_quality(entries, compress_list)
+        result = validate_compress_quality(entries, compress_list, strict_mode=False)
         assert len(result) == 0
 
     def test_empty_compress_list(self) -> None:
-        result = validate_compress_quality(["条目A"], [])
+        result = validate_compress_quality(["条目A"], [], strict_mode=False)
         assert result == []
 
     def test_compress_quality_with_english_keywords(self) -> None:
@@ -316,7 +322,7 @@ class TestValidateCompressQuality:
         ]
         # 压缩版保留了 memory 和 cleanup，英文单词覆盖率 2/6=33% ≥ 20%
         compress_list = [{"index": 0, "精简为": "use memory cleanup"}]
-        result = validate_compress_quality(entries, compress_list)
+        result = validate_compress_quality(entries, compress_list, strict_mode=False)
         assert len(result) == 1
 
     def test_compress_rejects_pure_english_no_overlap(self) -> None:
@@ -326,7 +332,7 @@ class TestValidateCompressQuality:
         ]
         # 压缩版完全换用新词，无重叠
         compress_list = [{"index": 0, "精简为": "completely different text here now"}]
-        result = validate_compress_quality(entries, compress_list)
+        result = validate_compress_quality(entries, compress_list, strict_mode=False)
         assert len(result) == 0
 
     # ── USER 专用 compress 质量测试 ──
@@ -338,7 +344,7 @@ class TestValidateCompressQuality:
         ]
         # LLM 合理重述：改变了词语分组但保留了核心字符
         compress_list = [{"index": 0, "精简为": "用户习惯：按月拆解计划，定期汇报"}]
-        result = validate_compress_quality(entries, compress_list, source="USER")
+        result = validate_compress_quality(entries, compress_list, source="USER", strict_mode=False)
         assert len(result) == 1
 
     def test_user_compress_no_savings_rejected(self) -> None:
@@ -348,7 +354,7 @@ class TestValidateCompressQuality:
         ]
         # 仅替换最后一个字，长度不变（11→11），违反节省检查
         compress_list = [{"index": 0, "精简为": "用户偏好面向对象编制"}]
-        result = validate_compress_quality(entries, compress_list, source="USER")
+        result = validate_compress_quality(entries, compress_list, source="USER", strict_mode=False)
         assert len(result) == 0
 
     def test_user_compress_mixed_cn_en_passes(self) -> None:
@@ -358,7 +364,7 @@ class TestValidateCompressQuality:
         ]
         # 压缩后保留 cleanup 和 testing 英文词 + 部分中文 bigram
         compress_list = [{"index": 0, "精简为": "cleanup testing 并行执行"}]
-        result = validate_compress_quality(entries, compress_list, source="USER")
+        result = validate_compress_quality(entries, compress_list, source="USER", strict_mode=False)
         assert len(result) == 1
 
     def test_user_compress_no_overlap_rejected(self) -> None:
@@ -368,7 +374,7 @@ class TestValidateCompressQuality:
         ]
         # 完全换词
         compress_list = [{"index": 0, "精简为": "Test driven delivery approach"}]
-        result = validate_compress_quality(entries, compress_list, source="USER")
+        result = validate_compress_quality(entries, compress_list, source="USER", strict_mode=False)
         assert len(result) == 0
 
     def test_user_compress_short_entry_still_valid(self) -> None:
@@ -378,7 +384,7 @@ class TestValidateCompressQuality:
         ]
         # 有实际节省（10 < 17*0.95）且保留关键词（bigram overlap ≥10%）
         compress_list = [{"index": 0, "精简为": "结论先行，列核心要点"}]
-        result = validate_compress_quality(entries, compress_list, source="USER")
+        result = validate_compress_quality(entries, compress_list, source="USER", strict_mode=False)
         assert len(result) == 1
 
 
@@ -451,3 +457,441 @@ class TestValidateHindsightQuality:
         entries = ["审计方法论：采用10+轮递进检查模式"]
         result = validate_hindsight_quality(entries, [])
         assert result == []
+
+
+class TestExtractDates:
+    """测试 _extract_dates 辅助函数。"""
+
+    def test_extract_yyyy_mm_dd(self) -> None:
+        """提取 YYYY-MM-DD 格式日期。"""
+        text = "项目于 2026-06-28 完成部署"
+        dates = _extract_dates(text)
+        assert "2026-06-28" in dates
+
+    def test_extract_yyyy_slash_mm_slash_dd(self) -> None:
+        """提取 YYYY/MM/DD 格式日期。"""
+        text = "截止日期 2026/06/28"
+        dates = _extract_dates(text)
+        assert "2026/06/28" in dates
+
+    def test_extract_mm_month_dd_day(self) -> None:
+        """提取 MM月DD日 格式日期。"""
+        text = "6月28日是星期日"
+        dates = _extract_dates(text)
+        assert "6月28日" in dates
+
+    def test_extract_multiple_dates(self) -> None:
+        """提取多种格式混合。"""
+        text = "2026-01-01 开始，2026/03/15 结束，6月28日完成"
+        dates = _extract_dates(text)
+        assert "2026-01-01" in dates
+        assert "2026/03/15" in dates
+        assert "6月28日" in dates
+
+    def test_no_dates(self) -> None:
+        """无日期时返回空集合。"""
+        text = "这是一段普通文本"
+        dates = _extract_dates(text)
+        assert dates == set()
+
+
+class TestExtractKeyNumbers:
+    """测试 _extract_key_numbers 辅助函数。"""
+
+    def test_extract_number_with_english_unit(self) -> None:
+        """提取带英文单位的数字。"""
+        text = "延迟约 100ms 响应时间"
+        numbers = _extract_key_numbers(text)
+        assert "100ms" in numbers
+
+    def test_extract_number_with_chinese_unit(self) -> None:
+        """提取带中文单位的数字。"""
+        text = "共迁移 5000条 记录"
+        numbers = _extract_key_numbers(text)
+        assert "5000条" in numbers
+
+    def test_extract_decimal_number(self) -> None:
+        """提取小数。"""
+        text = "精度为 3.14 圆周率"
+        numbers = _extract_key_numbers(text)
+        assert "3.14" in numbers
+
+    def test_extract_percent(self) -> None:
+        """提取百分比。"""
+        text = "成功率 95%"
+        numbers = _extract_key_numbers(text)
+        assert "95%" in numbers
+
+    def test_no_key_numbers(self) -> None:
+        """无数字时返回空集合。"""
+        text = "纯中文文本没有数字"
+        numbers = _extract_key_numbers(text)
+        assert numbers == set()
+
+
+class TestExtractProperNouns:
+    """测试 _extract_proper_nouns 辅助函数。"""
+
+    def test_extract_python(self) -> None:
+        """提取 Python 等专有名词。"""
+        text = "使用 Python 进行开发"
+        nouns = _extract_proper_nouns(text)
+        assert "Python" in nouns
+
+    def test_extract_postgresql(self) -> None:
+        """提取 PostgreSQL。"""
+        text = "数据库使用 PostgreSQL"
+        nouns = _extract_proper_nouns(text)
+        assert "PostgreSQL" in nouns
+
+    def test_extract_hdbscan(self) -> None:
+        """提取 HDBSCAN。"""
+        text = "聚类算法 HDBSCAN"
+        nouns = _extract_proper_nouns(text)
+        assert "HDBSCAN" in nouns
+
+    def test_skip_short_words(self) -> None:
+        """跳过长度小于 4 的词。"""
+        text = "Use SQL DB"
+        nouns = _extract_proper_nouns(text)
+        assert nouns == set()
+
+    def test_no_proper_nouns(self) -> None:
+        """无专有名词时返回空集合。"""
+        text = "全是小写字母 python java"
+        nouns = _extract_proper_nouns(text)
+        assert nouns == set()
+
+
+class TestStrictModeCompressQuality:
+    """测试严格模式下的 compress 质量校验。"""
+
+    def test_strict_mode_lower_compression_ratio_memory(self) -> None:
+        """严格模式下 MEMORY 压缩比上限更严格（8.0 vs 12.0）。"""
+        original = "项目配置部署测试完成 系统升级数据迁移 性能优化安全审计 监控告警日志分析 容灾备份故障恢复" * 4
+        compressed = "项目配置部署测试完成 系统升级数据迁移"
+        ratio = len(original) / len(compressed)
+        assert 8.0 < ratio < 12.0
+        entries = [original]
+        compress_list = [{"index": 0, "精简为": compressed}]
+        result_strict = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        result_non_strict = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=False)
+        assert len(result_strict) == 0
+        assert len(result_non_strict) == 1
+
+    def test_strict_mode_lower_compression_ratio_user(self) -> None:
+        """严格模式下 USER 压缩比上限更严格（5.0 vs 12.0）。"""
+        original = "用户偏好项目计划拆解到月级别制定实施计划需要定期汇报进度并且总结复盘" * 3
+        compressed = "用户偏好项目计划拆解"
+        ratio = len(original) / len(compressed)
+        assert 5.0 < ratio < 12.0
+        entries = [original]
+        compress_list = [{"index": 0, "精简为": compressed}]
+        result_strict = validate_compress_quality(entries, compress_list, source="USER", strict_mode=True)
+        result_non_strict = validate_compress_quality(entries, compress_list, source="USER", strict_mode=False)
+        assert len(result_strict) == 0
+        assert len(result_non_strict) == 1
+
+    def test_strict_mode_higher_keyword_overlap_memory(self) -> None:
+        """严格模式下 MEMORY 关键词重叠要求更高（0.30 vs 0.20）。"""
+        original = "项目配置 部署测试 验证完成 项目管理 系统升级 性能优化 安全审计 监控告警 日志分析 容灾备份 故障恢复"
+        compressed = "项目配置 部署测试 验证完成"
+        orig_kw = 11
+        overlap_kw = 3
+        overlap = overlap_kw / orig_kw
+        assert 0.20 <= overlap < 0.30
+        entries = [original]
+        compress_list = [{"index": 0, "精简为": compressed}]
+        result_strict = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        result_non_strict = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=False)
+        assert len(result_strict) == 0
+        assert len(result_non_strict) == 1
+
+    def test_strict_mode_higher_keyword_overlap_user(self) -> None:
+        """严格模式下 USER 关键词重叠要求更高（0.25 vs 0.10）。"""
+        entries = ["用户偏好项目计划拆解到月级别，制定实施计划，需要定期汇报进度"]
+        compress_list = [{"index": 0, "精简为": "用户习惯：按月拆解计划"}]
+        result_strict = validate_compress_quality(entries, compress_list, source="USER", strict_mode=True)
+        result_non_strict = validate_compress_quality(entries, compress_list, source="USER", strict_mode=False)
+        assert len(result_strict) == 0
+        assert len(result_non_strict) == 1
+
+    def test_non_strict_mode_backward_compatible(self) -> None:
+        """非严格模式下使用原有阈值，保持向后兼容。"""
+        entries = ["LiteLLM 网关地址: http://127.0.0.1:4142"]
+        compress_list = [{"index": 0, "精简为": "LiteLLM 网关地址已配置"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=False)
+        assert len(result) == 0
+
+
+class TestDateRetentionCheck:
+    """测试日期保留检查（严格模式）。"""
+
+    def test_date_retained_passes(self) -> None:
+        """日期全部保留应通过。"""
+        entries = ["项目部署 2026-06-28 完成部署 系统上线 数据迁移 性能优化"]
+        compress_list = [{"index": 0, "精简为": "项目部署 2026-06-28 完成 系统上线"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 1
+
+    def test_date_missing_rejected(self) -> None:
+        """日期丢失应被过滤。"""
+        entries = ["项目部署 2026-06-28 完成部署 系统上线 数据迁移 性能优化"]
+        compress_list = [{"index": 0, "精简为": "项目部署 完成 系统上线"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 0
+
+    def test_chinese_date_retained(self) -> None:
+        """中文日期保留应通过。"""
+        entries = ["6月28日 完成上线 系统部署 数据迁移"]
+        compress_list = [{"index": 0, "精简为": "6月28日 上线 系统部署"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 1
+
+    def test_no_dates_no_check(self) -> None:
+        """无日期时不触发检查。"""
+        entries = ["项目部署完成 系统上线 数据迁移 性能优化 安全审计"]
+        compress_list = [{"index": 0, "精简为": "项目部署 系统上线 数据迁移 性能优化"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 1
+
+    def test_date_check_only_in_strict_mode(self) -> None:
+        """非严格模式下不检查日期。"""
+        entries = ["项目部署 2026-06-28 完成部署 系统上线"]
+        compress_list = [{"index": 0, "精简为": "项目部署 完成 系统上线"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=False)
+        assert len(result) == 1
+
+
+class TestNumberRetentionCheck:
+    """测试数字保留检查（严格模式）。"""
+
+    def test_number_retained_passes(self) -> None:
+        """关键数字全部保留应通过。"""
+        entries = ["系统延迟 100ms，共迁移 5000条 记录，性能优化 95% 成功率"]
+        compress_list = [{"index": 0, "精简为": "系统延迟 100ms，迁移 5000条 记录，性能 95%"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 1
+
+    def test_number_missing_rejected(self) -> None:
+        """关键数字丢失应被过滤。"""
+        entries = ["系统延迟 100ms，共迁移 5000条 记录，性能优化"]
+        compress_list = [{"index": 0, "精简为": "系统延迟 较短，迁移 记录 很多，性能优化"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 0
+
+    def test_number_check_only_in_strict_mode(self) -> None:
+        """非严格模式下不检查数字。"""
+        entries = ["系统延迟 100ms，共迁移 5000条 记录"]
+        compress_list = [{"index": 0, "精简为": "系统延迟 较短，迁移 记录 很多"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=False)
+        assert len(result) == 1
+
+
+class TestProperNounRetentionCheck:
+    """测试专有名词保留检查（严格模式）。"""
+
+    def test_proper_noun_retained_passes(self) -> None:
+        """专有名词全部保留应通过。"""
+        entries = ["使用 Python 语言 PostgreSQL 数据库 开发 后端服务 系统集成"]
+        compress_list = [{"index": 0, "精简为": "使用 Python PostgreSQL 开发 后端服务"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 1
+
+    def test_proper_noun_missing_rejected(self) -> None:
+        """专有名词丢失应被过滤。"""
+        entries = ["使用 Python 语言 PostgreSQL 数据库 开发 后端服务"]
+        compress_list = [{"index": 0, "精简为": "使用编程语言 数据库 开发 后端服务"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 0
+
+    def test_proper_noun_check_only_in_strict_mode(self) -> None:
+        """非严格模式下不检查专有名词。"""
+        entries = ["使用 Python 语言 PostgreSQL 数据库 开发"]
+        compress_list = [{"index": 0, "精简为": "使用编程语言 数据库 开发"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=False)
+        assert len(result) == 1
+
+    def test_hdbscan_proper_noun(self) -> None:
+        """HDBSCAN 等全大写专有名词也应识别。"""
+        entries = ["聚类算法 HDBSCAN 效果很好 性能优化 数据处理"]
+        compress_list = [{"index": 0, "精简为": "HDBSCAN 聚类效果好 性能优化"}]
+        result = validate_compress_quality(entries, compress_list, source="MEMORY", strict_mode=True)
+        assert len(result) == 1
+
+
+class TestExtractHindsightKeywords:
+    """测试 extract_hindsight_keywords 关键词提取函数。"""
+
+    def test_extracts_chinese_keywords(self) -> None:
+        """中文条目应提取中文关键词。"""
+        text = "审计方法论：采用10+轮递进检查模式，每轮聚焦不同风险维度，逐步深入"
+        keywords = extract_hindsight_keywords(text, max_count=5)
+        assert len(keywords) >= 1
+        assert any("审计" in k for k in keywords)
+
+    def test_extracts_english_proper_nouns_first(self) -> None:
+        """英文专有名词应优先提取。"""
+        text = "Python PostgreSQL 数据库连接配置完成"
+        keywords = extract_hindsight_keywords(text, max_count=5)
+        assert "Python" in keywords
+        assert "PostgreSQL" in keywords
+        # 专有名词应出现在中文词之前
+        prop_idx_py = keywords.index("Python")
+        prop_idx_pg = keywords.index("PostgreSQL")
+        cn_idx = next(i for i, k in enumerate(keywords) if any("\u4e00" <= c <= "\u9fff" for c in k))
+        assert prop_idx_py < cn_idx
+        assert prop_idx_pg < cn_idx
+
+    def test_respects_max_count(self) -> None:
+        """应遵守最大关键词数量限制。"""
+        text = "审计 方法论 风险 检查 模式 维度 深入 递进 聚焦"
+        keywords = extract_hindsight_keywords(text, max_count=3)
+        assert len(keywords) == 3
+
+    def test_clamps_max_count_to_3_8_range(self) -> None:
+        """max_count 应限制在 3-8 范围内。"""
+        text = "审计 方法论 风险 检查 模式 维度 深入 递进 聚焦 优化 部署 测试"
+        keywords_low = extract_hindsight_keywords(text, max_count=1)
+        assert len(keywords_low) == 3
+        keywords_high = extract_hindsight_keywords(text, max_count=100)
+        assert len(keywords_high) == 8
+
+    def test_empty_text_returns_empty(self) -> None:
+        """空文本应返回空列表。"""
+        assert extract_hindsight_keywords("", max_count=5) == []
+
+    def test_deduplicates_case_insensitive(self) -> None:
+        """关键词应大小写不敏感去重。"""
+        text = "Python python PYTHON"
+        keywords = extract_hindsight_keywords(text, max_count=5)
+        assert len(keywords) == 1
+
+    def test_mixed_cn_en_keywords(self) -> None:
+        """中英文混合条目应正确提取。"""
+        text = "Data Flywheel 架构遵循注意力机制与分域原则"
+        keywords = extract_hindsight_keywords(text, max_count=5)
+        assert len(keywords) >= 2
+        assert "Data" in keywords
+        assert any("架构" in k for k in keywords)
+
+
+class TestBackfillHindsightKeywords:
+    """测试 backfill_hindsight_keywords 回填函数。"""
+
+    def test_backfill_missing_keywords(self) -> None:
+        """缺少关键词字段的条目应被回填。"""
+        entries = [
+            "审计方法论：采用10+轮递进检查模式，每轮聚焦不同风险维度，逐步深入",
+        ]
+        hindsight_list = [{"index": 0}]
+        result = backfill_hindsight_keywords(entries, hindsight_list, keyword_count=5)
+        assert len(result) == 1
+        assert "关键词" in result[0]
+        assert len(result[0]["关键词"]) == 5
+
+    def test_supplements_existing_keywords(self) -> None:
+        """关键词数量不足时应补齐。"""
+        entries = [
+            "审计方法论：采用10+轮递进检查模式，每轮聚焦不同风险维度，逐步深入",
+        ]
+        hindsight_list = [{"index": 0, "关键词": ["审计"]}]
+        result = backfill_hindsight_keywords(entries, hindsight_list, keyword_count=5)
+        assert len(result[0]["关键词"]) == 5
+        assert result[0]["关键词"][0] == "审计"
+
+    def test_keeps_existing_when_enough(self) -> None:
+        """关键词数量足够时不修改。"""
+        entries = ["条目内容"]
+        original = ["审计", "风险", "检查", "模式", "维度"]
+        hindsight_list = [{"index": 0, "关键词": original.copy()}]
+        result = backfill_hindsight_keywords(entries, hindsight_list, keyword_count=5)
+        assert result[0]["关键词"] == original
+
+    def test_invalid_index_skipped(self) -> None:
+        """无效 index 应被跳过。"""
+        entries = ["条目一"]
+        hindsight_list = [{"index": -1}, {"index": 100}]
+        result = backfill_hindsight_keywords(entries, hindsight_list, keyword_count=5)
+        assert len(result) == 2
+        assert "关键词" not in result[0]
+
+    def test_empty_tags_are_backfilled(self) -> None:
+        """空关键词列表应被回填。"""
+        entries = ["审计方法论：风险检查与递进模式"]
+        hindsight_list = [{"index": 0, "关键词": []}]
+        result = backfill_hindsight_keywords(entries, hindsight_list, keyword_count=5)
+        assert len(result[0]["关键词"]) >= 1
+
+    def test_non_list_tags_are_replaced(self) -> None:
+        """非列表类型的关键词应被替换。"""
+        entries = ["审计方法论：风险检查与递进模式"]
+        hindsight_list = [{"index": 0, "关键词": "not-a-list"}]
+        result = backfill_hindsight_keywords(entries, hindsight_list, keyword_count=5)
+        assert isinstance(result[0]["关键词"], list)
+        assert len(result[0]["关键词"]) >= 1
+
+    def test_backfill_merges_without_duplicates(self) -> None:
+        """回填时应去重（大小写不敏感）。"""
+        entries = ["Python python 审计 审计"]
+        hindsight_list = [{"index": 0, "关键词": ["python"]}]
+        result = backfill_hindsight_keywords(entries, hindsight_list, keyword_count=5)
+        lowercase = [k.lower() for k in result[0]["关键词"]]
+        assert len(lowercase) == len(set(lowercase))
+
+
+class TestKeywordBackfillIntegration:
+    """关键词回填与分类流程的集成测试。"""
+
+    def test_hindsight_without_tags_gets_backfilled(
+        self, mock_llm_client: MagicMock
+    ) -> None:
+        """LLM 返回的 hindsight 没有关键词时，应被回填。"""
+        entries = [
+            "审计方法论：采用10+轮递进检查模式，每轮聚焦不同风险维度，逐步深入",
+        ]
+        mock_llm_client.classify_batch.return_value = {
+            "merge": [],
+            "remove": [],
+            "compress": [],
+            "hindsight": [{"index": 0}],  # 没有关键词
+        }
+        result = classify_all(entries, "USER", mock_llm_client, batch_size=10, max_workers=1)
+        assert len(result["hindsight"]) == 1
+        assert "关键词" in result["hindsight"][0]
+        assert len(result["hindsight"][0]["关键词"]) >= 3
+
+    def test_hindsight_with_tags_passes_through(
+        self, mock_llm_client: MagicMock
+    ) -> None:
+        """LLM 返回的 hindsight 有关键词时应保留。"""
+        entries = [
+            "审计方法论：采用10+轮递进检查模式，每轮聚焦不同风险维度，逐步深入",
+        ]
+        mock_llm_client.classify_batch.return_value = {
+            "merge": [],
+            "remove": [],
+            "compress": [],
+            "hindsight": [{"index": 0, "关键词": ["审计", "风险", "检查", "模式", "维度"]}],
+        }
+        result = classify_all(entries, "USER", mock_llm_client, batch_size=10, max_workers=1)
+        assert len(result["hindsight"]) == 1
+        assert result["hindsight"][0]["关键词"][0] == "审计"
+
+    def test_memory_source_no_hindsight_backfill(
+        self, mock_llm_client: MagicMock
+    ) -> None:
+        """MEMORY 源不进行 hindsight 处理（也不回填）。"""
+        entries = ["条目一"]
+        mock_llm_client.classify_batch.return_value = {
+            "merge": [],
+            "remove": [],
+            "compress": [],
+            "hindsight": [{"index": 0}],
+        }
+        result = classify_all(entries, "MEMORY", mock_llm_client, batch_size=10, max_workers=1)
+        assert len(result["hindsight"]) == 1
+        # MEMORY 源不调用 validate_hindsight_quality，也不回填
+        # 但关键词字段是否存在取决于 LLM 返回
+        # 这里测试的是不报错即可
+        assert result["hindsight"][0].get("index") == 0
