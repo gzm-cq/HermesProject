@@ -235,10 +235,17 @@ def collect_baseline(log_file: str = "") -> dict:
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if '"event": "recall_success"' not in line:
+            if not line:
                 continue
             try:
                 data = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            event = data.get("event", "")
+
+            # ── 分支 1: recall_success 事件 ──
+            if event == "recall_success":
                 if is_test_trace_record(data):
                     continue
 
@@ -266,8 +273,31 @@ def collect_baseline(log_file: str = "") -> dict:
                     "eval_match_method": data.get("eval_match_method", ""),
                     "query_trunc": data.get("query_trunc", ""),
                 })
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
+
+            # ── 分支 2: eval_match 事件（匹配质量数据）──
+            elif event == "eval_match":
+                qid = data.get("matched_query_id") or data.get("query_id", "")
+                if not qid:
+                    continue
+
+                accepted = data.get("accepted", False)
+                records_by_qid[qid].append({
+                    "timestamp": data.get("timestamp", ""),
+                    "total_results": 1,  # 1 次匹配
+                    "kept_results": 1 if accepted else 0,
+                    "avg_score": data.get("score", 0.0),
+                    "excluded_marked": 0,
+                    "latency_ms": 0,
+                    "total_chars": 0,
+                    "injected_count": 0,
+                    "recalled_ids": [],
+                    "eval_expected_ids": [],
+                    "eval_recall_hit": 0,
+                    "eval_recall_k": 0,
+                    "eval_counted": data.get("counted", False),
+                    "eval_match_method": data.get("match_type", ""),
+                    "query_trunc": data.get("user_message_trunc", ""),
+                })
 
     # 汇总 + Bootstrap CI
     baseline: dict[str, Any] = {}
@@ -415,8 +445,11 @@ def load_previous_baseline() -> dict:
 
 
 def save_baseline(current: dict) -> None:
-    """原子保存基线：先写 .tmp 再 rename，避免中断丢失。"""
+    """原子保存基线：先轮转 prev，再写 .tmp 再 rename，避免中断丢失。"""
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
+    # 将当前 latest 轮转为 prev（供下次 --delta 对比）
+    if BASELINE_FILE.exists():
+        BASELINE_FILE.rename(BASELINE_PREV_FILE)
     tmp = BASELINE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(BASELINE_FILE)
@@ -854,6 +887,9 @@ def main() -> None:
             json.dump(baseline, f, indent=2, ensure_ascii=False)
         if not args["json"]:
             print(f"  (原始数据已写入 {output_path})")
+
+    # 没有 --delta 时也保存基线（供 cron delta 检测使用）
+    save_baseline(baseline)
 
 
 if __name__ == "__main__":

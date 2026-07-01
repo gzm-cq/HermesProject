@@ -1,0 +1,152 @@
+[
+  {
+    "query_id": "skill_01",
+    "query": "shared-postgres 相关的技术配置",
+    "expected_skills": ["database-migrations", "docker-patterns", "backend-patterns"]
+  },
+  {
+    "query_id": "skill_02",
+    "query": "SiliconFlow API 的使用方法",
+    "expected_skills": ["honcho-llm-configuration", "cost-aware-llm-pipeline"]
+  },
+  {
+    "query_id": "skill_03",
+    "query": "DeepSeek 模型的调用方式",
+    "expected_skills": ["cost-aware-llm-pipeline", "serving-llms-vllm"]
+  },
+  {
+    "query_id": "skill_04",
+    "query": "你读取飞书单聊里面最新对话",
+    "expected_skills": ["lark-im", "lark-shared", "hindsight-memory"]
+  },
+  {
+    "query_id": "skill_05",
+    "query": "moa配置是什么",
+    "expected_skills": ["hermes-enable-skill-correct-way", "hermes-infrastructure", "honcho-llm-configuration"]
+  },
+  {
+    "query_id": "skill_06",
+    "query": "你能看看我在hermes cli中正在做到工作吗，把最后一层回复告诉我是什么",
+    "expected_skills": ["session-progress-snapshot", "hindsight-memory", "context-restore"]
+  },
+  {
+    "query_id": "skill_07",
+    "query": "LiteLLM 配置相关的问题怎么处理",
+    "expected_skills": ["hermes-fallback-model-troubleshooting", "cost-aware-llm-pipeline"]
+  },
+  {
+    "query_id": "skill_08",
+    "query": "PG 连接错误怎么排查",
+    "expected_skills": ["hermes-fallback-model-troubleshooting", "database-migrations"]
+  },
+  {
+    "query_id": "skill_09",
+    "query": "Hindsight embedding 模型是什么",
+    "expected_skills": ["hindsight-memory"]
+  },
+  {
+    "query_id": "skill_10",
+    "query": "Gateway 启动参数有哪些",
+    "expected_skills": ["hermes-infrastructure", "system-operations-rules"]
+  },
+  {
+    "query_id": "skill_11",
+    "query": "Kanban worker 的工作流程",
+    "expected_skills": ["kanban-orchestrator", "kanban-worker"]
+  },
+  {
+    "query_id": "skill_12",
+    "query": "Hermes 插件的注册方法",
+    "expected_skills": ["hermes-infrastructure"]
+  },
+  {
+    "query_id": "skill_13",
+    "query": "MCP 服务器的配置方式",
+    "expected_skills": ["honcho-llm-configuration", "hermes-infrastructure"]
+  },
+  {
+    "query_id": "skill_14",
+    "query": "怎么部署插件",
+    "expected_skills": ["land-and-deploy", "setup-deploy", "ship"]
+  },
+  {
+    "query_id": "skill_15",
+    "query": "如何配置 Hindsight",
+    "expected_skills": ["hindsight-memory", "system-operations-rules"]
+  },
+  {
+    "query_id": "skill_16",
+    "query": "用什么工具查日志",
+    "expected_skills": ["system-health-check", "system-operations-rules"]
+  },
+  {
+    "query_id": "skill_17",
+    "query": "LLM 路由策略怎么选",
+    "expected_skills": ["cost-aware-llm-pipeline", "hermes-fallback-model-troubleshooting"]
+  },
+  {
+    "query_id": "skill_18",
+    "query": "代码审查的流程是什么",
+    "expected_skills": ["graph-assisted-code-review", "monorepo-code-review", "codebase-inspection"]
+  },
+  {
+    "query_id": "skill_19",
+    "query": "Hindsight 的架构是怎样的",
+    "expected_skills": ["hindsight-memory"]
+  },
+  {
+    "query_id": "skill_20",
+    "query": "gateway 为啥崩了",
+    "expected_skills": ["hermes-fallback-model-troubleshooting", "system-health-check"]
+  },
+  {
+    "query_id": "skill_21",
+    "query": "之前方案结果怎样",
+    "expected_skills": ["hindsight-memory", "session-progress-snapshot"]
+  },
+  {
+    "query_id": "skill_22",
+    "query": "git 工作流怎么配置",
+    "expected_skills": ["git-workflow", "github-workflows"]
+  },
+  {
+    "query_id": "skill_23",
+    "query": "知识树怎么构建和优化",
+    "expected_skills": ["knowledge-tree-builder", "hindsight-memory"]
+  },
+  {
+    "query_id": "skill_24",
+    "query": "写一份技术方案文档",
+    "expected_skills": ["writing-plans", "system-design"]
+  },
+  {
+    "query_id": "skill_25",
+    "query": "Python 异步编程的最佳实践",
+    "expected_skills": ["python-patterns", "backend-patterns"]
+  },
+  {
+    "query_id": "skill_26",
+    "query": "Docker compose 编排微服务",
+    "expected_skills": ["docker-patterns", "backend-patterns"]
+  },
+  {
+    "query_id": "skill_27",
+    "query": "系统健康检查怎么做",
+    "expected_skills": ["system-health-check", "system-operations-rules"]
+  },
+  {
+    "query_id": "skill_28",
+    "query": "测试驱动开发的流程",
+    "expected_skills": ["test-driven-development", "e2e-testing"]
+  },
+  {
+    "query_id": "skill_29",
+    "query": "系统调试的方法论",
+    "expected_skills": ["systematic-debugging", "hermes-fallback-model-troubleshooting"]
+  },
+  {
+    "query_id": "skill_30",
+    "query": "AI 项目可行性评估",
+    "expected_skills": ["ai-project-feasibility-assessment", "researcher"]
+  }
+]

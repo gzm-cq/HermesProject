@@ -349,7 +349,79 @@ run(apply=False, dry_run=True, cleanup=False, force=True, skip_entity=False, con
     fi
 fi
 
-# ===== 步骤 5: 飞书通知 =====
+# ===== 步骤 6: 基线反馈闭环（Phase 6 — 基于 clustering_audit.log silhouette）=====
+if should_skip "6"; then
+    warn "跳过步骤 6: 基线反馈闭环"
+else
+    section "⑥ 基线反馈闭环"
+
+    AUDIT_LOG="/root/.hermes/plugins/knowledge-navigation/clustering_audit.log"
+    PREV_AUDIT="/root/.hermes/data/flywheel/clustering_baseline_prev.json"
+    FLYWHEEL_DIR="$(dirname "$PREV_AUDIT")"
+    mkdir -p "$FLYWHEEL_DIR"
+
+    if [[ ! -f "$AUDIT_LOG" ]]; then
+        warn "聚类审计日志不存在: $AUDIT_LOG，跳过对比"
+    else
+        LAST_SILHOUETTE=$(tail -1 "$AUDIT_LOG" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get('silhouette', 'N/A'))
+except: print('N/A')
+" 2>/dev/null)
+
+        if [[ "$LAST_SILHOUETTE" == "N/A" ]]; then
+            warn "无法提取 silhouette，跳过对比"
+        elif [[ ! -f "$PREV_AUDIT" ]]; then
+            cp "$AUDIT_LOG" "$PREV_AUDIT"
+            ok "首次运行，基线已保存 (silhouette=${LAST_SILHOUETTE})"
+            _STEP_RESULTS+=("✅ Phase 6: 首次基线保存 (sil=${LAST_SILHOUETTE})")
+        else
+            PREV_SILHOUETTE=$(python3 -c "
+import json
+try:
+    lines = open('$PREV_AUDIT').readlines()
+    last = json.loads(lines[-1].strip())
+    print(last.get('silhouette', 'N/A'))
+except: print('N/A')
+" 2>/dev/null)
+
+            if [[ "$PREV_SILHOUETTE" != "N/A" ]]; then
+                DELTA=$(python3 -c "
+cur, prev = float('$LAST_SILHOUETTE'), float('$PREV_SILHOUETTE')
+if prev != 0:
+    print(f'{(cur - prev) / abs(prev) * 100:.1f}')
+else:
+    print('0.0')
+" 2>/dev/null)
+
+                # silhouette 绝对值下降 > 20% → 告警
+                if (( $(echo "$DELTA < -20" | bc -l 2>/dev/null || echo 0) )); then
+                    ALERT_MSG="🔴 聚类质量下降 ${DELTA}% (prev=${PREV_SILHOUETTE} → cur=${LAST_SILHOUETTE})"
+                    warn "$ALERT_MSG"
+                    _STEP_RESULTS+=("⚠️ Phase 6: $ALERT_MSG")
+
+                    DECLINE_FILE="$FLYWHEEL_DIR/clustering_decline_count"
+                    CUR_DECLINE=$(cat "$DECLINE_FILE" 2>/dev/null || echo "0")
+                    CUR_DECLINE=$((CUR_DECLINE + 1))
+                    echo "$CUR_DECLINE" > "$DECLINE_FILE"
+
+                    if [[ "$CUR_DECLINE" -ge 3 ]]; then
+                        ESCALATED_MSG="🔥 聚类参数可能需要调整（连续 ${CUR_DECLINE} 周下降）"
+                        err "$ESCALATED_MSG"
+                        _STEP_RESULTS+=("🔥 Phase 6: $ESCALATED_MSG")
+                    fi
+                else
+                    ok "基线对比: silhouette ${LAST_SILHOUETTE} vs prev ${PREV_SILHOUETTE} (Δ${DELTA}%)"
+                    _STEP_RESULTS+=("✅ Phase 6: 基线稳定 (Δ${DELTA}%)")
+                    echo "0" > "$FLYWHEEL_DIR/clustering_decline_count" 2>/dev/null
+                fi
+            fi
+            cp "$AUDIT_LOG" "$PREV_AUDIT"
+        fi
+    fi
+fi
 if should_skip "5"; then
     warn "跳过步骤 5: 飞书通知"
 else
