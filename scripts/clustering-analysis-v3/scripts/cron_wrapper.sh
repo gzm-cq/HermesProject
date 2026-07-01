@@ -388,17 +388,14 @@ except: print('N/A')
 " 2>/dev/null)
 
             if [[ "$PREV_SILHOUETTE" != "N/A" ]]; then
-                DELTA=$(python3 -c "
+                DIFF=$(python3 -c "
 cur, prev = float('$LAST_SILHOUETTE'), float('$PREV_SILHOUETTE')
-if prev != 0:
-    print(f'{(cur - prev) / abs(prev) * 100:.1f}')
-else:
-    print('0.0')
+print(f'{cur - prev:.4f}')
 " 2>/dev/null)
 
-                # silhouette 绝对值下降 > 20% → 告警
-                if (( $(echo "$DELTA < -20" | bc -l 2>/dev/null || echo 0) )); then
-                    ALERT_MSG="🔴 聚类质量下降 ${DELTA}% (prev=${PREV_SILHOUETTE} → cur=${LAST_SILHOUETTE})"
+                # silhouette 绝对值下降 > 0.05 → 告警
+                if (( $(echo "$DIFF < -0.05" | bc -l 2>/dev/null || echo 0) )); then
+                    ALERT_MSG="🔴 聚类质量下降 ${DIFF} (prev=${PREV_SILHOUETTE} → cur=${LAST_SILHOUETTE})"
                     warn "$ALERT_MSG"
                     _STEP_RESULTS+=("⚠️ Phase 6: $ALERT_MSG")
 
@@ -413,8 +410,8 @@ else:
                         _STEP_RESULTS+=("🔥 Phase 6: $ESCALATED_MSG")
                     fi
                 else
-                    ok "基线对比: silhouette ${LAST_SILHOUETTE} vs prev ${PREV_SILHOUETTE} (Δ${DELTA}%)"
-                    _STEP_RESULTS+=("✅ Phase 6: 基线稳定 (Δ${DELTA}%)")
+                    ok "基线对比: silhouette ${LAST_SILHOUETTE} vs prev ${PREV_SILHOUETTE} (Δ${DIFF})"
+                    _STEP_RESULTS+=("✅ Phase 6: 基线稳定 (Δ${DIFF})")
                     echo "0" > "$FLYWHEEL_DIR/clustering_decline_count" 2>/dev/null
                 fi
             fi
@@ -422,6 +419,7 @@ else:
         fi
     fi
 fi
+
 if should_skip "5"; then
     warn "跳过步骤 5: 飞书通知"
 else
