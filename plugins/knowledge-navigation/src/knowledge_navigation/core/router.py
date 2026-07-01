@@ -19,17 +19,32 @@ _ROUTER_SYSTEM_PROMPT = build_router_prompt()
 
 def _parse_mask(text: str) -> dict[str, bool] | None:
     """从 LLM 响应解析 mask JSON，含 JSON 块提取和字段缺失兜底。"""
+    data: dict | None = None
+
+    # 1) Try direct JSON parse
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 2) Try ```json ... ``` or ``` ... ``` code block
+    if data is None:
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
         if m:
             try:
                 data = json.loads(m.group(1))
             except json.JSONDecodeError:
-                return None
-        else:
-            return None
+                pass
+
+    # 3) Try first { ... } object (handles inline JSON, markdown text, etc.)
+    if data is None:
+        m = re.search(r"\{[^{}]*\}", text)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except (json.JSONDecodeError, ValueError):
+                pass
+
     if not isinstance(data, dict):
         return None
     return {
@@ -100,6 +115,7 @@ def route(
     mask = _parse_mask(raw)
     if mask is None:
         logger.warning("Router JSON 解析失败, fallback 全开")
+        logger.debug("Raw content (first 300): %s", raw[:300])
         mask = {"h": True, "kt": True, "s": True}
 
     _router_cache[cache_key] = mask
