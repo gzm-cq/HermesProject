@@ -96,7 +96,7 @@ class KnowledgeNavigationConfig:
     # Recall behavior
     max_results: int = field(default=3)
     max_text_length: int = field(default=200)
-    min_score: float = field(default=0.6)
+    min_score: float = field(default=0.45)
 
     # Performance
     timeout_seconds: int = field(default=25)
@@ -113,15 +113,15 @@ class KnowledgeNavigationConfig:
     # Temporal fusion
     enable_temporal: bool = field(default=True)
     temporal_weight: float = field(default=0.5)  # 保留兼容，公式改为乘法时不再使用
-    temporal_halflife_days: int = field(default=14)  # 时间衰减半衰期（天），越小衰老越快
-    temporal_floor_weight: float = field(default=0.3)  # 乘法融合保底系数，0.3=旧记忆至少保留30%基础分
+    temporal_halflife_days: int = field(default=30)  # 时间衰减半衰期（天），越大衰老越慢
+    temporal_floor_weight: float = field(default=0.5)  # 乘法融合保底系数，0.5=旧记忆至少保留50%基础分
 
     # Circuit breaker
     circuit_breaker_threshold: int = field(default=3)
     circuit_breaker_cooldown: int = field(default=120)
 
     # Evaluation
-    eval_queries_path: str = field(default="")
+    eval_queries_path: str = field(default="/root/.hermes/data/eval_queries.json")
     eval_log_path: str = field(default="")
     eval_min_score: float = field(default=0.1)
 
@@ -163,13 +163,20 @@ class KnowledgeNavigationConfig:
     feishu_home_channel: str = field(default="")
 
     # LLM Router
-    router_model: str = field(default="sensenova-6.7-flash-lite")
+    router_model: str = field(default="s-deepseek-v4-flash")
     router_api_url: str = field(default="http://127.0.0.1:4142/v1")
     router_api_key: str = field(default="")
     router_timeout: int = field(default=5)
 
-    # Skill Matcher: 关键词预筛选 + LLM 精排两级架构
+    # Skill Matcher: 三级筛选架构（关键词 + Embedding + LLM）
     kn_skill_keyword_prescreen: bool = field(default=True)
+
+    # Skill Matcher: Embedding 预筛选（Hybrid 模式，在关键词之后）
+    kn_skill_embedding_prescreen: bool = field(default=False)
+    kn_skill_embedding_model: str = field(default="BAAI/bge-m3")
+    kn_skill_embedding_url: str = field(default="https://api.siliconflow.cn/v1")
+    kn_skill_embedding_api_key: str = field(default="")
+    kn_skill_embedding_top_k: int = field(default=20)  # embedding 筛选后的候选数
 
     # Token budget gatekeeping (P1-1)
     enable_token_budget: bool = field(default=True)
@@ -260,6 +267,18 @@ class KnowledgeNavigationConfig:
             values["router_timeout"] = int(env)
         if env := os.getenv("KN_SKILL_KEYWORD_PRESCREEN"):
             values["kn_skill_keyword_prescreen"] = env.lower() in ("1", "true", "yes")
+        if env := os.getenv("KN_SKILL_EMBEDDING_PRESCREEN"):
+            values["kn_skill_embedding_prescreen"] = env.lower() in ("1", "true", "yes")
+        if env := os.getenv("KN_SKILL_EMBEDDING_MODEL"):
+            values["kn_skill_embedding_model"] = env
+        if env := os.getenv("KN_SKILL_EMBEDDING_URL"):
+            values["kn_skill_embedding_url"] = env
+        if env := os.getenv("KN_SKILL_EMBEDDING_API_KEY"):
+            values["kn_skill_embedding_api_key"] = env
+        elif env := os.getenv("SILICONFLOW_API_KEY"):
+            values["kn_skill_embedding_api_key"] = env
+        if env := os.getenv("KN_SKILL_EMBEDDING_TOP_K"):
+            values["kn_skill_embedding_top_k"] = int(env)
         if env := os.getenv("KN_ENABLE_TOKEN_BUDGET"):
             values["enable_token_budget"] = env.lower() in ("1", "true", "yes")
         if env := os.getenv("KN_TOKEN_BUDGET_TOTAL"):
@@ -318,6 +337,8 @@ def setup_logging() -> None:
                 fh.setFormatter(formatter)
                 fh.addFilter(TraceRecordFilter())
                 kn_logger.addHandler(fh)
+                kn_logger.setLevel(logging.INFO)
+                fh.setLevel(logging.INFO)
             except Exception:
                 pass
 

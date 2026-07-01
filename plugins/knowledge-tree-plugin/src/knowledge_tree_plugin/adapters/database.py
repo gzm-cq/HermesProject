@@ -232,6 +232,28 @@ class PluginDatabaseAdapter:
             self._inner.conn.rollback()
             raise
 
+    def review_exists(
+        self,
+        new_text: str,
+        existing_node_id: int,
+        conflict_type: str = "semantic_conflict",
+        status: str = "pending",
+    ) -> bool:
+        """检查是否已存在相同的待处理审查记录（去重保护）。"""
+        cursor = self._inner.cursor
+        try:
+            cursor.execute(
+                "SELECT id FROM knowledge_review_queue "
+                "WHERE conflict_type = %s "
+                "  AND new_text = %s AND existing_node_id = %s "
+                "  AND status = %s "
+                "LIMIT 1",
+                (conflict_type, new_text, existing_node_id, status),
+            )
+            return cursor.fetchone() is not None
+        except Exception:
+            return False
+
     def log_use(
         self,
         session_id: str,
@@ -345,22 +367,25 @@ class PluginDatabaseAdapter:
 
         Returns:
             knowledge_point 节点列表，每项含 {id, name, node_type, parent_id,
-            k_vector, local_offset, text}
+            k_vector, local_offset, text, valid_from, valid_until}
         """
         cursor = self._inner.cursor
         cursor.execute(
             """
             WITH RECURSIVE descendants AS (
-                SELECT id, name, node_type, parent_id, k_vector, local_offset, display_order
+                SELECT id, name, node_type, parent_id, k_vector, local_offset,
+                       display_order, valid_from, valid_until
                 FROM knowledge_tree WHERE parent_id = %s
                 UNION ALL
                 SELECT kt.id, kt.name, kt.node_type, kt.parent_id,
-                       kt.k_vector, kt.local_offset, kt.display_order
+                       kt.k_vector, kt.local_offset, kt.display_order,
+                       kt.valid_from, kt.valid_until
                 FROM knowledge_tree kt
                 JOIN descendants d ON kt.parent_id = d.id
             )
             SELECT d.id, d.name, d.node_type, d.parent_id,
-                   d.k_vector, d.local_offset, kpt.text
+                   d.k_vector, d.local_offset, kpt.text,
+                   d.valid_from, d.valid_until
             FROM descendants d
             LEFT JOIN knowledge_point_texts kpt
                    ON kpt.tree_node_id = d.id
@@ -379,6 +404,8 @@ class PluginDatabaseAdapter:
                 "k_vector": _parse_k_vector(r[4]),
                 "local_offset": _parse_k_vector(r[5]),
                 "text": r[6] or "",
+                "valid_from": r[7].isoformat() if r[7] else None,
+                "valid_until": r[8].isoformat() if r[8] else None,
             }
             for r in rows
         ]

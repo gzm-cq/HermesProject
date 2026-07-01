@@ -85,6 +85,15 @@ class AppConfig:
     # P3-3: 数据血缘
     enable_data_lineage: bool = False           # 是否启用数据血缘记录（Feature Flag）
     lineage_detail_level: str = "basic"         # 血缘详细程度: basic / full
+    # P3-7: Embedding 新鲜度检查
+    enable_embedding_freshness_check: bool = False  # 是否启用 embedding 新鲜度检查（Feature Flag）
+    # P3-9: 时态感知增强
+    enable_temporal_extraction: bool = False       # 是否启用时态信息提取（Feature Flag）
+    temporal_field_valid_from: str = "valid_from"  # valid_from 字段名
+    temporal_field_valid_until: str = "valid_until"  # valid_until 字段名
+    # P3-10: 统一缓存管理
+    cache_dir: str = ".kb_cache/"              # 缓存目录（相对于输出目录）
+    enable_unified_cache: bool = True          # 是否启用统一缓存管理（Feature Flag）
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
@@ -124,7 +133,14 @@ def load_config(config_path: str) -> dict[str, Any]:
         # P3-3: 数据血缘
         "enable_data_lineage": "KT_ENABLE_DATA_LINEAGE",
         "lineage_detail_level": "KT_LINEAGE_DETAIL_LEVEL",
+        # P3-7: Embedding 新鲜度检查
+        "enable_embedding_freshness_check": "KT_ENABLE_EMBEDDING_FRESHNESS_CHECK",
+        # P3-9: 时态感知增强
+        "enable_temporal_extraction": "KT_ENABLE_TEMPORAL_EXTRACTION",
     }
+    # P3-10: 统一缓存管理
+    env_mapping["cache_dir"] = "KT_CACHE_DIR"
+    env_mapping["enable_unified_cache"] = "KT_ENABLE_UNIFIED_CACHE"
     for key, env_var in env_mapping.items():
         if env_var in os.environ:
             config[key] = os.environ[env_var]
@@ -135,6 +151,8 @@ def load_config(config_path: str) -> dict[str, Any]:
         "self_explanatory_rules", "kb_dedup_pgvector", "kb_merged_domain",
         "enhanced_admission", "admission_low_quality_patterns",
         "domain_cache_use_path_hash", "enable_data_lineage",
+        "enable_unified_cache", "enable_embedding_freshness_check",
+        "enable_temporal_extraction",
     }
     _list_env_fields = {"admission_whitelist_sources"}
     for key in _list_env_fields:

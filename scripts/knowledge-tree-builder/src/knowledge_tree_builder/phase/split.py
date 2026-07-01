@@ -305,6 +305,12 @@ def _evaluate_single_candidate(
                 source_candidate_index=source_index,
                 source_title=article_title,
             )
+            # P3-9: 时态信息提取（启发式 fallback）
+            if config.enable_temporal_extraction:
+                from knowledge_tree_builder.core.temporal import extract_temporal_from_text
+                tr = extract_temporal_from_text(text)
+                ak["valid_from"] = tr.valid_from
+                ak["valid_until"] = tr.valid_until
             return [ak], [], False
         else:
             logger.debug("候选 #%d 质量不通过: %s", source_index, reason)
@@ -513,13 +519,20 @@ def _process_sub_items(
                 self_explanatory_enabled=config.self_explanatory_rules,
             )
             if passed:
-                atomics.append(AtomicKnowledge(
+                ak = AtomicKnowledge(
                     text=si_text,
                     type=corrected_type,
                     claims_count=1,
                     source_candidate_index=source_index,
                     source_title=article_title,
-                ))
+                )
+                # P3-9: 时态信息提取（启发式 fallback）
+                if config.enable_temporal_extraction:
+                    from knowledge_tree_builder.core.temporal import extract_temporal_from_text
+                    tr = extract_temporal_from_text(si_text)
+                    ak["valid_from"] = tr.valid_from
+                    ak["valid_until"] = tr.valid_until
+                atomics.append(ak)
             else:
                 logger.debug("拆出子条目质量不通过: %s", reason)
         else:

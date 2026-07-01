@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from knowledge_tree_builder import batch_embed
-from knowledge_tree_plugin.recall import locate_subject, attention_filter, format_context_lines, log_use
+from knowledge_tree_plugin.recall import locate_subject, attention_filter, format_context_lines, log_use, temporal_filter
 from knowledge_tree_plugin.config import PluginConfig
 from knowledge_tree_plugin.adapters.database import PluginDatabaseAdapter
 
@@ -105,6 +105,16 @@ def _recall_core(
 
         if not kp_results:
             return [], adapter, owns_adapter
+
+        # Step 3.5: 时态过滤（P3-9）
+        if cfg.enable_temporal_filter:
+            kp_results = temporal_filter(
+                kp_results,
+                user_message,
+                demote_factor=cfg.temporal_filter_demote_factor,
+            )
+            if not kp_results:
+                return [], adapter, owns_adapter
 
         # Step 4: 回写 use_log
         node_ids = [kp.get("id", 0) for kp in kp_results if kp.get("id")]

@@ -1,89 +1,632 @@
 [
-  {"query_id": "semantic_01", "query": "LiteLLM 配置相关的问题怎么处理"},
-  {"query_id": "semantic_02", "query": "PG 连接错误怎么排查"},
-  {"query_id": "semantic_03", "query": "Hindsight embedding 模型是什么"},
-  {"query_id": "semantic_04", "query": "Gateway 启动参数有哪些"},
-  {"query_id": "semantic_05", "query": "Kanban worker 的工作流程"},
-  {"query_id": "semantic_06", "query": "Hermes 插件的注册方法"},
-  {"query_id": "semantic_07", "query": "MCP 服务器的配置方式"},
-  {"query_id": "semantic_08", "query": "systemd 服务的管理命令"},
-  {"query_id": "semantic_09", "query": "环境变量的设置位置"},
-  {"query_id": "semantic_10", "query": "WSL 的文件系统挂载"},
-
-  {"query_id": "entity_01", "query": "shared-postgres 相关的技术配置"},
-  {"query_id": "entity_02", "query": "SiliconFlow API 的使用方法"},
-  {"query_id": "entity_03", "query": "LiteLLM 的路由策略"},
-  {"query_id": "entity_04", "query": "DeepSeek 模型的调用方式"},
-  {"query_id": "entity_05", "query": "pgvector 的索引类型"},
-  {"query_id": "entity_06", "query": "Hindsight daemon 的环境变量"},
-  {"query_id": "entity_07", "query": "聚类脚本的运行参数"},
-  {"query_id": "entity_08", "query": "知识导航插件的 Hook 机制"},
-  {"query_id": "entity_09", "query": "SQLite 与 PostgreSQL 的对比"},
-  {"query_id": "entity_10", "query": "bge-m3 embedding 模型的规格"},
-
-  {"query_id": "causal_01", "query": "Gateway 崩溃的原因和修复"},
-  {"query_id": "causal_02", "query": "Worker 超时与内存不足的关系"},
-  {"query_id": "causal_03", "query": "Hindsight 启动慢的原因"},
-  {"query_id": "causal_04", "query": "Clipboard 连接失败后的处理"},
-  {"query_id": "causal_05", "query": "API key 过期的影响范围"},
-  {"query_id": "causal_06", "query": "LiteLLM 网关停止的影响"},
-  {"query_id": "causal_07", "query": "PG 连接池耗尽的表现"},
-  {"query_id": "causal_08", "query": "systemd KillMode 导致 worker 被杀"},
-  {"query_id": "causal_09", "query": "Hermes update 覆盖 config 的风险"},
-  {"query_id": "causal_10", "query": "WSL 内存不足导致 OOM 的链式反应"},
-
-  {"query_id": "temporal_01", "query": "上周做的性能优化方案"},
-  {"query_id": "temporal_02", "query": "本月的配置变更记录"},
-  {"query_id": "temporal_03", "query": "最近一次系统巡检的结果"},
-  {"query_id": "temporal_04", "query": "昨天的错误修复记录"},
-  {"query_id": "temporal_05", "query": "最近七天的新增脚本"},
-  {"query_id": "temporal_06", "query": "上个月的论文数据验证"},
-  {"query_id": "temporal_07", "query": "最新的聚类运行结果"},
-  {"query_id": "temporal_08", "query": "本周的 Hindsight 统计数据"},
-  {"query_id": "temporal_09", "query": "最近一次 Gateway 重启的原因"},
-  {"query_id": "temporal_10", "query": "上季度的架构设计决策"},
-
-  {"query_id": "conflict_01", "query": "老方案 v1 和当前方案有什么区别"},
-  {"query_id": "conflict_02", "query": "之前用的 embedding 模型和现在的对比"},
-  {"query_id": "conflict_03", "query": "旧 Kanban 流程和新流程的差异"},
-  {"query_id": "conflict_04", "query": "之前的错误记忆标记方案和当前方案"},
-  {"query_id": "conflict_05", "query": "旧版 Hindsight 和新版的功能对比"},
-  {"query_id": "conflict_06", "query": "论文使用的数据和实际 trace 日志的差异"},
-  {"query_id": "conflict_07", "query": "MIN_SCORE 0.6 和 0.7 的效果对比"},
-  {"query_id": "conflict_08", "query": "SQL 清理方案和标记方案的区别"},
-  {"query_id": "conflict_09", "query": "PG 直连方案和 API 方案的对比"},
-  {"query_id": "conflict_10", "query": "自进化项目四层和三层架构的演进"},
-
-  {"query_id": "tool_01", "query": "怎么用 mark_memory.py 搜索记忆"},
-  {"query_id": "tool_02", "query": "Hermes deploy.sh 部署新项目的步骤"},
-  {"query_id": "tool_03", "query": "collect_baseline.py 评测工具的用法"},
-  {"query_id": "tool_04", "query": "如何查看 Hindsight trace 日志"},
-  {"query_id": "tool_05", "query": "systemctl 查看 Gateway 状态"},
-  {"query_id": "tool_06", "query": "聚类脚本的手动触发方式"},
-  {"query_id": "tool_07", "query": "使用 psql 连接 PG 数据库"},
-  {"query_id": "tool_08", "query": "WSL 中修改环境变量的方法"},
-  {"query_id": "tool_09", "query": "如何回滚 deploy.sh 部署"},
-  {"query_id": "tool_10", "query": "Hermes 日志文件的轮转配置"},
-
-  {"query_id": "debug_01", "query": "Gateway 504 超时如何排查"},
-  {"query_id": "debug_02", "query": "Hindsight recall 返回空结果的排查"},
-  {"query_id": "debug_03", "query": "PG 连接被拒绝的诊断方法"},
-  {"query_id": "debug_04", "query": "LiteLLM proxy 503 服务不可用"},
-  {"query_id": "debug_05", "query": "Plugin hook 未触发的常见原因"},
-  {"query_id": "debug_06", "query": "Embedding 服务 API 超时处理"},
-  {"query_id": "debug_07", "query": "Kanban worker 状态异常的排查"},
-  {"query_id": "debug_08", "query": "Hermes update 后配置丢失的恢复"},
-  {"query_id": "debug_09", "query": "WSL 磁盘空间不足导致服务崩溃"},
-  {"query_id": "debug_10", "query": "环境变量不生效的检查步骤"},
-
-  {"query_id": "api_01", "query": "Hindsight REST API 的端点有哪些"},
-  {"query_id": "api_02", "query": "LiteLLM proxy 的路由规则配置"},
-  {"query_id": "api_03", "query": "Hermes Gateway 插件 hook 的接口约定"},
-  {"query_id": "api_04", "query": "PG 批量写入 execute_values 语法"},
-  {"query_id": "api_05", "query": "SiliconFlow embedding API 鉴权方式"},
-  {"query_id": "api_06", "query": "OpenAI 兼容 API 的调用格式"},
-  {"query_id": "api_07", "query": "pgvector 的 ANN 查询语法"},
-  {"query_id": "api_08", "query": "Hindsight upsert 请求的 JSON 结构"},
-  {"query_id": "api_09", "query": "Hermes kanban 的 REST API"},
-  {"query_id": "api_10", "query": "systemd service 单元文件的格式"}
+  {
+    "query_id": "semantic_01",
+    "query": "LiteLLM 配置相关的问题怎么处理",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_02",
+    "query": "PG 连接错误怎么排查",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_03",
+    "query": "Hindsight embedding 模型是什么",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_04",
+    "query": "Gateway 启动参数有哪些",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_05",
+    "query": "Kanban worker 的工作流程",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_06",
+    "query": "Hermes 插件的注册方法",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_07",
+    "query": "MCP 服务器的配置方式",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_08",
+    "query": "systemd 服务的管理命令",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_09",
+    "query": "环境变量的设置位置",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "semantic_10",
+    "query": "WSL 的文件系统挂载",
+    "dimension": "semantic",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_01",
+    "query": "shared-postgres 相关的技术配置",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_02",
+    "query": "SiliconFlow API 的使用方法",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_03",
+    "query": "LiteLLM 的路由策略",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_04",
+    "query": "DeepSeek 模型的调用方式",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_05",
+    "query": "pgvector 的索引类型",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_06",
+    "query": "Hindsight daemon 的环境变量",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_07",
+    "query": "聚类脚本的运行参数",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_08",
+    "query": "知识导航插件的 Hook 机制",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_09",
+    "query": "SQLite 与 PostgreSQL 的对比",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "entity_10",
+    "query": "bge-m3 embedding 模型的规格",
+    "dimension": "entity",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_01",
+    "query": "Gateway 崩溃的原因和修复",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_02",
+    "query": "Worker 超时与内存不足的关系",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_03",
+    "query": "Hindsight 启动慢的原因",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_04",
+    "query": "Clipboard 连接失败后的处理",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_05",
+    "query": "API key 过期的影响范围",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_06",
+    "query": "LiteLLM 网关停止的影响",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_07",
+    "query": "PG 连接池耗尽的表现",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_08",
+    "query": "systemd KillMode 导致 worker 被杀",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_09",
+    "query": "Hermes update 覆盖 config 的风险",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "causal_10",
+    "query": "WSL 内存不足导致 OOM 的链式反应",
+    "dimension": "causal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_01",
+    "query": "上周做的性能优化方案",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_02",
+    "query": "本月的配置变更记录",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_03",
+    "query": "最近一次系统巡检的结果",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_04",
+    "query": "昨天的错误修复记录",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_05",
+    "query": "最近七天的新增脚本",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_06",
+    "query": "上个月的论文数据验证",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_07",
+    "query": "最新的聚类运行结果",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_08",
+    "query": "本周的 Hindsight 统计数据",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_09",
+    "query": "最近一次 Gateway 重启的原因",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "temporal_10",
+    "query": "上季度的架构设计决策",
+    "dimension": "temporal",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_01",
+    "query": "老方案 v1 和当前方案有什么区别",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_02",
+    "query": "之前用的 embedding 模型和现在的对比",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_03",
+    "query": "旧 Kanban 流程和新流程的差异",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_04",
+    "query": "之前的错误记忆标记方案和当前方案",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_05",
+    "query": "旧版 Hindsight 和新版的功能对比",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_06",
+    "query": "论文使用的数据和实际 trace 日志的差异",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_07",
+    "query": "MIN_SCORE 0.6 和 0.7 的效果对比",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_08",
+    "query": "SQL 清理方案和标记方案的区别",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_09",
+    "query": "PG 直连方案和 API 方案的对比",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "conflict_10",
+    "query": "自进化项目四层和三层架构的演进",
+    "dimension": "conflict",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_01",
+    "query": "怎么用 mark_memory.py 搜索记忆",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_02",
+    "query": "Hermes deploy.sh 部署新项目的步骤",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_03",
+    "query": "collect_baseline.py 评测工具的用法",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_04",
+    "query": "如何查看 Hindsight trace 日志",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_05",
+    "query": "systemctl 查看 Gateway 状态",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_06",
+    "query": "聚类脚本的手动触发方式",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_07",
+    "query": "使用 psql 连接 PG 数据库",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_08",
+    "query": "WSL 中修改环境变量的方法",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_09",
+    "query": "如何回滚 deploy.sh 部署",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "tool_10",
+    "query": "Hermes 日志文件的轮转配置",
+    "dimension": "tool",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_01",
+    "query": "Gateway 504 超时如何排查",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_02",
+    "query": "Hindsight recall 返回空结果的排查",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_03",
+    "query": "PG 连接被拒绝的诊断方法",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_04",
+    "query": "LiteLLM proxy 503 服务不可用",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_05",
+    "query": "Plugin hook 未触发的常见原因",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_06",
+    "query": "Embedding 服务 API 超时处理",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_07",
+    "query": "Kanban worker 状态异常的排查",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_08",
+    "query": "Hermes update 后配置丢失的恢复",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_09",
+    "query": "WSL 磁盘空间不足导致服务崩溃",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "debug_10",
+    "query": "环境变量不生效的检查步骤",
+    "dimension": "debug",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_01",
+    "query": "Hindsight REST API 的端点有哪些",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_02",
+    "query": "LiteLLM proxy 的路由规则配置",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_03",
+    "query": "Hermes Gateway 插件 hook 的接口约定",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_04",
+    "query": "PG 批量写入 execute_values 语法",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_05",
+    "query": "SiliconFlow embedding API 鉴权方式",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_06",
+    "query": "OpenAI 兼容 API 的调用格式",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_07",
+    "query": "pgvector 的 ANN 查询语法",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_08",
+    "query": "Hindsight upsert 请求的 JSON 结构",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_09",
+    "query": "Hermes kanban 的 REST API",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "api_10",
+    "query": "systemd service 单元文件的格式",
+    "dimension": "api",
+    "expected_ids": []
+  },
+  {
+    "query_id": "exact_kw_01",
+    "query": "MIN_SCORE 0.6",
+    "dimension": "exact_kw",
+    "expected_ids": []
+  },
+  {
+    "query_id": "exact_kw_02",
+    "query": "KN_ROUTER_API_KEY",
+    "dimension": "exact_kw",
+    "expected_ids": []
+  },
+  {
+    "query_id": "exact_kw_03",
+    "query": "max_results=3",
+    "dimension": "exact_kw",
+    "expected_ids": []
+  },
+  {
+    "query_id": "exact_kw_04",
+    "query": "hermes-gateway.service",
+    "dimension": "exact_kw",
+    "expected_ids": []
+  },
+  {
+    "query_id": "exact_kw_05",
+    "query": "LITELLM_MASTER_KEY",
+    "dimension": "exact_kw",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compound_01",
+    "query": "Hindsight RRF 融合和 cross-encoder 精排的关系",
+    "dimension": "compound",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compound_02",
+    "query": "token budget 在 HS 和 KT 之间的分配比例",
+    "dimension": "compound",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compound_03",
+    "query": "multi-hop 展开通过实体图遍历实现的逻辑",
+    "dimension": "compound",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compound_04",
+    "query": "compaction 和 token budget 在长对话中的协同",
+    "dimension": "compound",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compound_05",
+    "query": "min_score 过滤和 MMR 多样性重排的先后顺序",
+    "dimension": "compound",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compare_01",
+    "query": "embedding 预筛选和 LLM 精筛的差异",
+    "dimension": "compare",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compare_02",
+    "query": "turn-to-turn dedup 的 demote 和 remove 模式对比",
+    "dimension": "compare",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compare_03",
+    "query": "cross-domain dedup 的 text_only 和 text_embedding 区别",
+    "dimension": "compare",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compare_04",
+    "query": "HS recall 和 KT recall 的召回策略差异",
+    "dimension": "compare",
+    "expected_ids": []
+  },
+  {
+    "query_id": "compare_05",
+    "query": "旧版 classify_intent 和新版 LLM Router 的优缺点",
+    "dimension": "compare",
+    "expected_ids": []
+  },
+  {
+    "query_id": "numeric_01",
+    "query": "min_score 默认值是 0.6",
+    "dimension": "numeric",
+    "expected_ids": []
+  },
+  {
+    "query_id": "numeric_02",
+    "query": "compaction 20 轮后 max_results 降为 1",
+    "dimension": "numeric",
+    "expected_ids": []
+  },
+  {
+    "query_id": "numeric_03",
+    "query": "turn-to-turn dedup 的 LRU 上限是 256",
+    "dimension": "numeric",
+    "expected_ids": []
+  },
+  {
+    "query_id": "numeric_04",
+    "query": "token budget 总容量 4000",
+    "dimension": "numeric",
+    "expected_ids": []
+  },
+  {
+    "query_id": "numeric_05",
+    "query": "hit_counter boost 上限 2.0 倍",
+    "dimension": "numeric",
+    "expected_ids": []
+  },
+  {
+    "query_id": "workflow_01",
+    "query": "新增 Hermes 插件的标准部署流程",
+    "dimension": "workflow",
+    "expected_ids": []
+  },
+  {
+    "query_id": "workflow_02",
+    "query": "配置 Hindsight embedding 模型的步骤",
+    "dimension": "workflow",
+    "expected_ids": []
+  },
+  {
+    "query_id": "workflow_03",
+    "query": "部署后验证 gateway 状态的流程",
+    "dimension": "workflow",
+    "expected_ids": []
+  },
+  {
+    "query_id": "workflow_04",
+    "query": "排查 gateway 启动问题的步骤",
+    "dimension": "workflow",
+    "expected_ids": []
+  },
+  {
+    "query_id": "workflow_05",
+    "query": "更新 cron 任务配置的完整流程",
+    "dimension": "workflow",
+    "expected_ids": []
+  }
 ]

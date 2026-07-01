@@ -14,6 +14,7 @@ from knowledge_tree_builder.adapters.database import DatabaseAdapter
 from knowledge_tree_builder.consolidate.review import process_timeouts as _process_timeouts
 from knowledge_tree_builder.consolidate.confidence import batch_update_from_logs
 from knowledge_tree_builder.core.consolidation import ConsolidationEngine
+from knowledge_tree_builder.core.freshness import check_freshness, compute_text_hash, update_text_hash
 from knowledge_tree_builder.commands._utils import _load_subjects_for_consolidation
 
 
@@ -171,6 +172,54 @@ def cmd_consolidate(
                     print(f"   合计: {edge_result['total']} 边")
                 except Exception as e:
                     print(f"   ⚠️ 建边异常（跳过）: {e}")
+
+            # P3-7: Embedding 新鲜度检查（Feature Flag）
+            if config.get("enable_embedding_freshness_check", False):
+                print("   ⏳ 附加步骤: Embedding 新鲜度检查...")
+                try:
+                    from functools import partial
+                    from knowledge_tree_builder.core.embeddings import batch_embed
+
+                    stale_nodes = check_freshness(adapter)
+                    if not stale_nodes:
+                        print("   ✅ 所有节点都是新鲜的，无需更新")
+                    else:
+                        print(f"   ⚠️  发现 {len(stale_nodes)} 个节点 text 已变化")
+                        if not dry_run:
+                            texts = [text for _, text in stale_nodes]
+                            node_ids = [node_id for node_id, _ in stale_nodes]
+                            embed_fn = partial(
+                                batch_embed,
+                                base_url=config.get("embed_base_url", "https://api.siliconflow.cn/v1"),
+                                model=config.get("embed_model", "BAAI/bge-m3"),
+                                api_key=config.get("embed_api_key", ""),
+                                batch_size=config.get("embed_batch_size", 20),
+                            )
+                            embeddings = embed_fn(texts)
+                            if embeddings:
+                                updated = 0
+                                hash_updates: list[tuple[int, str]] = []
+                                for node_id, text, embedding in zip(node_ids, texts, embeddings):
+                                    try:
+                                        adapter.update_k_vector(node_id, embedding)
+                                        text_hash = compute_text_hash(text)
+                                        hash_updates.append((node_id, text_hash))
+                                        updated += 1
+                                    except Exception as emb_e:
+                                        print(f"   ⚠️  更新节点 {node_id} 失败: {emb_e}")
+                                if hash_updates:
+                                    from knowledge_tree_builder.core.freshness import batch_update_text_hash
+                                    batch_update_text_hash(adapter, hash_updates)
+                                print(f"   ✅ 成功更新 {updated}/{len(stale_nodes)} 个节点")
+                            else:
+                                print("   ❌ Embedding 计算失败")
+                        else:
+                            for node_id, text in stale_nodes[:10]:
+                                print(f"      ID={node_id}: {text[:50]}...")
+                            if len(stale_nodes) > 10:
+                                print(f"      ... 还有 {len(stale_nodes) - 10} 个节点")
+                except Exception as e:
+                    print(f"   ⚠️ 新鲜度检查异常（跳过）: {e}")
 
         else:
             print(f"   ❌ 未知操作: {action}，可选 run / process-timeouts")

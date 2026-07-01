@@ -1,0 +1,38 @@
+[
+  {
+    "query_id": "eval-deploy",
+    "query": "怎么部署 knowledge-navigation 插件到生产环境",
+    "dimension": "tool",
+    "description": "测试 deploy.sh 部署流程相关知识召回"
+  },
+  {
+    "query_id": "eval-hindsight",
+    "query": "Hindsight 的 recall 机制是怎么工作的",
+    "dimension": "entity",
+    "description": "测试 Hindsight recall 核心机制召回"
+  },
+  {
+    "query_id": "eval-router",
+    "query": "LiteLLM Router 模型配置有哪些参数",
+    "dimension": "api",
+    "description": "测试 Router 模型配置召回"
+  },
+  {
+    "query_id": "eval-skill-matcher",
+    "query": "Skill Matcher 的三级筛选架构是怎样的",
+    "dimension": "entity",
+    "description": "测试 Skill Matcher 架构知识召回"
+  },
+  {
+    "query_id": "eval-pgvector",
+    "query": "pgvector HNSW 索引怎么创建和使用",
+    "dimension": "api",
+    "description": "测试 pgvector HNSW 使用召回"
+  },
+  {
+    "query_id": "eval-flywheel",
+    "query": "数据飞轮优化的反馈闭环是怎么设计的",
+    "dimension": "entity",
+    "description": "测试飞轮优化架构召回"
+  }
+]

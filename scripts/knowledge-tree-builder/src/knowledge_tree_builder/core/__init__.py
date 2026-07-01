@@ -1,5 +1,14 @@
 """知识树建树管线核心模块 — embedding / 增量放置 / 准入"""
 
+from knowledge_tree_builder.core.cache_manager import (
+    CacheManager,
+    CacheInfo,
+    DOMAIN_CACHE_NAME,
+    EMBEDDING_CACHE_NAME,
+    METADATA_CACHE_NAME,
+    migrate_old_caches,
+    get_migration_candidates,
+)
 from knowledge_tree_builder.core.embeddings import (
     batch_embed,
     cosine_similarity,

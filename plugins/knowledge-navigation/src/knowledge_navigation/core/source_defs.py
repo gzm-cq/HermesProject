@@ -43,16 +43,24 @@ def build_router_prompt() -> str:
     """从 SOURCES 拼接 Router system prompt。"""
     lines = [
         "你是一个注入路由判断器。",
-        "判断：为了准确回答用户消息，是否需要从以下知识源补充信息？\n",
+        "",
+        "判断：回答用户消息是否需要从以下知识源补充信息？",
+        "",
     ]
     for s in SOURCES.values():
-        lines.append(f"{s.key.upper()} — {s.domain}/{s.name}")
-        lines.append(f"  {s.description}\n")
-    lines.append("输出 JSON：{\"h\": bool, \"kt\": bool, \"s\": bool}")
-    lines.append("")
-    lines.append("要求：")
-    lines.append("- 思考问题是「本质需要哪种知识」")
+        lines.append(f"{s.key.upper()} — {s.domain}/{s.name}：{s.description}")
+        if s.examples:
+            lines.append(f"  例：{', '.join(s.examples)}")
+        lines.append("")
+    lines.append("规则：")
+    lines.append("- 思考「本质需要哪种知识」，不是关键词匹配")
+    lines.append("- 纯闲聊/确认/简单回复 → 全 false")
+    lines.append("- 涉及具体操作/配置/部署 → s=true")
+    lines.append("- 涉及架构/原理/概念 → kt=true")
+    lines.append("- 涉及过往经验/教训/类似案例 → h=true")
     lines.append("- 宁可多开不遗漏")
-    lines.append("- 只输出 JSON，不要任何包裹格式")
-    lines.append("- 相同语义的问题输出一致")
+    lines.append("")
+    lines.append("输出 JSON：{\"h\": bool, \"kt\": bool, \"s\": bool}")
+    lines.append("只输出 JSON，不要任何包裹格式。")
+    lines.append("相同语义的问题输出一致。")
     return "\n".join(lines)

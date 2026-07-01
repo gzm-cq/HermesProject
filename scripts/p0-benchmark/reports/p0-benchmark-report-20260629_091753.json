@@ -1,0 +1,85 @@
+{
+  "timestamp": "20260629_091753",
+  "config": {
+    "skill_benchmark_queries": 100,
+    "dedup_benchmark_sizes": [
+      1000,
+      5000,
+      10000
+    ],
+    "llm_benchmark_article_count": 50
+  },
+  "results": {
+    "p0_1_skill_matcher": {
+      "total_queries": 100,
+      "avg_latency_with_ms": 466.65,
+      "avg_latency_without_ms": 2783.75,
+      "latency_reduction_pct": 83.2,
+      "token_savings_pct": 87.4,
+      "accuracy": 0.9251,
+      "passed": false,
+      "mock_data": true,
+      "details": {
+        "latency_passed": true,
+        "token_passed": true,
+        "accuracy_passed": false
+      }
+    },
+    "p0_2_dedup": {
+      "results_by_size": [
+        {
+          "size": 1000,
+          "memory_time_ms": 27156.92,
+          "pgvector_time_ms": 2695.48,
+          "speedup": 10.1,
+          "expected_speedup": 10.0,
+          "consistency": 1.0,
+          "speedup_passed": true,
+          "consistency_passed": true,
+          "passed": true
+        },
+        {
+          "size": 5000,
+          "memory_time_ms": 72933.78,
+          "pgvector_time_ms": 1244.56,
+          "speedup": 58.6,
+          "expected_speedup": 50.0,
+          "consistency": 1.0,
+          "speedup_passed": true,
+          "consistency_passed": true,
+          "passed": true
+        },
+        {
+          "size": 10000,
+          "memory_time_ms": 104908.7,
+          "pgvector_time_ms": 1365.91,
+          "speedup": 76.8,
+          "expected_speedup": 100.0,
+          "consistency": 1.0,
+          "speedup_passed": false,
+          "consistency_passed": true,
+          "passed": false
+        }
+      ],
+      "all_passed": false
+    },
+    "p0_3_llm_merged": {
+      "article_count": 50,
+      "llm_calls_with": 0,
+      "llm_calls_without": 0,
+      "reduction_pct": 0,
+      "kp_count_with": 0,
+      "kp_count_without": 0,
+      "kp_diff_pct": 0.0,
+      "type_dist_diff": 0,
+      "passed": false,
+      "details": {
+        "reduction_passed": false,
+        "kp_diff_passed": true,
+        "type_diff_passed": true,
+        "type_dist_without": {},
+        "type_dist_with": {}
+      }
+    }
+  }
+}

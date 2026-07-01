@@ -1,11 +1,9 @@
-"""LLM skill 检索器：关键词预筛选 → LLM 精排两级架构。
+"""LLM skill 检索器：全量 LLM 匹配。
 
 在 pre_llm_call 中根据用户消息选择相关 skill 并注入完整正文。
 
-两级架构：
-  Stage 1: 关键词预筛选（345 → Top-20，<1ms）
-  Stage 2: LLM 语义精排（20 → Top-3，~500ms）
-  比全量 LLM 匹配节省 ~85% token，延迟降低 ~50%。"""
+直接发送全部 skill 给 LLM 做语义匹配，不使用预筛选。
+"""
 
 from __future__ import annotations
 
@@ -13,9 +11,12 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from knowledge_navigation.config import CONFIG
 
@@ -24,7 +25,9 @@ logger = logging.getLogger(__name__)
 SKILLS_HOME = Path.home() / ".hermes" / "skills"
 _TOP_K = 3
 _MAX_SKILLS = 500
-_PRESCREEN_TOP_K = 20
+_PRESCREEN_TOP_K = 30  # 关键词预筛选候选数
+_EMBEDDING_TOP_K = 20  # Embedding 预筛选候选数
+_EMBEDDING_BATCH_SIZE = 20  # Embedding 批量调用每批数量（避免 token 超限）
 
 _LLM_TIMEOUT = 15
 
@@ -57,6 +60,214 @@ _skill_index: dict[str, dict[str, Any]] | None = None
 {skill_path: {name, description, path, category, mtime}}
 使用文件路径作为 key，便于增量更新时快速查找。
 """
+
+# ── Embedding 缓存 ──
+_embedding_cache: dict[str, np.ndarray] = {}  # skill_path → embedding vector
+_query_embedding_cache: dict[str, tuple[float, np.ndarray]] = {}  # query → (timestamp, embedding)
+
+# ── Embedding 熔断机制（线程安全） ──
+_embedding_fail_count: int = 0  # 连续失败次数
+_embedding_circuit_open_until: float = 0.0  # 熔断截止时间戳
+_embedding_lock: threading.Lock = threading.Lock()  # 并发保护
+_EMBEDDING_CIRCUIT_BREAK_THRESHOLD = 3  # 连续失败阈值
+_EMBEDDING_CIRCUIT_COOLDOWN = 300  # 熔断冷却时间（秒），5 分钟
+
+
+def _embedding_circuit_breaker() -> bool:
+    """检查 embedding 熔断是否触发。返回 True 表示应跳过 embedding 阶段。"""
+    global _embedding_fail_count, _embedding_circuit_open_until
+    with _embedding_lock:
+        if _embedding_circuit_open_until > 0 and time.time() < _embedding_circuit_open_until:
+            return True
+        if _embedding_circuit_open_until > 0 and time.time() >= _embedding_circuit_open_until:
+            _embedding_fail_count = 0
+            _embedding_circuit_open_until = 0.0
+    return False
+
+
+def _embedding_record_success() -> None:
+    """记录 embedding 调用成功，重置失败计数。"""
+    global _embedding_fail_count, _embedding_circuit_open_until
+    with _embedding_lock:
+        _embedding_fail_count = 0
+        _embedding_circuit_open_until = 0.0
+
+
+def _embedding_record_failure() -> None:
+    """记录 embedding 调用失败，增加计数；达到阈值触发熔断。"""
+    global _embedding_fail_count, _embedding_circuit_open_until
+    with _embedding_lock:
+        _embedding_fail_count += 1
+        if _embedding_fail_count >= _EMBEDDING_CIRCUIT_BREAK_THRESHOLD:
+            _embedding_circuit_open_until = time.time() + _EMBEDDING_CIRCUIT_COOLDOWN
+            logger.warning(
+                "Embedding 连续失败 %d 次，触发熔断，%.0f 秒后恢复",
+                _EMBEDDING_CIRCUIT_BREAK_THRESHOLD,
+                _EMBEDDING_CIRCUIT_COOLDOWN,
+            )
+
+
+_QUERY_EMBEDDING_CACHE_TTL = 1800  # query embedding 缓存 TTL（秒），30 分钟
+
+
+def _get_embedding_config() -> tuple[str, str, str, int]:
+    """获取 embedding 配置。
+
+    运行时从环境变量动态 fallback，绕过 CONFIG 模块级单例在 import 时的
+    env 未就绪问题（benchmark 进程 / 子 agent 场景）。
+    优先级：ENV > CONFIG 默认值。
+    """
+    model = os.getenv("KN_SKILL_EMBEDDING_MODEL") or CONFIG.kn_skill_embedding_model
+    url = os.getenv("KN_SKILL_EMBEDDING_URL") or CONFIG.kn_skill_embedding_url
+    api_key = os.getenv("KN_SKILL_EMBEDDING_API_KEY") or CONFIG.kn_skill_embedding_api_key
+    # 也 fallback SILICONFLOW_API_KEY
+    if not api_key:
+        api_key = os.getenv("SILICONFLOW_API_KEY", "")
+    cfg_top_k = os.getenv("KN_SKILL_EMBEDDING_TOP_K")
+    if cfg_top_k:
+        cfg_top_k = int(cfg_top_k)
+    else:
+        cfg_top_k = CONFIG.kn_skill_embedding_top_k or _EMBEDDING_TOP_K
+    return (model, url, api_key, cfg_top_k)
+
+
+def _get_query_embedding(query: str, model: str, url: str, api_key: str) -> np.ndarray | None:
+    """获取 query 的 embedding，带缓存（TTL 30 分钟）。"""
+    global _query_embedding_cache
+
+    now = time.time()
+    if query in _query_embedding_cache:
+        ts, emb = _query_embedding_cache[query]
+        if now - ts < _QUERY_EMBEDDING_CACHE_TTL:
+            return emb
+
+    try:
+        import httpx
+        resp = httpx.post(
+            f"{url.rstrip('/')}/embeddings",
+            json={"model": model, "input": query[:1000]},  # 截断长 query
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        embedding = np.array(data["data"][0]["embedding"], dtype=np.float32)
+        _query_embedding_cache[query] = (now, embedding)
+        return embedding
+    except Exception as e:
+        logger.debug("Embedding API 调用失败: %s", e)
+        return None
+
+
+def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, api_key: str) -> dict[str, np.ndarray]:
+    """获取 skill 列表的 embedding，只对缺失的进行 API 调用，分批避免 token 超限。"""
+    global _embedding_cache
+
+    result = {}
+    texts_to_fetch: list[tuple[str, str]] = []  # (skill_path, text)
+
+    for skill in skills:
+        path = skill.get("path", "")
+        if path in _embedding_cache:
+            result[path] = _embedding_cache[path]
+        else:
+            text = f"{skill.get('name', '')} {skill.get('description', '')}"
+            texts_to_fetch.append((path, text))
+
+    if not texts_to_fetch:
+        return result
+
+    import httpx
+
+    for i in range(0, len(texts_to_fetch), _EMBEDDING_BATCH_SIZE):
+        batch = texts_to_fetch[i:i + _EMBEDDING_BATCH_SIZE]
+        paths = [p for p, _ in batch]
+        texts = [t for _, t in batch]
+
+        try:
+            resp = httpx.post(
+                f"{url.rstrip('/')}/embeddings",
+                json={"model": model, "input": texts},
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("data", []):
+                idx = item.get("index", 0)
+                if 0 <= idx < len(paths):
+                    path = paths[idx]
+                    emb = np.array(item["embedding"], dtype=np.float32)
+                    _embedding_cache[path] = emb
+                    result[path] = emb
+        except Exception as e:
+            logger.debug("Embedding 批量获取失败 (batch %d-%d): %s", i, i + len(batch), e)
+
+    return result
+
+
+def _embedding_prescreen(
+    query: str,
+    candidates: list[dict[str, Any]],
+    top_k: int = _EMBEDDING_TOP_K,
+) -> list[dict[str, Any]]:
+    """Embedding 相似度预筛选：从候选中选出 top_k 个最相似的 skill。
+
+    Args:
+        query: 用户查询
+        candidates: 关键词预筛选结果
+        top_k: 返回候选数量
+
+    Returns:
+        按 embedding 相似度降序排列的 top_k 个 skill
+    """
+    if not candidates:
+        return []
+
+    # 熔断检查：连续失败过多时直接跳过
+    if _embedding_circuit_breaker():
+        logger.debug("Embedding 预筛选: 熔断中，跳过 embedding 阶段")
+        return candidates[:top_k]
+
+    model, url, api_key, cfg_top_k = _get_embedding_config()
+    top_k = min(top_k, cfg_top_k)
+
+    # API key 为空时直接跳过，避免无效调用
+    if not api_key:
+        logger.debug("Embedding 预筛选: API key 为空，跳过 embedding 阶段")
+        return candidates[:top_k]
+
+    # 获取 query embedding
+    query_emb = _get_query_embedding(query, model, url, api_key)
+    if query_emb is None:
+        logger.debug("Embedding 预筛选: query embedding 获取失败，返回关键词结果")
+        _embedding_record_failure()
+        return candidates[:top_k]
+
+    # 获取候选 skill embedding
+    skill_embs = _get_skill_embeddings(candidates, model, url, api_key)
+
+    # 计算相似度并排序（query_norm 外提，避免重复计算）
+    query_norm = np.linalg.norm(query_emb)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for skill in candidates:
+        path = skill.get("path", "")
+        emb = skill_embs.get(path)
+        if emb is not None:
+            sim = float(np.dot(query_emb, emb) / (query_norm * np.linalg.norm(emb) + 1e-10))
+            skill_copy = dict(skill)
+            skill_copy["_emb_score"] = sim
+            scored.append((sim, skill_copy))
+
+    scored.sort(key=lambda x: -x[0])
+    if not scored:
+        logger.debug("Embedding 预筛选: 无有效 embedding，降级返回关键词结果")
+        _embedding_record_failure()
+        return candidates[:top_k]
+
+    _embedding_record_success()
+    return [s for _, s in scored[:top_k]]
 
 
 def _get_skill_list() -> list[dict[str, Any]]:
@@ -134,7 +345,7 @@ def ensure_index() -> bool:
 
 def _build_full_index() -> bool:
     """全量扫描构建 skill 索引。"""
-    global _skill_index
+    global _skill_index, _embedding_cache
 
     t0 = time.time()
     skill_files = list(SKILLS_HOME.rglob("SKILL.md"))
@@ -152,6 +363,7 @@ def _build_full_index() -> bool:
         index[str(fp)] = skill_data
 
     _skill_index = index
+    _embedding_cache.clear()
 
     elapsed = (time.time() - t0) * 1000
     logger.info(
@@ -163,7 +375,7 @@ def _build_full_index() -> bool:
 
 def _update_incremental() -> bool:
     """增量更新 skill 索引：检查 mtime，只处理有变化的文件。"""
-    global _skill_index
+    global _skill_index, _embedding_cache
 
     if _skill_index is None:
         return _build_full_index()
@@ -200,14 +412,17 @@ def _update_incremental() -> bool:
                 skill_data = _load_skill_file(fp)
                 if skill_data is None:
                     del _skill_index[path_str]
+                    _embedding_cache.pop(path_str, None)
                     removed += 1
                     n_skipped += 1
                     continue
                 _skill_index[path_str] = skill_data
+                _embedding_cache.pop(path_str, None)
                 updated += 1
 
     for path_str in indexed_paths - current_paths:
         del _skill_index[path_str]
+        _embedding_cache.pop(path_str, None)
         removed += 1
 
     elapsed = (time.time() - t0) * 1000
@@ -275,7 +490,7 @@ def _extract_keywords(text: str) -> set[str]:
     keywords: set[str] = set()
 
     # 英文单词
-    en_words = re.findall(r'[a-zA-Z][a-zA-Z0-9_\-]+', text.lower())
+    en_words = re.findall(r'[a-zA-Z][a-zA-Z0-9_\-\.]+', text.lower())
     for w in en_words:
         if len(w) >= 2 and w not in _STOPWORDS:
             keywords.add(w)
@@ -496,19 +711,16 @@ def _llm_match(
 def match_skills(
     query: str,
     top_k: int = _TOP_K,
-    enable_keyword_prescreen: bool = True,
+    enable_keyword_prescreen: bool = False,
 ) -> list[dict[str, str]]:
-    """技能匹配：关键词预筛选 → LLM 精排 两级架构。
+    """技能匹配：全量 LLM 匹配（不使用预筛选）。
 
-    两级架构：
-      Stage 1: 关键词预筛选（345 → Top-20，<1ms）
-      Stage 2: LLM 语义精排（20 → Top-3，~500ms）
-    比全量 LLM 匹配节省 ~85% token，延迟降低 ~50%。
+    直接将全部 skill 发送给 LLM 做语义匹配，保证最高准确率。
 
     Args:
         query: 用户消息
         top_k: 最多返回数量
-        enable_keyword_prescreen: 是否启用关键词预筛选（Feature Flag）
+        enable_keyword_prescreen: 已废弃，忽略
 
     Returns:
         [{name, description, score, path}, ...]
@@ -517,50 +729,19 @@ def match_skills(
     if not ensure_index():
         return []
 
-    # 空查询 / 纯空白 → 无匹配
     if not query or not query.strip():
         return []
 
     t0 = time.time()
+    results = _llm_match(query, top_k)
+    if results:
+        elapsed = (time.time() - t0) * 1000
+        logger.info(
+            "Skill match (LLM full): %s (%.0fms)",
+            [r["name"] for r in results],
+            elapsed,
+        )
+        return results
 
-    skill_list = _get_skill_list()
-
-    if enable_keyword_prescreen and skill_list:
-        # 两级模式：关键词预筛选 → LLM 精排
-        prescreen_start = time.time()
-        candidates = _keyword_prescreen(query, skill_list)
-        prescreen_ms = (time.time() - prescreen_start) * 1000
-
-        if not candidates:
-            logger.debug("Skill match: empty (keyword prescreen returned nothing)")
-            return []
-
-        results = _llm_match(query, top_k, candidates=candidates)
-        total_ms = (time.time() - t0) * 1000
-
-        if results:
-            logger.info(
-                "Skill match (2-stage): prescreen=%d candidates, matched=%s (prescreen=%.0fms, total=%.0fms)",
-                len(candidates),
-                [r["name"] for r in results],
-                prescreen_ms,
-                total_ms,
-            )
-            return results
-
-        logger.debug("Skill match: empty (2-stage LLM returned nothing)")
-        return []
-    else:
-        # 单级模式：全量 LLM 匹配（兼容旧行为）
-        results = _llm_match(query, top_k)
-        if results:
-            elapsed = (time.time() - t0) * 1000
-            logger.info(
-                "Skill match (LLM full): %s (%.0fms)",
-                [r["name"] for r in results],
-                elapsed,
-            )
-            return results
-
-        logger.debug("Skill match: empty (LLM returned nothing)")
-        return []
+    logger.debug("Skill match: empty (LLM returned nothing)")
+    return []

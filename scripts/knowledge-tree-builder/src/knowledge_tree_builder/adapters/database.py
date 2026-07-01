@@ -68,6 +68,7 @@ class DatabaseAdapter:
         self.conn.autocommit = False
         self.cursor = self.conn.cursor()
         self._ensure_indexes()
+        self._ensure_last_text_hash_column()
 
     # ========== Source Articles ==========
 
@@ -111,6 +112,30 @@ class DatabaseAdapter:
             self.conn.commit()
         except Exception as e:
             logger.warning("创建 subject 唯一索引失败（不影响运行，仅降级防御）: %s", e)
+            self.conn.rollback()
+
+    def _ensure_last_text_hash_column(self) -> None:
+        """确保 knowledge_tree 表有 last_text_hash 列（幂等执行）。
+
+        使用 ALTER TABLE ADD COLUMN IF NOT EXISTS 兼容 PostgreSQL 10+。
+        """
+        try:
+            self.cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'knowledge_tree' AND column_name = 'last_text_hash'
+                    ) THEN
+                        ALTER TABLE knowledge_tree ADD COLUMN last_text_hash VARCHAR(32);
+                    END IF;
+                END $$;
+                """
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.warning("添加 last_text_hash 列失败: %s", e)
             self.conn.rollback()
 
     def get_leaf_nodes(self) -> list[dict[str, Any]]:
@@ -222,8 +247,8 @@ class DatabaseAdapter:
         dist_threshold = 1.0 - threshold  # 余弦距离 = 1 - 余弦相似度
 
         try:
-            # 设置 HNSW 搜索参数（当前会话级别）
-            self.cursor.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
+            # 设置 HNSW 搜索参数（会话级，每次调用重置以确保一致性）
+            self.cursor.execute(f"SET hnsw.ef_search = {int(ef_search)}")
 
             self.cursor.execute(
                 """

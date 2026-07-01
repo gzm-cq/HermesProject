@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from knowledge_tree_builder.core.cache_manager import EMBEDDING_CACHE_NAME
+
 from knowledge_tree_builder.models import (
     AtomicKnowledge,
     KNOWLEDGE_TYPE_NAMES,
@@ -517,6 +519,7 @@ def admit_knowledge(
     enhanced_admission: bool = True,
     whitelist_sources: list[str] | None = None,
     enable_low_quality_detection: bool = True,
+    cache_manager: Any = None,
 ) -> AdmitResult:
     """阶段3 主函数：准入 + 去重 + 矛盾检测。
 
@@ -541,6 +544,7 @@ def admit_knowledge(
         enhanced_admission: 是否启用增强门控（Feature Flag）
         whitelist_sources: 白名单来源前缀列表
         enable_low_quality_detection: 是否启用低质量模式检测
+        cache_manager: CacheManager 实例，用于统一管理 embedding 缓存
 
     Returns:
         AdmitResult
@@ -591,15 +595,21 @@ def admit_knowledge(
 
     # Step 1.5: 磁盘级 embedding 缓存 + 批量 pre-embed
     _embed_cache: dict[str, list[float]] = {}
-    _cache_path = ".kb_embed_cache.json"
+    _use_unified_cache = cache_manager is not None and cache_manager.enable_unified_cache
 
     # 加载已有缓存
     try:
-        if os.path.exists(_cache_path):
-            with open(_cache_path, encoding="utf-8") as _f:
-                _cache_data = json.load(_f)
-            for k, v in _cache_data.items():
-                _embed_cache[k] = v
+        if _use_unified_cache:
+            _cached = cache_manager.load_cache(EMBEDDING_CACHE_NAME)
+            if _cached:
+                _embed_cache = {k: list(v) for k, v in _cached.items()}
+        else:
+            _cache_path = ".kb_embed_cache.json"
+            if os.path.exists(_cache_path):
+                with open(_cache_path, encoding="utf-8") as _f:
+                    _cache_data = json.load(_f)
+                for k, v in _cache_data.items():
+                    _embed_cache[k] = v
     except Exception:
         _embed_cache = {}
 
@@ -754,8 +764,12 @@ def admit_knowledge(
     # 写回磁盘缓存（仅一次）
     if _cache_dirty:
         try:
-            with open(_cache_path, "w", encoding="utf-8") as _f:
-                json.dump(_embed_cache, _f, ensure_ascii=False)
+            if _use_unified_cache:
+                cache_manager.save_cache(EMBEDDING_CACHE_NAME, _embed_cache)
+            else:
+                _cache_path = ".kb_embed_cache.json"
+                with open(_cache_path, "w", encoding="utf-8") as _f:
+                    json.dump(_embed_cache, _f, ensure_ascii=False)
         except Exception:
             pass
 

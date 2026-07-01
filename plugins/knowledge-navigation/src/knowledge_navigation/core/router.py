@@ -82,9 +82,15 @@ def route(
             timeout=timeout,
         )
         resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"].get("content", "")
-        if raw is None:
-            raw = ""
+        choice = resp.json()["choices"][0]["message"]
+        raw = choice.get("content") or ""
+        # 如果 content 为空但有 reasoning_content，从中提取 JSON
+        if not raw:
+            rc = choice.get("reasoning_content", "") or ""
+            if rc:
+                m = re.search(r"\{[^}]*[\"']h[\"'][^}]*\}", rc, re.DOTALL)
+                if m:
+                    raw = m.group(0)
         raw = raw.strip()
     except Exception as e:
         logger.warning("Router 调用失败 (%s)，fallback 全开", e)

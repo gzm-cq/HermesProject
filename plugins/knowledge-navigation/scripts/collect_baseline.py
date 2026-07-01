@@ -65,7 +65,10 @@ BASELINE_PREV_FILE = BASELINE_DIR / "baseline_prev.json"
 DELTA_THRESHOLD = float(os.environ.get("BASELINE_DELTA_THRESHOLD", "0.10"))
 JUDGE_PARALLEL = int(os.environ.get("JUDGE_PARALLEL", "5"))
 
-DIMENSIONS = ["semantic", "entity", "causal", "temporal", "conflict", "tool", "debug", "api"]
+DIMENSIONS = [
+    "semantic", "entity", "causal", "temporal", "conflict", "tool", "debug", "api",  # 原有 8 维度
+    "complex", "numeric", "workflow",  # P2 增强：复合概念、数字精确、通用流程
+]
 
 # 飞书告警限频（同一进程至少间隔 N 秒）
 _FEISHU_LAST_NOTIFY: float = 0.0
@@ -206,7 +209,12 @@ def find_log_file() -> str:
 
 
 def collect_baseline(log_file: str = "") -> dict:
-    """从 trace.log 中提取评估基线数据。
+    """从 trace.log 中提取评估基线数据（支持精确 + 模糊 eval 匹配）。
+
+    改动说明（2026-06-29）：
+    - 原逻辑只采集 eval_counted=True 的记录，导致生产数据几乎采不到
+    - 现在采集所有 recall_success 事件，精确/模糊匹配都纳入
+    - 分组 key：eval_query_id > eval_candidate_id > query_trunc（兜底）
 
     Args:
         log_file: 日志文件路径，为空时自动查找
@@ -227,17 +235,20 @@ def collect_baseline(log_file: str = "") -> dict:
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if '"eval_query_id"' not in line and '"eval_counted"' not in line:
+            if '"event": "recall_success"' not in line:
                 continue
             try:
                 data = json.loads(line)
                 if is_test_trace_record(data):
                     continue
-                if data.get("eval_counted") is False:
-                    continue
+
+                # 分组 key 优先级：eval_query_id > eval_candidate_id > query_trunc
                 qid = data.get("eval_query_id")
                 if not qid:
-                    continue
+                    qid = data.get("eval_candidate_id")
+                if not qid:
+                    qid = data.get("query_trunc", "")[:50] or "unknown"
+
                 records_by_qid[qid].append({
                     "timestamp": data.get("timestamp", ""),
                     "total_results": data.get("total_results", 0),
@@ -251,6 +262,8 @@ def collect_baseline(log_file: str = "") -> dict:
                     "eval_expected_ids": data.get("eval_expected_ids", []),
                     "eval_recall_hit": data.get("eval_recall_hit", 0),
                     "eval_recall_k": data.get("eval_recall_k", 0),
+                    "eval_counted": data.get("eval_counted", False),
+                    "eval_match_method": data.get("eval_match_method", ""),
                     "query_trunc": data.get("query_trunc", ""),
                 })
             except (json.JSONDecodeError, KeyError, TypeError):
@@ -268,13 +281,22 @@ def collect_baseline(log_file: str = "") -> dict:
         score_mean, score_lo, score_hi = bootstrap_ci(score_vals)
         latency_mean, latency_lo, latency_hi = bootstrap_ci(latency_vals)
 
-        # recall@k 汇总
+        # recall@k 汇总（仅精确匹配有）
         recall_hits = [r["eval_recall_hit"] for r in records if r["eval_recall_k"] > 0]
         recall_ks = [r["eval_recall_k"] for r in records if r["eval_recall_k"] > 0]
 
+        # 精确 vs 模糊匹配统计
+        counted_true = sum(1 for r in records if r["eval_counted"])
+        counted_false = n - counted_true
+
+        # 推断维度（从 qid 格式：semantic_xxx, entity_xxx 等）
+        dim = qid.split("_")[0] if "_" in qid else "unknown"
+
         baseline[qid] = {
             "total_requests": n,
-            "dimension": qid.split("_")[0],
+            "dimension": dim,
+            "eval_counted_true": counted_true,
+            "eval_counted_false": counted_false,
             "avg_kept_results": round(kept_mean, 2),
             "kept_ci_95": [round(kept_lo, 2), round(kept_hi, 2)],
             "avg_score": round(score_mean, 4),
@@ -296,14 +318,15 @@ def collect_baseline(log_file: str = "") -> dict:
 
 
 def compute_dimension_stats(baseline: dict) -> dict[str, Any]:
-    """按维度汇总，含 Bootstrap CI。
+    """按维度汇总，含 Bootstrap CI + 精确/模糊匹配分布。
 
     Returns:
-        {dimension: {query_count, metrics_with_ci}}
+        {dimension: {query_count, metrics_with_ci, eval_counted_true, eval_counted_false}}
     """
     by_dim: dict[str, list[dict]] = defaultdict(list)
     for qid, data in baseline.items():
-        dim = qid.split("_")[0]
+        # 优先使用 baseline 中已存的 dimension（来自 JSON 或 qid 推断）
+        dim = data.get("dimension") or qid.split("_")[0]
         by_dim[dim].append(data)
 
     stats: dict[str, Any] = {}
@@ -320,11 +343,17 @@ def compute_dimension_stats(baseline: dict) -> dict[str, Any]:
         score_m, score_lo, score_hi = bootstrap_ci(score_vals)
         latency_m, latency_lo, latency_hi = bootstrap_ci(latency_vals)
 
+        # 精确 vs 模糊匹配分布
+        counted_true = sum(d.get("eval_counted_true", 0) for d in items)
+        counted_false = sum(d.get("eval_counted_false", 0) for d in items)
+
         stats[dim] = {
             "query_count": len(items),
             "kept": {"mean": round(kept_m, 2), "ci_95": [round(kept_lo, 2), round(kept_hi, 2)]},
             "score": {"mean": round(score_m, 4), "ci_95": [round(score_lo, 4), round(score_hi, 4)]},
             "latency_ms": {"mean": round(latency_m, 0), "ci_95": [round(latency_lo, 0), round(latency_hi, 0)]},
+            "eval_counted_true": counted_true,
+            "eval_counted_false": counted_false,
         }
     return stats
 
@@ -487,9 +516,15 @@ def print_report(baseline: dict, stats: dict[str, Any], log_file: str = "") -> N
     total = len(baseline)
     covered = sum(1 for d in DIMENSIONS if d in stats)
     source = log_file if log_file else find_log_file()
+
+    # 统计精确 vs 模糊匹配总数
+    total_exact = sum(d.get("eval_counted_true", 0) for d in baseline.values())
+    total_fuzzy = sum(d.get("eval_counted_false", 0) for d in baseline.values())
+
     print(f"📊 评估基线报表 (Bootstrap 95% CI)")
     print(f"   来源: {source}")
-    print(f"   覆盖查询: {total} 条 | {covered}/8 维度")
+    print(f"   覆盖查询: {total} 条 | {covered}/{len(DIMENSIONS)} 维度")
+    print(f"   精确匹配: {total_exact} 次 | 模糊匹配: {total_fuzzy} 次")
     print()
 
     for dim in DIMENSIONS:
@@ -500,7 +535,9 @@ def print_report(baseline: dict, stats: dict[str, Any], log_file: str = "") -> N
         kept = dim_info["kept"]
         score = dim_info["score"]
         latency = dim_info["latency_ms"]
-        print(f"  [{dim}] {qc} 条查询")
+        dim_exact = dim_info.get("eval_counted_true", 0)
+        dim_fuzzy = dim_info.get("eval_counted_false", 0)
+        print(f"  [{dim}] {qc} 条查询 (精确 {dim_exact} / 模糊 {dim_fuzzy})")
         print(f"    kept:  {kept['mean']:.2f}  [{kept['ci_95'][0]:.2f}, {kept['ci_95'][1]:.2f}]")
         print(f"    score: {score['mean']:.3f}  [{score['ci_95'][0]:.3f}, {score['ci_95'][1]:.3f}]")
         print(f"    delay: {latency['mean']:.0f}ms [{latency['ci_95'][0]:.0f}, {latency['ci_95'][1]:.0f}]ms")
@@ -593,7 +630,8 @@ def _judge_one(rec: dict, config: dict | None) -> tuple[float, bool] | tuple[Non
         "model": config.get("model", "s-deepseek-v4-flash"),
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,
-        "max_tokens": 10,
+        "max_tokens": 250,
+        "extra_body": {"thinking": {"type": "disabled"}},
     }).encode("utf-8")
     ctx = ssl.create_default_context()
     if os.environ.get("JUDGE_INSECURE", "").lower() in ("1", "true", "yes"):
@@ -604,8 +642,10 @@ def _judge_one(rec: dict, config: dict | None) -> tuple[float, bool] | tuple[Non
         with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
             resp_text = resp.read().decode("utf-8")
             resp_data = json.loads(resp_text)
-            llm_score_str = resp_data["choices"][0]["message"]["content"].strip()
-            llm_score = float(llm_score_str)
+            content = resp_data["choices"][0]["message"]["content"].strip()
+            if not content:
+                return None, RuntimeError(f"empty content from LLM")
+            llm_score = float(content)
             llm_score = max(0.0, min(1.0, llm_score))
             return llm_score, True
     except Exception as e:
@@ -643,7 +683,7 @@ def run_judge(log_file: str, config: dict | None = None) -> dict[str, Any]:
             for future in as_completed(futures):
                 idx = futures[future]
                 result = future.result()
-                if result is None:
+                if result is None or result[0] is None:
                     continue
                 llm_score, ok = result
                 if ok:
@@ -657,7 +697,7 @@ def run_judge(log_file: str, config: dict | None = None) -> dict[str, Any]:
         # 串行模式（降级）
         for i, rec in enumerate(sample):
             result = _judge_one(rec, config)
-            if result is None:
+            if result is None or result[0] is None:
                 continue
             llm_score, ok = result
             if ok:

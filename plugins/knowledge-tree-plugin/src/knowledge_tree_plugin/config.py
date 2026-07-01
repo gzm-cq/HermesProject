@@ -48,6 +48,10 @@ class PluginConfig:
     # K 向量更新
     k_vector_alpha_max: float = 0.1
 
+    # P3-9: 时态感知过滤
+    enable_temporal_filter: bool = False   # 是否启用时态过滤（Feature Flag）
+    temporal_filter_demote_factor: float = 0.5  # 过期记忆的降权系数（0-1，越小降权越多）
+
     def __post_init__(self) -> None:
         """环境变量覆盖（YAML 加载后执行）。"""
         env_map: dict[str, str] = {
@@ -71,6 +75,24 @@ class PluginConfig:
             if env_var in os.environ:
                 try:
                     setattr(self, field_name, int(os.environ[env_var]))
+                except ValueError:
+                    pass
+
+        bool_env_map = {
+            "enable_temporal_filter": "KT_ENABLE_TEMPORAL_FILTER",
+        }
+        for field_name, env_var in bool_env_map.items():
+            if env_var in os.environ:
+                val = os.environ[env_var].lower() in ("1", "true", "yes")
+                setattr(self, field_name, val)
+
+        float_env_map = {
+            "temporal_filter_demote_factor": "KT_TEMPORAL_FILTER_DEMOTE_FACTOR",
+        }
+        for field_name, env_var in float_env_map.items():
+            if env_var in os.environ:
+                try:
+                    setattr(self, field_name, float(os.environ[env_var]))
                 except ValueError:
                     pass
 

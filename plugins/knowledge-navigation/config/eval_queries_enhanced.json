@@ -1,0 +1,94 @@
+[
+  {
+    "query_id": "complex_01",
+    "query": "在 WSL2 环境下部署 knowledge-navigation 插件到 Hermes Gateway",
+    "dimension": "complex",
+    "description": "复合概念：WSL2 + 插件部署 + Gateway 集成"
+  },
+  {
+    "query_id": "complex_02",
+    "query": "用 pgvector HNSW 索引做知识树去重并调用 SiliconFlow embedding",
+    "dimension": "complex",
+    "description": "复合概念：pgvector + 去重 + embedding API"
+  },
+  {
+    "query_id": "complex_03",
+    "query": "配置 LiteLLM Router 支持 DeepSeek 和 SiliconFlow 双路负载均衡",
+    "dimension": "complex",
+    "description": "复合概念：Router + 多模型 + 负载均衡"
+  },
+  {
+    "query_id": "complex_04",
+    "query": "在 Hermès 知识树中提取因果链并做 temporal 感知召回",
+    "dimension": "complex",
+    "description": "复合概念：知识树 + 因果链 + 时态感知"
+  },
+  {
+    "query_id": "complex_05",
+    "query": "用 deploy.sh 部署 recall-eval 子项目并配置每日 cron 巡检",
+    "dimension": "complex",
+    "description": "复合概念：deploy + 子项目 + cron 配置"
+  },
+
+  {
+    "query_id": "numeric_01",
+    "query": "MIN_SCORE 设置为 0.6 和 0.7 有什么区别",
+    "dimension": "numeric",
+    "description": "数字精确：MIN_SCORE 参数对比"
+  },
+  {
+    "query_id": "numeric_02",
+    "query": "bge-m3 embedding 向量维度是 1024 还是 768",
+    "dimension": "numeric",
+    "description": "数字精确：embedding 维度参数"
+  },
+  {
+    "query_id": "numeric_03",
+    "query": "HNSW 索引的 ef_construction 默认值和推荐值是多少",
+    "dimension": "numeric",
+    "description": "数字精确：HNSW 参数配置"
+  },
+  {
+    "query_id": "numeric_04",
+    "query": "Bootstrap 置信区间采样 1000 次够不够",
+    "dimension": "numeric",
+    "description": "数字精确：统计采样参数"
+  },
+  {
+    "query_id": "numeric_05",
+    "query": "cross_domain_dedup 阈值 0.65 怎么调",
+    "dimension": "numeric",
+    "description": "数字精确：去重阈值配置"
+  },
+
+  {
+    "query_id": "workflow_01",
+    "query": "怎么把一个新的 skill 添加到 Hermès 的自动加载列表",
+    "dimension": "workflow",
+    "description": "通用流程：skill 添加流程"
+  },
+  {
+    "query_id": "workflow_02",
+    "query": "knowledge-tree-builder 的建树流程是怎样的",
+    "dimension": "workflow",
+    "description": "通用流程：知识树构建流程"
+  },
+  {
+    "query_id": "workflow_03",
+    "query": "出问题了怎么排查 Hermès Gateway 的插件加载",
+    "dimension": "workflow",
+    "description": "通用流程：问题排查流程"
+  },
+  {
+    "query_id": "workflow_04",
+    "query": "怎么用 clustering-analysis 做记忆聚类分析",
+    "dimension": "workflow",
+    "description": "通用流程：聚类分析流程"
+  },
+  {
+    "query_id": "workflow_05",
+    "query": "memory-cleanup 的 compress 和 merge 流程有什么区别",
+    "dimension": "workflow",
+    "description": "通用流程：记忆清理流程"
+  }
+]

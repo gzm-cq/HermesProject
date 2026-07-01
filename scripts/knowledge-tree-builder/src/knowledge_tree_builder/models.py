@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 
 # ========== 1. 知识点类型枚举 ==========
@@ -152,6 +152,8 @@ class AtomicKnowledge(TypedDict):
     source_candidate_index: int
     source_title: str    # 来源文章标题，Phase 4 按此过滤
     entities: list[str]  # 命名实体列表（入库时写入 kt_entity_links）
+    valid_from: NotRequired[str | None]   # P3-9: 有效起始时间（ISO 格式）
+    valid_until: NotRequired[str | None]  # P3-9: 有效截止时间（ISO 格式）
 
 
 class ReviewItem(TypedDict):

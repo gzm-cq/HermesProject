@@ -275,7 +275,7 @@ class TestPreLlmCall:
         # 创建临时评测查询文件
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
-            json.dumps([{"query_id": "eval-001", "query": "test eval query about memory"}])
+            json.dumps([{"query_id": "eval-001", "query": "test eval query about memory", "dimension": "semantic"}])
         )
 
         with patch.object(CONFIG, "eval_queries_path", str(eval_file)):
@@ -547,7 +547,7 @@ class TestFlexibleEvalMatch:
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
-            json.dumps([{"query_id": "semantic_01", "query": "LiteLLM 配置处理"}])
+            json.dumps([{"query_id": "semantic_01", "query": "LiteLLM 配置处理", "dimension": "semantic"}])
         )
 
         with patch.object(CONFIG, "eval_queries_path", str(eval_file)):
@@ -606,7 +606,7 @@ class TestFlexibleEvalMatch:
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
-            json.dumps([{"query_id": "exact-001", "query": "exact match query about memory"}])
+            json.dumps([{"query_id": "exact-001", "query": "exact match query about memory", "dimension": "semantic"}])
         )
 
         with patch.object(CONFIG, "eval_queries_path", str(eval_file)):
@@ -636,7 +636,7 @@ class TestFlexibleEvalMatch:
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
-            json.dumps([{"query_id": "gen_001", "query": "任意评测问题", "expected_ids": ["11111111-1111-4111-8111-111111111111"]}])
+            json.dumps([{"query_id": "gen_001", "query": "任意评测问题", "dimension": "semantic", "expected_ids": ["11111111-1111-4111-8111-111111111111"]}])
         )
 
         with patch.object(CONFIG, "eval_queries_path", str(eval_file)):
@@ -669,8 +669,8 @@ class TestFlexibleEvalMatch:
         # 但有一条是精确匹配
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(json.dumps([
-            {"query_id": "exact-001", "query": "LiteLLM 配置出问题了"},
-            {"query_id": "keyword-001", "query": "LiteLLM 配置相关的问题怎么处理"},
+            {"query_id": "exact-001", "query": "LiteLLM 配置出问题了", "dimension": "semantic"},
+            {"query_id": "keyword-001", "query": "LiteLLM 配置相关的问题怎么处理", "dimension": "semantic"},
         ]))
 
         with patch.object(CONFIG, "eval_queries_path", str(eval_file)):

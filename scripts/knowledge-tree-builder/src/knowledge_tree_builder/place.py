@@ -230,6 +230,8 @@ def place_knowledge(
             "source_ids": [0],  # 来源文章 ID（0 = 离线管线）
             "k_vector": all_k_vectors[i] if i < len(all_k_vectors) else None,
             "entities": atomic.get("entities", []),  # 命名实体列表
+            "valid_from": atomic.get("valid_from"),   # P3-9: 时态信息
+            "valid_until": atomic.get("valid_until"),  # P3-9: 时态信息
         }
         placement_records.append(record)
 
@@ -278,7 +280,7 @@ def _write_to_db(
 
         # 3. 批量插入知识点和文本（executemany）
         # 保存 k_vector 与每个待插入记录对应，插入后补写
-        to_insert: list[tuple[str, int, list[int] | None, str, list[float] | None, list[str]]] = []
+        to_insert: list[tuple[str, int, list[int] | None, str, list[float] | None, list[str], str | None, str | None]] = []
         for rec in records:
             if rec["knowledge_text"] in existing_texts:
                 stats["points"] += 1
@@ -290,6 +292,8 @@ def _write_to_db(
                 rec["knowledge_text"],
                 rec.get("k_vector"),  # 保存 k_vector 供插入后补写
                 rec.get("entities", []),  # 保存 entities 供插入后补写
+                rec.get("valid_from"),    # P3-9: valid_from
+                rec.get("valid_until"),   # P3-9: valid_until
             ))
 
         if to_insert:
@@ -329,6 +333,26 @@ def _write_to_db(
                     cursor.executemany(
                         "INSERT INTO kt_entity_links (kp_id, entity) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                         [(n[0], e) for e in entities],
+                    )
+
+            # P3-9: 补写 temporal 信息（valid_from / valid_until）
+            for i, n in enumerate(node_ids):
+                vf = to_insert[i][6]
+                vu = to_insert[i][7]
+                if vf and vu:
+                    cursor.execute(
+                        "UPDATE knowledge_tree SET valid_from = %s::DATE, valid_until = %s::DATE, updated_at = NOW() WHERE id = %s",
+                        (vf, vu, n[0]),
+                    )
+                elif vf:
+                    cursor.execute(
+                        "UPDATE knowledge_tree SET valid_from = %s::DATE, updated_at = NOW() WHERE id = %s",
+                        (vf, n[0]),
+                    )
+                elif vu:
+                    cursor.execute(
+                        "UPDATE knowledge_tree SET valid_until = %s::DATE, updated_at = NOW() WHERE id = %s",
+                        (vu, n[0]),
                     )
 
             stats["points"] += len(to_insert)

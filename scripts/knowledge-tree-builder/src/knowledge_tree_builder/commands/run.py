@@ -37,6 +37,11 @@ from knowledge_tree_builder.manifest import Manifest, ManifestItem, STATUS_EXTRA
 from knowledge_tree_builder.phase.merged import analyze_and_split as merged_analyze_and_split
 from knowledge_tree_builder.core.embeddings import batch_embed, cosine_similarity
 from knowledge_tree_builder.core.lineage import LineageTracker
+from knowledge_tree_builder.core.cache_manager import (
+    CacheManager,
+    DOMAIN_CACHE_NAME,
+    migrate_old_caches,
+)
 from knowledge_tree_builder.llm.client import call_llm_json
 
 
@@ -83,6 +88,16 @@ def _run_pipeline(
     config = AppConfig.from_dict(config_dict)
     phases = ["all"] if phase == "all" else [phase]
 
+    # P3-10: 统一缓存管理
+    _cache_manager = CacheManager(
+        cache_dir=config_dict.get("cache_dir", ".kb_cache/"),
+        enable_unified_cache=config_dict.get("enable_unified_cache", True),
+    )
+    if _cache_manager.enable_unified_cache:
+        _migrated = migrate_old_caches(input_dir, enable_unified_cache=True)
+        if _migrated > 0:
+            print(f"\n   📦 已迁移 {_migrated} 个旧缓存到 {_cache_manager.cache_dir}")
+
     _db: Any = None
     if not dry_run:
         db_url = config_dict.get("db_url", "")
@@ -90,6 +105,14 @@ def _run_pipeline(
             try:
                 _db = DatabaseAdapter(db_url)
                 print("   ✅ DB 已连接")
+
+                # P3-9: 确保 knowledge_tree 表有 valid_from / valid_until 列
+                if config.enable_temporal_extraction:
+                    from knowledge_tree_builder.core.temporal import ensure_temporal_columns
+                    if ensure_temporal_columns(_db):
+                        print("   ✅ 时态列已就绪（valid_from / valid_until）")
+                    else:
+                        print("   ⚠️ 时态列初始化失败，时态提取功能将降级")
             except Exception as e:
                 print(f"   ⚠️ DB 连接失败（降级为 dry-run）: {e}")
                 dry_run = True
@@ -150,6 +173,7 @@ def _run_pipeline(
             db=_db,
             config_dict=config_dict,
             lineage_tracker=_lineage_tracker,
+            cache_manager=_cache_manager,
         )
 
     if "all" in phases or "place" in phases:
@@ -162,6 +186,7 @@ def _run_pipeline(
             input_dir=input_dir,
             config_dict=config_dict,
             lineage_tracker=_lineage_tracker,
+            cache_manager=_cache_manager,
         )
 
     if not dry_run and merged and "_manifest" in dir():
@@ -382,6 +407,7 @@ def _run_admit_phase(
     db: Any,
     config_dict: dict[str, Any],
     lineage_tracker: LineageTracker | None = None,
+    cache_manager: Any = None,
 ) -> Any:
     """Phase 3: 准入与去重。"""
     print("\n🔍 阶段3: 准入与去重...")
@@ -414,6 +440,7 @@ def _run_admit_phase(
         cold_start_text_dedup=cold_start,
         db_adapter=db if config_dict.get("kb_dedup_pgvector", True) else None,
         enable_pgvector_dedup=config_dict.get("kb_dedup_pgvector", True),
+        cache_manager=cache_manager,
     )
 
     if lineage_tracker is not None:
@@ -465,6 +492,7 @@ def _run_place_phase(
     input_dir: str,
     config_dict: dict[str, Any],
     lineage_tracker: LineageTracker | None = None,
+    cache_manager: CacheManager | None = None,
 ) -> None:
     """Phase 4: 树定位。"""
     print("\n🌲 阶段4: 树定位...")
@@ -479,7 +507,12 @@ def _run_place_phase(
         print("   ⏭️  跳过 Phase 4")
         raise typer.Exit(0)
 
-    _p4_cache_path = f".kb_phase4_{Path(input_dir).name}.json"
+    _use_unified_cache = cache_manager.enable_unified_cache if cache_manager else False
+    if _use_unified_cache and cache_manager:
+        cache_manager.ensure_cache_dir()
+        _p4_cache_path = str(cache_manager.get_cache_path(DOMAIN_CACHE_NAME))
+    else:
+        _p4_cache_path = f".kb_phase4_{Path(input_dir).name}.json"
     _p4_domains: dict[str, str] = {}
     _p4_placed: set[str] = set()
     _p4_records: list[dict[str, Any]] = []

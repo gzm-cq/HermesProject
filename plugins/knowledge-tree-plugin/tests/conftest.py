@@ -68,6 +68,7 @@ def mock_adapter() -> MagicMock:
     adapter.get_node_embedding.return_value = None
     adapter.insert_node.return_value = 100
     adapter.insert_point_text.return_value = 200
+    adapter.review_exists.return_value = False
     return adapter
 
 

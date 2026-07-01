@@ -4,8 +4,9 @@
 - frontmatter 解析 / 剥离
 - 索引懒加载与缓存
 - 关键词提取与预筛选
+- Embedding 预筛选（降级逻辑）
 - LLM 驱动匹配（mock httpx）
-- 两级匹配架构
+- 三级匹配架构（关键词 + Embedding + LLM）
 - 配置常量
 """
 
@@ -576,13 +577,13 @@ class TestKeywordPrescreen:
 
 
 # ====================================================================
-# 两级匹配架构
+# 三级匹配架构
 # ====================================================================
 
 
 @patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
-def test_two_stage_match_with_keyword_prescreen(mock_ensure: MagicMock) -> None:
-    """启用关键词预筛选时，走两级匹配路径。"""
+def test_three_stage_match_with_keyword_prescreen(mock_ensure: MagicMock) -> None:
+    """启用关键词预筛选时，走三级匹配路径（关键词 → Embedding 可选 → LLM）。"""
     import knowledge_navigation.core.skill_matcher as sm
     sm._skill_index = [
         {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/skills/docker/SKILL.md", "category": "ops"},
@@ -614,4 +615,4 @@ def test_single_stage_match_without_prescreen(mock_ensure: MagicMock) -> None:
 
 
 def test_prescreen_top_k_default() -> None:
-    assert _PRESCREEN_TOP_K == 20
+    assert _PRESCREEN_TOP_K == 30

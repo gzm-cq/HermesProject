@@ -372,7 +372,7 @@ _eval_queries: list[dict[str, Any]] | None = None
 
 
 def _load_eval_queries() -> list[dict[str, Any]]:
-    """懒加载评测查询列表。"""
+    """懒加载评测查询列表，带 Schema 验证。"""
     global _eval_queries
     if _eval_queries is not None:
         return _eval_queries
@@ -382,7 +382,21 @@ def _load_eval_queries() -> list[dict[str, Any]]:
         return _eval_queries
     try:
         with open(path, "r") as f:
-            _eval_queries = json.load(f)
+            raw = json.load(f)
+        # Schema 验证：必需字段
+        required_fields = {"query_id", "query", "dimension"}
+        validated = []
+        for item in raw:
+            if isinstance(item, dict) and required_fields.issubset(item.keys()):
+                validated.append(item)
+            else:
+                missing = required_fields - set(item.keys()) if isinstance(item, dict) else required_fields
+                logger.warning(
+                    "eval query 缺少必需字段，跳过: %s, missing=%s",
+                    item.get("query_id", "unknown"),
+                    ", ".join(sorted(missing)),
+                )
+        _eval_queries = validated
     except Exception as e:
         logger.warning(
             "eval queries load failed",
@@ -399,7 +413,11 @@ _CJK_STOP_CHARS = frozenset(
 
 
 def _extract_keywords(text: str) -> set[str]:
-    """提取文本中的有意义关键词。
+    """提取文本中的有意义关键词（仅用于 eval query 匹配）。
+
+    注意：此函数与 `skill_matcher._extract_keywords()` 是不同的算法。
+    - 本函数：英文 + 仅 CJK 二字组，更保守，用于 eval query 关键词匹配
+    - skill_matcher：英文 + 中文整段 + 2-gram 子串，更激进，用于 skill 预筛选
 
     策略：
     - 英文词/标识符（>= 2 字符，转小写）
@@ -473,6 +491,12 @@ def _match_eval_query(user_message: str) -> dict | None:
 
     normalized_user = _normalize_eval_text(user_message)
 
+    # 同时也是主日志，确保空 recall 时 eval_match 不被丢弃
+    main_log_data: dict[str, Any] = {
+        "event": "eval_match",
+        "user_message_trunc": user_message[:60],
+    }
+
     # 2. 规范化精确匹配（最高精度，进入 recall@k 计数）
     for item in queries:
         if _normalize_eval_text(str(item.get("query", ""))) == normalized_user:
@@ -482,6 +506,14 @@ def _match_eval_query(user_message: str) -> dict | None:
             eval_log_data["score"] = 1.0
             eval_log_data["accepted"] = True
             eval_log_data["counted"] = True
+            main_log_data["match_type"] = "exact"
+            main_log_data["matched_query_id"] = item.get("query_id")
+            main_log_data["matched_query_trunc"] = item.get("query", "")[:60]
+            main_log_data["score"] = 1.0
+            main_log_data["accepted"] = True
+            main_log_data["counted"] = True
+            main_log_data["query_id"] = item["query_id"]
+            logger.info("eval_match", extra=main_log_data)
             if el:
                 el.info("eval_match", extra=eval_log_data)
             return _build_result(item, "exact", 1.0, True)
@@ -680,8 +712,21 @@ def _candidate_score(result: dict[str, Any]) -> float:
 
 def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
     """每次 LLM 调用前自动执行：三层门控 → LLM Router → 三路 mask 条件执行 → 后处理注入。"""
+
+    # 第0道门：eval query 无条件放行（跳过生产门控）
+    _eval_match = _match_eval_query(user_message) if CONFIG.eval_match_enabled else None
+    if _eval_match:
+        logger.info(
+            "eval_query bypass gate",
+            extra={
+                "session_id": session_id,
+                "eval_query_id": _eval_match.get("query_id"),
+                "event": "eval_query_bypass",
+            },
+        )
+
     # 第一道门：非用户平台（curator/cron/子代理等）→ 无条件跳过
-    if skip_non_user(kwargs.get("platform", "")):
+    if not _eval_match and skip_non_user(kwargs.get("platform", "")):
         logger.debug(
             "非用户平台跳过 pre_llm_call",
             extra={"session_id": session_id, "event": "skip_non_user"},
@@ -689,7 +734,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         return None
 
     # 第一.五道门：系统提示词（子代理/cron/review 的第一轮长英文消息）
-    if skip_system_prompt(user_message, kwargs.get("is_first_turn", False)):
+    if not _eval_match and skip_system_prompt(user_message, kwargs.get("is_first_turn", False)):
         logger.debug(
             "系统提示词跳过 pre_llm_call",
             extra={"session_id": session_id, "event": "skip_system_prompt"},
@@ -697,14 +742,15 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         return None
 
     # 第二道门：文本门控 — 操作型对话跳过
-    skip_reason = skip_pre_llm_call(user_message)
-    if skip_reason:
-        logger.debug(
-            "turn_gate 跳过 pre_llm_call: %s",
-            skip_reason,
-            extra={"session_id": session_id, "event": "skip_operational"},
-        )
-        return None
+    if not _eval_match:
+        skip_reason = skip_pre_llm_call(user_message)
+        if skip_reason:
+            logger.debug(
+                "turn_gate 跳过 pre_llm_call: %s",
+                skip_reason,
+                extra={"session_id": session_id, "event": "skip_operational"},
+            )
+            return None
 
     # 熔断器：连续失败后跳过 Hindsight recall（知识树不受熔断影响）
     _hs_circuit_open = False
@@ -826,7 +872,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         try:
             _seed_ids = [int(r["id"]) for r in kt_raw_results if r.get("id") and str(r["id"]).isdigit()]
             if _seed_ids:
-                _mh_results = _multi_hop_recall(_seed_ids, top_k=5)
+                _mh_results = _multi_hop_recall(_seed_ids, top_k=2)
                 if _mh_results:
                     logger.info(
                         "多跳关联展开: %d 条",
@@ -975,8 +1021,11 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         )
     kept_before_kt = len(kept)  # 压缩后、KT 追加前
 
-    # 匹配评测查询（生产环境可通过 CONFIG.eval_match_enabled 关闭）
-    eval_match = _match_eval_query(user_message) if CONFIG.eval_match_enabled else None
+    # 复用顶部 eval 检查结果，避免重复调用 _match_eval_query
+    if _eval_match is None:
+        eval_match = _match_eval_query(user_message) if CONFIG.eval_match_enabled else None
+    else:
+        eval_match = _eval_match
 
     # ===== C-P1-3: 定期任务回述 =====
     summary = _task_tracker.get_summary_prompt(session_id)
@@ -1022,7 +1071,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     # 知识树结果对齐统一候选结构，保证进入 score_stats 的条目都有 final_score
     for kp in kt_raw_results:
         candidate = _build_knowledge_tree_candidate(kp)
-        if candidate is not None:
+        if candidate and candidate.get("final_score", 0) >= CONFIG.min_score:
             kept.append(candidate)
 
     # Turn-to-turn 去重：session 级 LRU

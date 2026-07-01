@@ -399,22 +399,23 @@ def _insert_conflict_reviews(
     default_similarity: float,
 ) -> None:
     """写入矛盾审查队列；单条失败不影响整体放置。"""
-    # 前置检查：已有相同冲突则跳过（去重保护）
     try:
-        cursor = adapter._inner.cursor if hasattr(adapter, '_inner') else adapter.cursor
         for conflict in conflicts:
             existing_id = conflict["existing"]["id"]
-            cursor.execute(
-                "SELECT id FROM knowledge_review_queue "
-                "WHERE conflict_type = 'semantic_conflict' "
-                "  AND new_text = %s AND existing_node_id = %s "
-                "  AND status = 'pending'",
-                (conflict.get("new_text", point_text), existing_id),
-            )
-            if cursor.fetchone():
-                continue  # 已存在相同冲突，跳过
+            new_text = conflict.get("new_text", point_text)
+
+            # 去重保护：已有相同冲突则跳过
+            if hasattr(adapter, "review_exists"):
+                if adapter.review_exists(
+                    new_text=new_text,
+                    existing_node_id=existing_id,
+                    conflict_type="semantic_conflict",
+                    status="pending",
+                ):
+                    continue
+
             adapter.insert_review(
-                new_text=conflict.get("new_text", point_text),
+                new_text=new_text,
                 existing_node_id=existing_id,
                 existing_text=conflict["existing"].get("name", ""),
                 conflict_type="semantic_conflict",

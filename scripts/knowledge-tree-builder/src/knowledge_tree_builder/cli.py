@@ -35,7 +35,9 @@ from knowledge_tree_builder.commands.crud import (
 )
 from knowledge_tree_builder.commands.complex import cmd_consolidate
 from knowledge_tree_builder.commands.lineage import cmd_lineage_show, cmd_lineage_export
+from knowledge_tree_builder.commands.check_freshness import cmd_check_freshness
 from knowledge_tree_builder.commands.run import _run_pipeline
+from knowledge_tree_builder.core.cache_manager import CacheManager
 from knowledge_tree_builder.commands.deprecated import (
     cmd_run_old,
     cmd_cluster,
@@ -316,6 +318,119 @@ def consolidate(
       整合在 consolidate 中，无需独立命令。
     """
     cmd_consolidate(action, config_path, dry_run, merge_domains, min_domain_nodes, domain_merge_threshold, build_edges)
+
+
+@app.command()
+def check_freshness(
+    config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="仅报告，不执行更新"),
+    db_url: str = typer.Option("", help="PG 连接串（默认从 KT_DB_URL 读取）"),
+    embed_base_url: str = typer.Option(
+        "https://api.siliconflow.cn/v1", "--embed-base-url",
+        envvar="KT_EMBED_BASE_URL",
+    ),
+    embed_model: str = typer.Option(
+        "BAAI/bge-m3", "--embed-model",
+        envvar="KT_EMBED_MODEL",
+    ),
+    embed_api_key: str = typer.Option(
+        "", "--embed-api-key",
+        envvar="HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+    ),
+) -> None:
+    """检查知识树中 text 发生变化需要重新 embedding 的节点。
+
+    查询所有 knowledge_point 节点，比对 text hash，找出 text 已变化需要重新 embedding 的节点。
+    默认仅报告（dry-run），传入 --dry-run=false 执行实际更新。
+    """
+    cmd_check_freshness(config_path, dry_run, db_url, embed_base_url, embed_model, embed_api_key)
+
+
+cache_app = typer.Typer(
+    name="cache",
+    help="缓存管理 — 查看和清理知识提取管线缓存",
+    add_completion=False,
+)
+app.add_typer(cache_app, name="cache")
+
+
+@cache_app.command("ls")
+def cache_ls(
+    config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+) -> None:
+    """列出所有缓存文件。"""
+    from knowledge_tree_builder.config import load_config
+    config_dict = load_config(config_path)
+    cache_manager = CacheManager(
+        cache_dir=config_dict.get("cache_dir", ".kb_cache/"),
+        enable_unified_cache=config_dict.get("enable_unified_cache", True),
+    )
+    if not cache_manager.enable_unified_cache:
+        print("统一缓存管理未启用（KT_ENABLE_UNIFIED_CACHE=false）")
+        return
+    caches = cache_manager.list_caches()
+    if not caches:
+        print("暂无缓存文件")
+        return
+    from datetime import datetime
+    print(f"{'文件名':<30} {'大小':>10} {'修改时间'}")
+    print("-" * 60)
+    for c in caches:
+        size_str = _format_size(c.size)
+        mtime_str = datetime.fromtimestamp(c.mtime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{c.name:<30} {size_str:>10} {mtime_str}")
+
+
+@cache_app.command("clear")
+def cache_clear(
+    name: str = typer.Option("", "--name", help="缓存文件名（省略则清除全部）"),
+    config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+) -> None:
+    """清除缓存文件。"""
+    from knowledge_tree_builder.config import load_config
+    config_dict = load_config(config_path)
+    cache_manager = CacheManager(
+        cache_dir=config_dict.get("cache_dir", ".kb_cache/"),
+        enable_unified_cache=config_dict.get("enable_unified_cache", True),
+    )
+    if not cache_manager.enable_unified_cache:
+        print("统一缓存管理未启用（KT_ENABLE_UNIFIED_CACHE=false）")
+        return
+    deleted = cache_manager.clear_cache(name if name else None)
+    if deleted > 0:
+        print(f"已清除 {deleted} 个缓存文件")
+    else:
+        print("无缓存文件可清除")
+
+
+@cache_app.command("size")
+def cache_size(
+    config_path: str = typer.Option("config/default.yaml", "--config", help="配置文件路径"),
+) -> None:
+    """显示缓存总大小。"""
+    from knowledge_tree_builder.config import load_config
+    config_dict = load_config(config_path)
+    cache_manager = CacheManager(
+        cache_dir=config_dict.get("cache_dir", ".kb_cache/"),
+        enable_unified_cache=config_dict.get("enable_unified_cache", True),
+    )
+    if not cache_manager.enable_unified_cache:
+        print("统一缓存管理未启用（KT_ENABLE_UNIFIED_CACHE=false）")
+        return
+    total = cache_manager.get_cache_size()
+    print(f"缓存总大小: {_format_size(total)}")
+
+
+def _format_size(size: int) -> str:
+    """格式化文件大小显示。"""
+    if size < 1024:
+        return f"{size}B"
+    elif size < 1024 * 1024:
+        return f"{size / 1024:.1f}KB"
+    elif size < 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f}MB"
+    else:
+        return f"{size / (1024 * 1024 * 1024):.2f}GB"
 
 
 lineage_app = typer.Typer(

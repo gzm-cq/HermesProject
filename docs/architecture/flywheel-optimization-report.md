@@ -35,7 +35,7 @@
 ### 1.3 知识导航插件（knowledge-navigation）
 
 - **Skill Matcher 每次全量扫描 skills 目录**：`ensure_index()` 每次调用遍历 `~/.hermes/skills/` 所有 SKILL.md，虽然缓存了 `_skill_index`，但首次调用和缓存失效时开销大。应加文件 mtime 检查，只扫描变更文件。
-- **Skill Matcher 的 LLM 调用发送 ~345 个 skill 描述**：每次 pre_llm_call 都把所有 skill 的 name+description 拼给 LLM，prompt 很长。应做两级筛选：先 embedding 预过滤（< 20 个候选），再 LLM 精排。
+- **Skill Matcher 的 LLM 调用发送 ~345 个 skill 描述**：每次 pre_llm_call 都把所有 skill 的 name+description 拼给 LLM，prompt 很长。应做三级筛选：关键词粗筛（Top-50）→ Embedding 语义精筛（Top-20）→ LLM 精排（Top-3）。
 - **跨域去重阈值 0.65 偏低**：知识树和 Hindsight 的"同义不同表述"很容易被判重删掉。应考虑只在 strict 模式（>0.80）下去重，或引入"降权"而非"删除"。
 
 ### 1.4 聚类分析（clustering-analysis-v3）
@@ -84,31 +84,41 @@
 
 ## 三、核心优化项
 
-### P0-1：Skill Matcher 改为 Embedding 两级筛选
+### P0-1：Skill Matcher 改为三级筛选（关键词 + Embedding + LLM）
 
 **现状问题**：每次 pre_llm_call 把 ~345 个 skill 的 name+description 全部发给 LLM，prompt 很长，延迟 ~3s。
 
-**技术依据**：行业共识 — OpenAI 官方推荐 Agent 工具数 < 20 个，超过后准确率显著下降。两阶段检索（Embedding 预筛选 + Reranker 精排）是当前标准方案。
+**技术依据**：行业共识 — OpenAI 官方推荐 Agent 工具数 < 20 个，超过后准确率显著下降。混合检索（关键词粗筛 + Embedding 语义精筛 + Reranker 精排）是当前 RAG 领域的标准方案，兼顾效率与召回率。
 
-**推荐方案**：不引入 semantic-router，用现有 BAAI/bge-m3 自行实现：
+**最终方案**：三级检索架构（关键词粗筛 → Embedding 精筛 → LLM 精排）
 
 ```
-Stage 1: Embedding 余弦预筛选（~10ms，从 345 个筛到 Top-15）
-  → 使用已有的 bge-m3（与知识树 recall 同模型，无需新增依赖）
-  → 预计算所有 SKILL.md description 的 embedding，缓存在内存
-  → 首次构建后用文件 mtime 增量更新
+Stage 1: 关键词预筛选（<1ms，345 → Top-50）
+  → 基于中英文关键词提取（英文单词 + 中文 2-gram，去停用词）
+  → 按 skill name/category/description 关键词重叠打分
+  → 粗筛快速排除明显不相关的 skill
 
-Stage 2: LLM 精排（~300ms，从 Top-15 选出 Top-3）
-  → 只对 15 个候选发给 LLM，prompt 短很多
+Stage 1.5: Embedding 余弦相似度（<10ms，50 → Top-20）
+  → 使用 BAAI/bge-m3（与知识树 recall 同模型）
+  → 余弦相似度排序，语义精筛
+  → Feature Flag: KN_SKILL_EMBEDDING_PRESCREEN 可控
+
+Stage 2: LLM 精排（~500ms，20 → Top-3）
+  → 只对 20 个候选发给 LLM，prompt 短很多
 ```
 
-**引入代价**：零新依赖，~50 行代码。
+**方案演进说明**：
+- 初始设计：纯 Embedding 两级筛选
+- 第一版实施：关键词两级筛选（用户验证纯 embedding 效果差，关键词更可靠）
+- 第二版升级：三级架构（关键词 + Embedding hybrid，兼顾召回率和效率）
+
+**引入代价**：零新依赖，~150 行代码。
 
 **可行性注意**：
-- `_batch_embed()` 当前是 hooks.py 的私有函数，Skill Matcher 无法直接 import。实施时需提取为 `adapters/embed.py` 公共模块（~20 行额外重构）。
 - 依赖 `SILICONFLOW_API_KEY` 环境变量，需确保部署环境已配置（当前 cross_domain_dedup 已在用同一变量，通常已存在）。
+- Embedding 预筛选默认关闭，需要时通过 ENV 启用。
 
-**预期效果**：延迟从 ~3s 降到 ~400ms（降幅 ~87%），API 调用成本降低 ~90%。
+**预期效果**：延迟从 ~3s 降到 ~500ms（降幅 ~83%），API 调用成本降低 ~85%，准确率显著高于纯关键词方案。
 
 ### P0-2：去重下推 pgvector
 
@@ -571,7 +581,7 @@ pre_llm_call 注入完成后，将 recalled_ids 写入 memory_use_log 表：
 
 | 优先级 | 项目 | 引入框架 | 投入 | 预期效果 |
 |--------|------|---------|------|----------|
-| **P0** | Skill Matcher 两级筛选 | 不引入（用现有 bge-m3） | 半天 | 延迟 ~87%，API 成本 ~90% |
+| **P0** | Skill Matcher 三级筛选 | 不引入（用现有 bge-m3） | 1 天 | 延迟 ~83%，API 成本 ~85% |
 | **P0** | 去重下推 pgvector | 不引入（改 SQL） | 半天 | 去重性能 ~480x 提升 |
 | **P0** | LLM 调用合并 | 不引入 | 半天 | 建树速度 +40% |
 | **P1** | 自动反馈飞轮 Phase A | 不引入 | 半天 | 零成本，为后续评估铺数据 |

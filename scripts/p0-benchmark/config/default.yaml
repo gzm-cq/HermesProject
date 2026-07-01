@@ -1,0 +1,24 @@
+# P0 Benchmark 配置文件
+
+# 通用配置
+output_path: reports
+log_level: INFO
+seed: 42
+
+# P0-1: Skill Matcher Benchmark
+skill_benchmark_queries: 100
+skill_benchmark_prescreen_top_k: 20
+skill_benchmark_accuracy_threshold: 0.95
+
+# P0-2: pgvector 去重 Benchmark
+dedup_benchmark_sizes:
+  - 1000
+  - 5000
+  - 10000
+dedup_benchmark_threshold: 0.95
+dedup_benchmark_repeat: 3
+
+# P0-3: LLM 合并调用 Benchmark
+llm_benchmark_article_count: 50
+llm_benchmark_model: s-deepseek-v4-flash
+llm_benchmark_api_url: http://127.0.0.1:4142/v1/chat/completions

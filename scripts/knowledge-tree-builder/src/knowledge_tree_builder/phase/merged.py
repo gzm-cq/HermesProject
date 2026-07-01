@@ -59,6 +59,14 @@ _SYSTEM_PROMPT: str = """你是一个知识提取专家。请从文章中提取�
 ✅ "部署流程分三步：备份 → 同步 → 验证"
 ❌ "按需调整参数"（没有具体步骤）
 
+## 时态信息识别（P3-9）
+
+对每个知识点，识别其有效时间范围：
+- 如果知识点有明确的起始时间（如"2024年起"、"v2之后"、"从3.0版本开始"），填 valid_from
+- 如果知识点有明确的失效时间（如"2023年前"、"旧版本中"、"已废弃"），填 valid_until
+- 如果没有时间限制，两个字段都留 null
+- 日期用 ISO 格式：YYYY-MM-DD 或 YYYY-MM 或 YYYY
+
 ## 输出要求
 
 1. 每条知识点必须满足自解释性：
@@ -80,12 +88,16 @@ _SYSTEM_PROMPT: str = """你是一个知识提取专家。请从文章中提取�
     {
       "text": "知识点文本",
       "type": "principle",
-      "entities": ["实体A", "实体B"]
+      "entities": ["实体A", "实体B"],
+      "valid_from": null,
+      "valid_until": null
     },
     {
       "text": "知识点文本",
       "type": "key_point",
-      "entities": ["实体C"]
+      "entities": ["实体C"],
+      "valid_from": "2024-01-01",
+      "valid_until": null
     }
   ]
 }
@@ -95,7 +107,9 @@ _SYSTEM_PROMPT: str = """你是一个知识提取专家。请从文章中提取�
 
 5. 每条知识点的 "entities" 字段：从知识点中提取 2-8 个命名实体（名词性关键概念），中英文均可。没有可提取实体时返回空数组 []。
 
-6. 最多输出 15 条。只提取有知识价值的内容。
+6. 每条知识点的 "valid_from" 和 "valid_until" 字段：时态信息，无时态限制时为 null。
+
+7. 最多输出 15 条。只提取有知识价值的内容。
 
 ## 不应提取的内容
 
@@ -176,14 +190,31 @@ def analyze_and_split(
             entities_raw = []
         entities = [str(e) for e in entities_raw if isinstance(e, str) and e.strip()]
 
-        atomics.append(AtomicKnowledge(
+        atomic = AtomicKnowledge(
             text=text,
             type=ktype,
             claims_count=1,
             source_candidate_index=i,
             source_title=title,
             entities=entities,
-        ))
+        )
+
+        # P3-9: 时态信息提取
+        if config.enable_temporal_extraction:
+            vf = raw.get("valid_from")
+            vu = raw.get("valid_until")
+            _null_values = {"null", "NULL", "none", "None", "", "n/a", "N/A"}
+            atomic["valid_from"] = str(vf) if vf and str(vf).strip() not in _null_values else None
+            atomic["valid_until"] = str(vu) if vu and str(vu).strip() not in _null_values else None
+
+            # LLM 未提取到时态信息时，用启发式方法 fallback
+            if atomic["valid_from"] is None and atomic["valid_until"] is None:
+                from knowledge_tree_builder.core.temporal import extract_temporal_from_text
+                tr = extract_temporal_from_text(text)
+                atomic["valid_from"] = tr.valid_from
+                atomic["valid_until"] = tr.valid_until
+
+        atomics.append(atomic)
 
         # K 上限
         if len(atomics) >= config.max_candidates_per_article:
