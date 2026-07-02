@@ -912,6 +912,7 @@ def _phase_optimize(
             except Exception as e:
                 print(f'  ❌ [{name}] 异常: {e}')
 
+    state['skill_last_run'] = skill_last_run
     save_state(state)
     print(f'\n{"="*65}')
     print(f'All done: {optimized}/{len(top_scored)} skills optimized')

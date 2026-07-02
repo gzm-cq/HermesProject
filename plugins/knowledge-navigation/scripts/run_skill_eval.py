@@ -73,7 +73,7 @@ def run_eval() -> dict:
         print("⚠️  Skill 索引为空，无法评估")
         return {}
 
-    print(f"  加载 {len(queries)} 条 eval queries...\n")
+    print(f"  加载 {len(queries)} 条 eval queries...\n", file=sys.stderr)
 
     results_by_id: dict[str, dict] = {}
     all_precisions: list[float] = []
@@ -218,7 +218,8 @@ def main() -> None:
         print_report(result)
 
     save_baseline(result)
-    print(f"\n💾 基线已保存至 {BASELINE_FILE}")
+    if "--json" not in args:
+        print(f"\n💾 基线已保存至 {BASELINE_FILE}")
 
 
 if __name__ == "__main__":

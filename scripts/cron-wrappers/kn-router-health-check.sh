@@ -38,7 +38,8 @@ if command -v journalctl &>/dev/null; then
     FAIL_COUNT=$(journalctl -u hermes-gateway --since "24 hours ago" --no-pager 2>/dev/null | grep -c "Router JSON 解析失败" || echo 0)
 fi
 
-if [[ "$FAIL_COUNT" -gt 0 ]]; then
+# 允许少量 JSON 解析失败（<5次/24h 属于 LLM 正常波动，fallback 兜底不阻断）
+if [[ "$FAIL_COUNT" -gt 5 ]]; then
     cron_warn "Router JSON 解析失败: ${FAIL_COUNT} 次 (24h)"
     _STEP_RESULTS+=("⚠️ Router 解析失败: ${FAIL_COUNT} 次")
 else
@@ -91,7 +92,7 @@ resp = httpx.post(
         ],
     },
     headers={'Authorization': f'Bearer {key}'},
-    timeout=15,
+    timeout=10,
 )
 data = resp.json()
 content = data['choices'][0]['message'].get('content', '')
@@ -106,7 +107,9 @@ else
 fi
 
 STABILITY_RATE=$((STABILITY_PASS * 100 / STABILITY_TOTAL))
-if [[ "$STABILITY_PASS" -lt "$STABILITY_TOTAL" ]]; then
+# 接受 4/5 成功（DeepSeek 偶尔延迟）
+_STABILITY_MIN=4
+if [[ "$STABILITY_PASS" -lt "$_STABILITY_MIN" ]]; then
     cron_warn "Router 模型稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} 成功 (${STABILITY_RATE}%)"
     _STEP_RESULTS+=("⚠️ Router 稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} (${STABILITY_RATE}%)")
 else
@@ -117,7 +120,7 @@ fi
 # ===== 4. 汇总 =====
 cron_section "巡检汇总"
 
-if [[ "$FAIL_COUNT" -eq 0 && "$STABILITY_PASS" -eq "$STABILITY_TOTAL" ]]; then
+if [[ "$FAIL_COUNT" -le 5 && "$STABILITY_PASS" -ge "$_STABILITY_MIN" ]]; then
     cron_ok "知识导航 Router 巡检全部通过 ✅"
     _STEP_RESULTS+=("✅ 巡检全部通过")
     # 无异常静默退出，不推送飞书

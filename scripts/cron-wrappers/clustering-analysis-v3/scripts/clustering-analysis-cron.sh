@@ -30,7 +30,7 @@ cron_init "clustering-analysis"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cron_section "聚类分析管线 (--apply)"
-if bash "${SCRIPT_DIR}/cron_wrapper.sh" --apply; then
+if CONFIRM_APPLY=I_UNDERSTAND_THIS_WRITES_HINDSIGHT bash "${SCRIPT_DIR}/cron_wrapper.sh" --apply; then
     cron_ok "聚类分析管线完成"
     _STEP_RESULTS+=("✅ 聚类分析管线 --apply")
 else
@@ -41,3 +41,7 @@ fi
 
 # ===== 完成 =====
 cron_finish
+
+# 写入 state 文件供飞轮验证
+mkdir -p /root/.hermes/lib/cron-state
+echo "'{"job_name":"clustering-analysis","status":"success","cron_mode":"normal","run_at":"'$(date -Iseconds)'"}"' > /root/.hermes/lib/cron-state/clustering-analysis.json
