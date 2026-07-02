@@ -16,7 +16,8 @@
 | 2 | 每日在线学习 | 09:00 | 1-5 | no_agent | `daily-learn/daily_learn.sh` | `/root/.hermes/scripts/daily-learn` |
 | 3 | 聚类分析每周跑 | 10:00 | 1 | no_agent | `clustering-analysis-v3/scripts/clustering-analysis-cron.sh` | `/root/.hermes/scripts` |
 | 4 | 知识树维护每日 | 11:00 | 1 | no_agent | `knowledge-tree-builder/scripts/knowledge-tree-consolidate.sh` | `/root/.hermes/scripts/knowledge-tree-builder` |
-| 5 | 知识导航评估基线 | 12:00 | 1 | no_agent | `knowledge-navigation-baseline.sh` | `/root/.hermes/plugins/knowledge-navigation` |
+|| 5 | 知识导航评估基线 | 12:00 | 1 | no_agent | `knowledge-navigation-baseline.sh` | `/root/.hermes/plugins/knowledge-navigation` |
+|| 6 | 知识导航 LLM judge | 12:00 | 1 | no_agent | `knowledge-navigation-baseline.sh`（与基线同一脚本，judge → delta 顺序执行）| `/root/.hermes/plugins/knowledge-navigation` |
 | 6 | memory-cleanup-daily | 13:00 | * | no_agent | `memory-cleanup/daily_dryrun.sh` | `/root/.hermes/scripts/memory-cleanup` |
 | 7 | 知识树k_vector每周兜底维护 | 09:00 | 6 | no_agent | `knowledge-tree-builder/scripts/knowledge-tree-kvector-maintenance.sh` | `/root/.hermes/scripts/knowledge-tree-builder` |
 | 8 | 每周深度研究-知识树学习 | 09:00 | 0 | agent | —（LLM prompt 驱动） | — |

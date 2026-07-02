@@ -42,6 +42,24 @@ if [[ -f /root/.hermes/.env ]]; then
   set +a
 fi
 
+# LLM judge 配置（使用本地 LiteLLM proxy，兜底默认值）
+export LLM_API_URL="${LLM_API_URL:-${KT_LLM_API_URL:-http://127.0.0.1:4142/v1/chat/completions}}"
+export LLM_API_KEY="${LLM_API_KEY:-${LITELLM_MASTER_KEY:-}}"
+export LLM_MODEL="${LLM_MODEL:-s-deepseek-v4-flash}"
+export JUDGE_PARALLEL="${JUDGE_PARALLEL:-8}"
+export JUDGE_INSECURE="${JUDGE_INSECURE:-1}"
+
+# ===== LLM 相关性评估（judge）=====
+cron_section "LLM 相关性评估 (judge)"
+if python3 scripts/collect_baseline.py --judge; then
+    cron_ok "LLM 相关性评估完成"
+    _STEP_RESULTS+=("✅ LLM 相关性评估")
+else
+    rc=$?
+    cron_warn "LLM 相关性评估异常 (exit=$rc)，基线检测继续执行"
+    _STEP_RESULTS+=("⚠️ LLM 相关性评估 (exit=$rc)")
+fi
+
 # ===== 执行基线采集 =====
 cron_section "评估基线 delta 检测"
 if python3 scripts/collect_baseline.py --delta --trigger; then

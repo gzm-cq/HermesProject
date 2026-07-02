@@ -737,9 +737,10 @@ def match_skills(
     if results:
         elapsed = (time.time() - t0) * 1000
         logger.info(
-            "Skill match (LLM full): %s (%.0fms)",
+            "Skill match (LLM full): %s (%.0fms) query=%s",
             [r["name"] for r in results],
             elapsed,
+            query[:100].replace("\n", " "),
         )
         return results
 

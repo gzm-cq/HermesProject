@@ -245,7 +245,7 @@ PY
     else
         cron_warn "未配置 lark-cli 或 FEISHU_WEBHOOK_URL，跳过飞书通知"
     fi
-    return 1
+    return 0
 }
 
 # ===== 状态文件写入 =====

@@ -686,8 +686,15 @@ def filter_digests_by_since(
     """
     if not since_iso:
         return digests  # full harvest (first time for this skill)
-    result = [d for d in digests if d.ended_at and d.ended_at >= since_iso]
-    print(f'  after {since_iso}: {len(result)} sessions in window')
+
+    since_ts = _parse_iso_to_timestamp(since_iso) or 0
+    result = []
+    for d in digests:
+        # ended_at 可能 None（未结束的 session），fallback 到 started_at
+        end_ts = _parse_iso_to_timestamp(d.ended_at) or _parse_iso_to_timestamp(d.started_at) or 0
+        if end_ts >= since_ts:
+            result.append(d)
+    print(f'  after {since_iso}: {len(result)} sessions in window (ended_at=None fallback to started_at)')
     return result
 
 
