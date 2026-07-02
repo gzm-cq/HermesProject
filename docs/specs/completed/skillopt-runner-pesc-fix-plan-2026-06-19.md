@@ -1,6 +1,18 @@
 # PESC 修复计划：SkillOpt-Runner 有效优化链路
 
-**目标**：修复 `skillopt-nightly-run` 目前“cron 成功但没有任何 skill 优化”的代码问题，让它能从 Hermes 当前会话存储中增量采集真实对话、正确挖掘任务、调用 SkillOpt-Sleep，并在验证门控通过后准确写回目标 skill。
+**目标**：修复 `skillopt-nightly-run` 目前"cron 成功但没有任何 skill 优化"的代码问题，让它能从 Hermes 当前会话存储中增量采集真实对话、正确挖掘任务、调用 SkillOpt-Sleep，并在验证门控通过后准确写回目标 skill。
+
+**实施状态同步（2026-06-29）**：
+> - ✅ P0-A: `_harvest_state_db_sessions()` 已实施（`skillopt_runner.py:174`）
+> - ✅ P0-B: 空任务推进 `last_run_iso` 已实施
+> - ✅ P0-C: `resolve_edit_skill_name()` 不存在于代码中，但代码重构已消除根因
+>   • skill_name 从 top_scored 直接传入，不依赖 edit.target 反推
+>   • `patch_skill_hermes()` 通过 `get_skill_path()` 已有存在性校验
+>   • 无需新增函数，标记为 ✅ 已解决（2026-07-02）
+> - ✅ P1-A: `message_mentions_skill()` 已实施（`skillopt_runner.py:481`）
+> - ✅ P1-B: 中文负反馈词表收紧已实施
+> - ✅ P1-C: `split_config()` 已实施（`skillopt_runner.py:462`）
+> - ⚠️ P1-D/P1-E: 状态未确认（需检查 `projects` 语义和模型配置）
 
 **范围**：仅修改 `/mnt/d/HermesProject/scripts/skillopt-runner/` 项目源码、测试、配置和必要文档；不修改 Hermes 核心源码，不直接改 `/root/.hermes/` 运行时文件。修完后按 HermesProject 流程：源码修改 → 本地测试 → review → 用户确认 → deploy → 运行时验证。
 

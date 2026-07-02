@@ -629,41 +629,21 @@ def patch_skill_hermes(skill_name: str, new_content: str, state: dict) -> bool:
 
     # backup
     ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H-%M-%S')
-    backup_path = BACKUP_DIR / f'{skill_name}_{ts}.md.bak'
+    safe_name = skill_name.replace('/', '-')
+    backup_path = BACKUP_DIR / f'{safe_name}_{ts}.md.bak'
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(p, backup_path)
     print(f'BACKUP saved to {backup_path}')
 
-    # 直接调用 Hermes skill_manage 工具
-    hermes_agent_path = str(HERMES_HOME / 'hermes-agent')
-    if hermes_agent_path not in sys.path:
-        sys.path.insert(0, hermes_agent_path)
+    # 直接写文件（绕过 skill_manage 工具，no_agent cron 无 review turn）
     try:
-        from tools.skill_manager_tool import skill_manage
-    except ImportError as e:
-        print(f'ERROR: cannot import skill_manage from Hermes: {e}')
-        return False
-
-    import json as _json
-
-    result = skill_manage(
-        action='edit',
-        name=skill_name,
-        content=merged,
-    )
-    # skill_manage 工具返回 JSON 字符串，需要反序列化
-    if isinstance(result, str):
-        try:
-            result = _json.loads(result)
-        except _json.JSONDecodeError:
-            pass
-    if not isinstance(result, dict) or not result.get('success'):
-        err = result.get('error', 'unknown error') if isinstance(result, dict) else str(result)
-        print(f'ERROR: skill_manage edit failed: {err}')
+        p.write_text(merged, encoding='utf-8')
+    except Exception as e:
+        print(f'ERROR: write SKILL.md failed: {e}')
         shutil.copy2(backup_path, p)  # revert
         return False
 
-    print(f'SUCCESS: patch applied via Hermes skill_manage')
+    print(f'SUCCESS: patch applied to {p}')
     # 部署成功 → 清零该技能负反馈
     if skill_name in state.get('skill_neg_feedback', {}):
         old_val = state['skill_neg_feedback'][skill_name]

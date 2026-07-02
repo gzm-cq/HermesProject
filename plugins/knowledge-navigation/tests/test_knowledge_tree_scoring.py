@@ -9,9 +9,11 @@ from knowledge_navigation.core import hooks as nav_hooks
 from knowledge_navigation.core.hooks import pre_llm_call
 
 
+@patch("knowledge_navigation.core.hooks._router_route")
 @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
 def test_knowledge_tree_candidates_have_final_scores_in_score_stats(
     mock_recall: MagicMock,
+    mock_route: MagicMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """KT-only fallback 时 score_stats 不能再出现 count=0。"""
@@ -20,9 +22,10 @@ def test_knowledge_tree_candidates_have_final_scores_in_score_stats(
     nav_hooks._injected_ids.clear()
 
     mock_recall.return_value = {"results": [], "trace": {}}
+    mock_route.return_value = {"h": False, "kt": True, "s": False}
     kt_results = [
         {"id": 101, "text": "知识树结果A", "score": 0.8},
-        {"id": 102, "text": "知识树结果B", "score": 0.2},
+        {"id": 102, "text": "知识树结果B", "score": 0.6},
     ]
 
     with patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True), \

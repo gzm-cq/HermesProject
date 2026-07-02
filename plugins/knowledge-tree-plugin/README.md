@@ -19,7 +19,7 @@ Hermes Gateway 插件（Hook 注册）。部署需重启 hermes-gateway。
 1. **post_llm_call** — 对话结束后，从 LLM 回复中提取新知识点，去重后增量写入知识树
 2. **public_api** — 提供 `recall_from_tree()` / `multi_hop_recall()` 等接口供知识导航插件调用
    - `recall_from_tree(query, top_k)` — 向量匹配种子知识点
-   - `multi_hop_recall(seed_ids, top_k)` — 从种子沿 subject 展开同科目关联知识点，标记 `source="multi-hop"`（跳过 rerank）
+   - `multi_hop_recall(seed_ids, top_k)` — 从种子沿 `kt_entity_links` 表展开共享实体的关联知识点（实体多跳），标记 `source="multi-hop"`（跳过 rerank）
 
 > 知识树的 **pre_llm_call recall** 由 `knowledge-navigation` 插件统一负责（`_do_kt_recall()`），本插件只注册 `post_llm_call`。
 

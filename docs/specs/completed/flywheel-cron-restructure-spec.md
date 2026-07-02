@@ -1,6 +1,9 @@
 # 飞轮 Cron 重构方案 v6
 
 > 状态: **已确认** | 创建: 2026-07-01 | 更新: 2026-07-01
+>
+> **实施状态同步（2026-07-02）**：
+> - ✅ 全部已实施，已完成归档。
 
 ---
 
@@ -89,11 +92,15 @@ Layer 2 (数据飞轮，3 路并行)
 | 自动调参可能掩盖真正问题 | 如服务 bug 导致召回下降，自动调参反而让聚类参数跑偏 |
 | 需观察 1-2 周数据确认因果关系 | 有数据后才能定阈值和策略 |
 
-**实现:**
-1. 聚类执行完成后读取 `~/.hermes/plugins/knowledge-navigation/baselines/baseline_latest.json`
-2. 与上周基线对比 `avg_score` 维度的变化
-3. 如果 `avg_score` 下降超过 10% → 飞书告警「🔴 聚类后召回率下降，建议人工排查」
+**实现（已实施 2026-07-02）:**
+1. 聚类执行完成后读取 `clustering_audit.log` 中最后一行的 `silhouette` 分数
+2. 与上周 `clustering_baseline_prev.json` 中的 silhouette 对比
+3. 如果 silhouette 绝对值下降超过 0.05 → 飞书告警「🔴 聚类后召回率下降，建议人工排查」
 4. 如果连续 3 周下降 → 告警升级为「🔥 聚类参数可能需要调整」
+
+**设计变更说明:** SPEC 原设计读 `baseline_latest.json` 的 `avg_score`，实际实施改用 `clustering_audit.log` 的 `silhouette`。
+原因：silhouette 直接衡量聚类内聚度，比 avg_score（受 rerank 模型、Hindsight 服务等多因素影响）更直接反映聚类质量。
+SPEC 本身也承认"召回率下降的信号源可能不是聚类参数"。
 
 **接入点:** `cron_wrapper.sh` 新增 `--skip-steps` 兼容步骤 6
 
@@ -168,9 +175,10 @@ Step 3 [P1] Skill Eval cron
   ├─ 注册 cron 12:00 每日
   └─ 退化告警逻辑
 
-Step 4 [P2] 下线 cron-periodic-detect
+Step 4 [P2] 下线 cron-periodic-detect ✅
   ├─ 确认无依赖
-  └─ 移除 cron
+  ├─ 已从 cron 调度移除（当前 12 个 job，无 periodic-detect）
+  └─ 文件仍存在于 scripts/cron-wrappers/ 但不再执行
 
 Step 5 [P3] Router 评估集（后续迭代）
 ```

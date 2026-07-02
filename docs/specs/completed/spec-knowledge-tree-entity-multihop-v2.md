@@ -3,6 +3,14 @@
 **目标**：在知识树中自建实体关联表，实现跨 subject 的实体多跳，同时清理数据问题
 **前置**：1af71ee（k_vector 写入加固 + 领域判断兜底），7088f4b（subject-based 多跳），3a01f4d（MD5 1024d）
 **来源**：审计发现（空 subject / 文本脱节 / 命名不一致 / 大 subject 平铺）
+**实施状态**: ✅ 已实施（核心改造全部落地）
+> **实施证据**：
+> - P2.1 `kt_entity_links` 表已创建（8 个文件引用）
+> - P2.2 实体提取在 `phase/merged.py` LLM prompt 中实现（非 admit.py，spec 表述偏差）
+> - P2.3 `place.py` `_write_to_db()` 已写入 `kt_entity_links`
+> - P2.4 `public_api.py` `multi_hop_recall()` 已改为 entity-based 多跳（Route B）
+> - P2.5 `hooks.py` 两路输出已实现
+> - P2.6 `backfill_entities.py` 回填脚本已创建
 
 ---
 

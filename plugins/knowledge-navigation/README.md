@@ -1,6 +1,6 @@
 # 知识导航插件（knowledge_navigation）
 
-> 自动 recall Hindsight 经验记忆并融合知识树知识点，通过 LLM Router 智能决策三路注入，提升 LLM 回答质量
+> 自动 recall Hindsight 经验记忆并融合知识树知识点，通过 LLM Router 智能决策三路注入，采用**三级混合筛选架构**提升召回质量与效率
 
 ## ✨ 插件简介
 
@@ -8,11 +8,12 @@
 
 **核心特性**：
 - 🧠 **LLM Router 智能决策**：基于 need analysis 判断 H（经验）/ KT（知识）/ S（技能）三路是否需要注入
-- 🔍 **智能召回**：基于语义相似度与 rerank_score 精度过滤
+- 🔍 **三级混合筛选**：Skill 匹配采用"关键词粗筛（Top-30）→ Embedding 语义精筛（Top-20）→ LLM 精排（Top-3）"三级漏斗，平衡召回率与效率
 - ⚡ **高性能**：内置连接池、超时控制与熔断器；按 mask 条件执行（多路并行/单路串行）
 - 📊 **可观测性**：结构化 JSON 日志（含 router_mask 事件），支持监控与基线对比
-- 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知；Router 异常自动 fallback 全开
+- 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知；Router 异常自动 fallback 全开；Embedding 调用失败自动降级
 - 🧩 **易集成**：零侵入式 Hook 注册，开箱即用
+- ⏰ **时态感知**：支持知识点的有效期过滤（valid_from/valid_until），自动剔除过期知识
 
 ---
 
@@ -67,6 +68,20 @@ hooks:
 | `router_api_key` | `KN_ROUTER_API_KEY` | `""` | API Key（空时走网关默认凭证） |
 | `router_timeout` | `KN_ROUTER_TIMEOUT` | `5` | Router 超时秒数 |
 
+### Skill 匹配 Embedding 配置（三级筛选专用）
+
+| 配置项 | 环境变量 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| `enable_embedding_prescreen` | `KN_SKILL_EMBEDDING_PRESCREEN` | `true` | 是否启用 Embedding 预筛选（Stage 1.5） |
+| `embedding_api_url` | `KN_SKILL_EMBEDDING_URL` | `https://api.siliconflow.cn/v1` | Embedding API 地址 |
+| `embedding_api_key` | `KN_SKILL_EMBEDDING_API_KEY` | `""` | Embedding API Key（空时 fallback 到 `SILICONFLOW_API_KEY`） |
+| `embedding_model` | `KN_SKILL_EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding 模型 |
+| `prescreen_top_k` | `KN_SKILL_PRESCREEN_TOP_K` | `30` | 关键词预筛选保留数量 |
+| `embedding_top_k` | `KN_SKILL_EMBEDDING_TOP_K` | `20` | Embedding 精筛保留数量 |
+| `embedding_batch_size` | `KN_SKILL_EMBEDDING_BATCH_SIZE` | `20` | Embedding API 批量调用大小 |
+| `embedding_circuit_threshold` | `KN_SKILL_EMBEDDING_CB_THRESHOLD` | `3` | Embedding 熔断阈值 |
+| `embedding_circuit_cooldown` | `KN_SKILL_EMBEDDING_CB_COOLDOWN` | `300` | Embedding 熔断冷却时间（秒） |
+
 ---
 
 ## 🔄 工作流
@@ -87,10 +102,24 @@ LLM Router → {h: bool, kt: bool, s: bool}
   ├─ 2+ 路 → ThreadPoolExecutor 并行
   └─ 1 路 → 串行
       ├─ h → _do_hindsight_recall()
-      ├─ kt → _do_kt_recall() → multi_hop_expand()（同科目关联展开）
-      └─ s → _do_skill_match()
+      ├─ kt → _do_kt_recall() → multi_hop_expand()（实体多跳关联展开）
+      └─ s → _do_skill_match()（三级混合筛选）
   ↓
 后处理（过滤/去重/融合/标签化注入）
+```
+
+### Skill 三级混合筛选
+
+```
+Stage 1: 关键词预筛选（<1ms，345 → Top-30）
+         └─ 基于 skill name/description 的关键词匹配
+
+Stage 1.5: Embedding 余弦相似度（<10ms，30 → Top-20）
+         └─ 向量化后计算余弦相似度，语义精筛
+         └─ 失败时自动降级到关键词结果
+
+Stage 2: LLM 精排（~500ms，20 → Top-3）
+         └─ 调用 LLM 对候选 skill 进行相关性打分
 ```
 
 ---
@@ -101,9 +130,13 @@ LLM Router → {h: bool, kt: bool, s: bool}
 
 1. **LLM Router 决策**：判断 user message 是否需要知识树（mask.kt）
 2. **条件 recall**：仅在 `mask.kt=true` 时执行知识树 recall
-3. **多跳关联展开**：从知识树召回的知识点出发，沿 subject 展开同科目下的关联知识点（`multi_hop_recall`），标记 `source="multi-hop"`，**跳过 rerank**（关联内容语义维度不同，混排会被向量结果淹没）
+3. **实体多跳关联展开**：从知识树召回的知识点出发，沿 `kt_entity_links` 表展开共享实体的关联知识点（`multi_hop_recall`），标记 `source="multi-hop"`，**跳过 rerank**（关联内容语义维度不同，混排会被向量结果淹没）
 4. **结果融合 + 跨域去重**：多跳结果合并到 KT 结果，与 Hindsight 结果做跨域去重（文本 n-gram Jaccard 或 embedding）
 5. **统一过滤与注入**：经 Compaction、分数过滤、turn-to-turn 去重后，按来源（hindsight/knowledge_tree）分别以 XML 语义标签注入
+
+### 时态感知
+
+知识树召回支持时态过滤（`valid_from` / `valid_until`），自动剔除过期知识。通过 `KN_ENABLE_TEMPORAL` Feature Flag 控制。
 
 ---
 

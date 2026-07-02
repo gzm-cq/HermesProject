@@ -1,5 +1,12 @@
 # SPEC: 知识树管线加固 — k_vector 插入时写入 + 多跳关联检索
 
+**实施状态**: ✅ 已实施（被 `spec-knowledge-tree-entity-multihop-v2.md` 方案 A 取代并落地）
+> **实施证据**：
+> - Step 1（k_vector 写入加固）: `place.py` `_write_to_db()` 已有 k_vector 写入逻辑
+> - Step 2（领域判断优化）: `merged.py` 已实现合并提取+领域判断一次完成（KB_MERGED_DOMAIN Feature Flag）
+> - Step 3（多跳关联检索）: `public_api.py` `multi_hop_recall()` 已改为 entity-based 多跳
+> - Step 4（中文分词）: 确认不引入（向量检索不依赖分词）
+
 ## 一、现状分析
 
 ### 1.1 backfill-k-vectors

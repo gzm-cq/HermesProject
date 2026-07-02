@@ -1,8 +1,9 @@
 # Skill Matcher 评估飞轮 SPEC 实施计划
 
 > **审计状态**：已分析源码 + trace.log 数据（2026-07-01）
+> **实施状态**：✅ Ring 1（评估环）已实施 — `run_skill_eval.py`、`skill_eval_queries.json`、`run-skill-eval.sh` cron wrapper 均已就位
 > **原则**：不修改 Hermes Gateway 源码，所有优化在 knowledge-navigation 插件层面实施
-> **前序工作**：Router 全查率降低 SPEC 已部署（`router-alltrue-reduction-spec.md`），collect_baseline.py 已修复
+> **前序工作**：Router 全查率降低 SPEC 已编写但尚未实施（`router-alltrue-reduction-spec.md`），collect_baseline.py 已修复
 
 ---
 
