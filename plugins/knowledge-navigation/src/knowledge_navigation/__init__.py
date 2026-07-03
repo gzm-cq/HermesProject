@@ -4,8 +4,10 @@ import os
 import sys
 from pathlib import Path
 
+from knowledge_navigation.core.env_loader import get_env
+
 # 注入 knowledge-tree-plugin 包路径（跟 knowledge-tree-plugin 注入 builder 的方式一致）
-_KT_PLUGIN_ENV = os.environ.get("KT_PLUGIN_SRC")
+_KT_PLUGIN_ENV = get_env("KT_PLUGIN_SRC")
 if _KT_PLUGIN_ENV:
     _PLUGIN_SRC = Path(_KT_PLUGIN_ENV)
 else:

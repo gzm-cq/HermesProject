@@ -25,6 +25,7 @@ from typing import Any
 from knowledge_navigation.adapters.hindsight import HindsightClient
 from knowledge_navigation.config import CONFIG, JSONFormatter
 from knowledge_navigation.turn_gate import skip_pre_llm_call, skip_non_user, skip_system_prompt
+from knowledge_navigation.core.env_loader import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +259,7 @@ def _batch_embed(texts: list[str]) -> list[list[float]] | None:
     """调用 SiliconFlow embedding API（bge-m3），供 cross_domain_dedup 使用。"""
     import os as _os
     import requests as _req
-    api_key = _os.environ.get("SILICONFLOW_API_KEY", "")
+    api_key = get_env("SILICONFLOW_API_KEY", "")
     if not api_key:
         logger.debug("_batch_embed: SILICONFLOW_API_KEY 未设置")
         return None
@@ -297,7 +298,7 @@ def _causal_boost(
         cap: 最大提权上限，防翻转排序
     """
     import os as _os
-    db_url = _os.environ.get("KT_DB_URL", "")
+    db_url = get_env("KT_DB_URL", "")
     if not db_url:
         return
     recalled_ids = [str(m.get("id", "")) for m in raw_results if m.get("id")]

@@ -117,6 +117,8 @@ SPEC 本身也承认"召回率下降的信号源可能不是聚类参数"。
 **依赖:**
 - `python3 ~/.hermes/plugins/knowledge-navigation/scripts/run_skill_eval.py`
 - 结果与 `collect_baseline.py` 类似格式
+- cron 环境通过 `cron_common.sh` 的 `source ~/.hermes/.env` 注入环境变量（详见 [cron-env-loader-spec](cron-env-loader-spec.md)）
+- Python `env_loader.get_env()` 做第二层兜底
 
 ### [P3] Router 评估集（后续）
 

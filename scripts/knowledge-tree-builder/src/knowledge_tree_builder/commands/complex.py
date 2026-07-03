@@ -221,6 +221,39 @@ def cmd_consolidate(
                 except Exception as e:
                     print(f"   ⚠️ 新鲜度检查异常（跳过）: {e}")
 
+            # ===== 基线质量指标采集 =====
+            print("\n   ⏳ 步骤 8/8: 采集质量基线...")
+            try:
+                metrics = _ce_engine.collect_baseline_metrics(adapter)
+                if metrics:
+                    import json as _json
+                    import os as _os
+                    from datetime import datetime as _dt
+                    from pathlib import Path as _Path
+
+                    _baseline_dir = _Path(_os.environ.get(
+                        "FLYWHEEL_DIR", "/root/.hermes/data/flywheel"
+                    ))
+                    _baseline_dir.mkdir(parents=True, exist_ok=True)
+                    _baseline_file = _baseline_dir / "kt-baseline-latest.json"
+
+                    _payload = {
+                        "collected_at": _dt.utcnow().isoformat(),
+                        "metrics": metrics,
+                    }
+                    _baseline_file.write_text(
+                        _json.dumps(_payload, indent=2, ensure_ascii=False)
+                    )
+                    print(f"   ✅ 基线已保存: {_baseline_file}")
+                    print(f"      avg_confidence={metrics['avg_confidence']:.4f}")
+                    print(f"      total_kps={metrics['total_kps']}")
+                    print(f"      fragment_domains={metrics['fragment_domains']}")
+                    print(f"      orphan_kps={metrics['orphan_kps']}")
+                else:
+                    print("   ⚠️  基线采集返回 None（db_adapter 为空）")
+            except Exception as _e:
+                print(f"   ⚠️  基线采集异常（跳过）: {_e}")
+
         else:
             print(f"   ❌ 未知操作: {action}，可选 run / process-timeouts")
 

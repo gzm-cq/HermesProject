@@ -1,6 +1,6 @@
 # SPEC 索引
 
-> 最后更新: 2026-07-02
+> 最后更新: 2026-07-03
 > 路线图总览见 [ROADMAP.md](../ROADMAP.md)，任务看板见 [TASKBOARD.md](../TASKBOARD.md)
 
 ---
@@ -31,6 +31,7 @@
 | [skillopt-runner-pesc-fix-plan-2026-06-19](completed/skillopt-runner-pesc-fix-plan-2026-06-19.md) | skillopt-runner | PESC 修复（P0-A/B/C + P1-A/B/C/D/E 全部已实施） |
 | [flywheel-cron-restructure-spec](completed/flywheel-cron-restructure-spec.md) | cron-wrappers | Cron 重构（巡检修复 + Phase 6 + Skill Eval + periodic-detect 下线） |
 | [flywheel-optimization-spec](completed/flywheel-optimization-spec.md) | knowledge-tree-builder / knowledge-navigation | 数据飞轮优化（P0-P3 全部已实施） |
+| [cron-env-loader-spec](completed/cron-env-loader-spec.md) | cron-common / knowledge-navigation | Cron 环境变量三层兜底 + Skill Eval timeout 修复 |
 
 ## Backlog — 待规划/暂缓
 

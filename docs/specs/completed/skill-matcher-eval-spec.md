@@ -156,6 +156,16 @@ trace.log (skill_match 事件)
 - `skill_matcher.py` 的 `llm_match()` 函数可直接被 `run_skill_eval.py` 复用（`from knowledge_navigation.core.skill_matcher import match_skills, ensure_index`）
 - `ensure_index()` 在测试前必须调用一次（懒加载 ~50ms）
 - `LITELLM_MASTER_KEY` 环境变量需可用（用于 LiteLLM gateway 调用）
+- cron 环境通过 `cron_common.sh` 的 `source ~/.hermes/.env` 注入（见 cron-env-loader-spec）
+- Python 层通过 `env_loader.get_env()` 兜底读 `.env` 文件
+
+## 后续优化（已实施）
+
+| 优化项 | 修复内容 | 效果 |
+|:-----|:--------|:----:|
+| `_LLM_TIMEOUT` 15→30 | skill_matcher.py 第32行，可通过 `KN_SKILL_MATCH_TIMEOUT` env 配置 | 消除 15/30 空返回 |
+| env_loader 兜底 | 新建 `env_loader.py`，`get_env()` 替代 `os.environ.get()` | cron 环境也读到 key |
+| format bug | `:+d` → `:+.0f` | --compare 正常输出 |
 
 ---
 

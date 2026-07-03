@@ -35,6 +35,66 @@ class ConsolidationEngine:
     def __init__(self, db_url: str | None = None) -> None:
         self.db_url = db_url
 
+    def collect_baseline_metrics(self, db_adapter) -> dict[str, float] | None:
+        """采集 4 个核心质量指标用于基线反馈。
+
+        指标：
+          avg_confidence   — knowledge_point 的平均 retrieval_confidence
+          total_kps        — knowledge_point 总数
+          fragment_domains — 知识点 < 3 的 domain 数
+          orphan_kps       — 无边 knowledge_point 数（不在 knowledge_tree_edges 中）
+
+        Returns:
+          dict with 4 float metrics, or None if no db_adapter
+        """
+        if db_adapter is None:
+            return None
+        cursor = db_adapter.cursor
+
+        # 1. avg_confidence
+        cursor.execute("SELECT COALESCE(AVG(retrieval_confidence), 0.0) FROM knowledge_tree WHERE node_type = 'knowledge_point'")
+        avg_confidence = float(cursor.fetchone()[0] or 0.0)
+
+        # 2. total_kps
+        cursor.execute("SELECT COUNT(*) FROM knowledge_tree WHERE node_type = 'knowledge_point'")
+        total_kps = float(cursor.fetchone()[0] or 0)
+
+        # 3. fragment_domains: domains with < 3 total knowledge points recursively
+        cursor.execute("""
+            WITH RECURSIVE descendants AS (
+                SELECT id, parent_id, node_type FROM knowledge_tree WHERE parent_id IS NULL AND node_type = 'subject'
+                UNION ALL
+                SELECT child.id, child.parent_id, child.node_type FROM knowledge_tree child
+                JOIN descendants d ON child.parent_id = d.id
+            ),
+            kp_count AS (
+                SELECT d.id, COUNT(*) AS cnt FROM descendants d
+                JOIN knowledge_tree kp ON kp.parent_id = d.id
+                WHERE kp.node_type = 'knowledge_point'
+                GROUP BY d.id
+            )
+            SELECT COUNT(*) FROM kp_count WHERE cnt < 3
+        """)
+        fragment_domains = float(cursor.fetchone()[0] or 0)
+
+        # 4. orphan_kps
+        cursor.execute("""
+            SELECT COUNT(*) FROM knowledge_tree kp
+            WHERE kp.node_type = 'knowledge_point'
+            AND NOT EXISTS (
+                SELECT 1 FROM knowledge_tree_edges e
+                WHERE e.from_node_id = kp.id OR e.to_node_id = kp.id
+            )
+        """)
+        orphan_kps = float(cursor.fetchone()[0] or 0)
+
+        return {
+            "avg_confidence": avg_confidence,
+            "total_kps": total_kps,
+            "fragment_domains": fragment_domains,
+            "orphan_kps": orphan_kps,
+        }
+
     def run(
         self,
         subjects: list[dict[str, Any]] | None = None,

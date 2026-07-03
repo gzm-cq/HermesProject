@@ -34,6 +34,14 @@
 
 set -euo pipefail
 
+# ===== 加载 Hermes 环境变量（cron 环境无 shell profile，需手动 source）=====
+_HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
+if [[ -f "$_HERMES_ENV_FILE" ]]; then
+    set -a
+    source "$_HERMES_ENV_FILE"
+    set +a
+fi
+
 # ===== 颜色 =====
 _C_CYA='\033[36m'
 _C_GRN='\033[32m'

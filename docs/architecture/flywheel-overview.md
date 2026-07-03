@@ -43,6 +43,31 @@
 
 ---
 
+## Router 飞轮（独立闭环）
+
+| 项目 | 路径 | 作用 |
+|------|------|------|
+| Router 决策 | `plugins/knowledge-navigation/core/router.py` | LLM Router 决策 `{h, kt, s}` mask，含三层 JSON 解析兜底 |
+| Router 健康巡检 | `scripts/cron-wrappers/kn-router-health-check.sh` | 每日检查 Router 解析失败率、recall 成功率、模型稳定性 |
+| 知识导航基线 | `scripts/cron-wrappers/knowledge-navigation-baseline.sh` | 每周采集 baseline，LLM judge 评估，delta 检测告警 |
+| Skill 评估 | `scripts/cron-wrappers/run-skill-eval.sh` | 每日评估 Skill 匹配质量，退化告警 |
+
+**Router 飞轮闭环**：
+
+```
+用户消息 → LLM Router 决策 → 按 mask 条件执行三路召回 → LLM 输出
+   ↑                                                     |
+   |                                                     v
+   |                                   Router 健康巡检 + 基线采集
+   |                                                     |
+   |                                                     v
+   |                                   发现问题 → 优化 prompt / 调整阈值
+   |                                                     |
+   +---------- 下一轮决策更精准 ---------------------------+
+```
+
+---
+
 ## 运维支撑
 
 | 项目 | 路径 | 作用 |

@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from knowledge_navigation.config import CONFIG
+from knowledge_navigation.core.env_loader import get_env, get_env_int
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ _PRESCREEN_TOP_K = 30  # 关键词预筛选候选数
 _EMBEDDING_TOP_K = 20  # Embedding 预筛选候选数
 _EMBEDDING_BATCH_SIZE = 20  # Embedding 批量调用每批数量（避免 token 超限）
 
-_LLM_TIMEOUT = 15
+_LLM_TIMEOUT = get_env_int("KN_SKILL_MATCH_TIMEOUT", 30)  # 默认 30s，s-deepseek-v4-flash 处理大 prompt 可能 >15s
 
 _STOPWORDS = {
     "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
@@ -117,13 +118,13 @@ def _get_embedding_config() -> tuple[str, str, str, int]:
     env 未就绪问题（benchmark 进程 / 子 agent 场景）。
     优先级：ENV > CONFIG 默认值。
     """
-    model = os.getenv("KN_SKILL_EMBEDDING_MODEL") or CONFIG.kn_skill_embedding_model
-    url = os.getenv("KN_SKILL_EMBEDDING_URL") or CONFIG.kn_skill_embedding_url
-    api_key = os.getenv("KN_SKILL_EMBEDDING_API_KEY") or CONFIG.kn_skill_embedding_api_key
+    model = get_env("KN_SKILL_EMBEDDING_MODEL") or CONFIG.kn_skill_embedding_model
+    url = get_env("KN_SKILL_EMBEDDING_URL") or CONFIG.kn_skill_embedding_url
+    api_key = get_env("KN_SKILL_EMBEDDING_API_KEY") or CONFIG.kn_skill_embedding_api_key
     # 也 fallback SILICONFLOW_API_KEY
     if not api_key:
-        api_key = os.getenv("SILICONFLOW_API_KEY", "")
-    cfg_top_k = os.getenv("KN_SKILL_EMBEDDING_TOP_K")
+        api_key = get_env("SILICONFLOW_API_KEY", "")
+    cfg_top_k = get_env("KN_SKILL_EMBEDDING_TOP_K")
     if cfg_top_k:
         cfg_top_k = int(cfg_top_k)
     else:
@@ -654,7 +655,7 @@ def _llm_match(
     for attempt in range(2):
         try:
             import httpx
-            api_key = os.environ.get("LITELLM_MASTER_KEY", "")
+            api_key = get_env("LITELLM_MASTER_KEY", "")
             resp = httpx.post(
                 "http://127.0.0.1:4142/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},

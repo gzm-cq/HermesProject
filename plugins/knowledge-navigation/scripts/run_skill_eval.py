@@ -204,7 +204,7 @@ def main() -> None:
             print(f"   精度: {d['precision']:+.4f}")
             print(f"   召回: {d['recall']:+.4f}")
             print(f"   F1:   {d['f1']:+.4f}")
-            print(f"   延迟: {d['latency_ms']:+d}ms")
+            print(f"   延迟: {d['latency_ms']:+.0f}ms")
         return
 
     result = run_eval()

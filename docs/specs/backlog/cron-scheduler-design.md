@@ -1,6 +1,7 @@
 # Hermes 调度框架蓝图与当前 Cron Wrapper 标准化
 
-> **文档状态：条件触发型蓝图 / 当前未实施完整统一调度框架**
+> **文档状态：已评估不采用（2026-07-03）**
+> 2026-07-03 评估 Dagu v2.9.1 后不采用，结论：10 个独立 shell 脚本零 DAG 依赖，wrapper 模式已稳定运行数月。Dagu 引入环境鸿沟 + 进程开销 + 自愈盲区，收益与成本不匹配。详见 ADR `docs/adr/2026-07-03-evaluate-dagu-rejected.md`。
 > 当前生产调度仍使用 Hermes 内置 cron；已落地的是 `/root/.hermes/scripts/` 下 shell wrapper 的统一调用规范、`cron_common.sh` 公共库、日志/通知/flock/错峰执行。本文前半部分描述未来 `hermes-scheduler` 统一调度框架，不代表当前已上线实现。当前事实以 `docs/README.md` 和 `hermes_project/project-profile.md` 为准。
 
 > 简述：**现在统一的是 wrapper 调用模式，不是统一调度框架本体**。完整 scheduler 仅在任务数量 > 8、出现真实 DAG 依赖或状态面板成为刚需时启动。

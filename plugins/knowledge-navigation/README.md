@@ -7,11 +7,11 @@
 知识导航插件是 Hermes 平台的核心增强组件，专为提升大语言模型（LLM）的上下文感知能力而设计。它在每次 LLM 调用前自动触发，通过 **LLM Router** 决策需要注入哪些知识源，从 Hindsight 记忆库召回经验片段、知识树提取结构化知识、Skill 匹配操作流程，以 XML 语义标签格式注入到请求上下文中。
 
 **核心特性**：
-- 🧠 **LLM Router 智能决策**：基于 need analysis 判断 H（经验）/ KT（知识）/ S（技能）三路是否需要注入
+- 🧠 **LLM Router 智能决策**：基于 need analysis 判断 H（经验）/ KT（知识）/ S（技能）三路是否需要注入；支持 confidence 置信度字段，低置信度（<0.5）时自动保守 fallback 全开
 - 🔍 **三级混合筛选**：Skill 匹配采用"关键词粗筛（Top-30）→ Embedding 语义精筛（Top-20）→ LLM 精排（Top-3）"三级漏斗，平衡召回率与效率
-- ⚡ **高性能**：内置连接池、超时控制与熔断器；按 mask 条件执行（多路并行/单路串行）
-- 📊 **可观测性**：结构化 JSON 日志（含 router_mask 事件），支持监控与基线对比
-- 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知；Router 异常自动 fallback 全开；Embedding 调用失败自动降级
+- ⚡ **高性能**：内置连接池、超时控制与熔断器；按 mask 条件执行（多路并行/单路串行）；Router 缓存（TTL 5 分钟，64 条目上限），同 session 相同消息复用决策
+- 📊 **可观测性**：结构化 JSON 日志（含 router_mask 事件），支持监控与基线对比；fallback 原因分类统计（json_parse/api_401/api_timeout/api_error/api_other）；调用耗时记录
+- 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知；Router 异常自动 fallback 全开；Embedding 调用失败自动降级；401 Unauthorized 自动重试（刷新 API key）
 - 🧩 **易集成**：零侵入式 Hook 注册，开箱即用
 - ⏰ **时态感知**：支持知识点的有效期过滤（valid_from/valid_until），自动剔除过期知识
 
@@ -203,4 +203,4 @@ MIT License
 
 ---
 
-*版本：1.2.0 | 最后更新：2026-06-28*
+*版本：1.3.0 | 最后更新：2026-07-03*

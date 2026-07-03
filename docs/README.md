@@ -1,6 +1,6 @@
 # HermesProject 文档索引
 
-> 最后更新: 2026-07-02
+> 最后更新: 2026-07-03
 
 ## 快速入口
 
@@ -65,8 +65,8 @@ docs/
 
 详见 [specs/README.md](specs/README.md)。按状态分类：
 
-- **[active/](specs/active/)** — 正在执行的 SPEC（4 个）
-- **[completed/](specs/completed/)** — 已完成的 SPEC（14 个）
+- **[active/](specs/active/)** — 正在执行的 SPEC（0 个）
+- **[completed/](specs/completed/)** — 已完成的 SPEC（19 个）
 - **[backlog/](specs/backlog/)** — 待规划/暂缓的 SPEC（4 个）
 
 ## Research — 行业调研

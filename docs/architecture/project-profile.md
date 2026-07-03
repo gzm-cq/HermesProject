@@ -193,23 +193,27 @@ HINDSIGHT_IDLE_TIMEOUT=0  # 禁用空闲超时，防止假卡死
 
 | 任务 | Hermes cron 名称 | 时间（北京时间） | 脚本 | 说明 |
 |------|------------------|------------------|------|------|
-| 系统健康巡检 | `system-health-check` | 工作日 09:00 | `health-check-cron.sh` | 已接入 `cron_common.sh` |
-| 聚类分析 | `聚类分析每周跑` | 周一 10:00 | `clustering-analysis-v3/scripts/clustering-analysis-cron.sh` | 新外层 thin wrapper，已接入 `cron_common.sh`，内部调用原完整 wrapper |
-| 知识树 consolidate | `知识树维护每日` | 周一 10:30 | `knowledge-tree-builder/scripts/knowledge-tree-consolidate.sh` | 已接入 `cron_common.sh`；名称保留旧名，但实际已改为每周一 |
-| 知识导航基线 | `知识导航评估基线` | 周一 11:00 | `knowledge-navigation-baseline.sh` | scripts 根入口已接入 `cron_common.sh`，调用插件内基线采集 |
+| 系统健康巡检 | `system-health-check` | 工作日 08:00 | `health-check-cron.sh` | 已接入 `cron_common.sh` |
+| 每日在线学习 | `每日在线学习` | 工作日 09:00 | `daily-learn/daily_learn.sh` | 已接入 `cron_common.sh` |
+| 聚类分析 | `聚类分析每周跑` | 周一 10:00 | `clustering-analysis-v3/scripts/clustering-analysis-cron.sh` | 新外层 thin wrapper，已接入 `cron_common.sh` |
+| 知识树 consolidate | `知识树维护每日` | 周一 11:00 | `knowledge-tree-builder/scripts/knowledge-tree-consolidate.sh` | 已接入 `cron_common.sh` |
+| 知识导航基线 | `知识导航评估基线` | 每日 12:00 | `knowledge-navigation-baseline.sh` | 已接入 `cron_common.sh`，调用插件内基线采集 |
+| Skill Eval 评估 | `Skill Eval 评估` | 每日 12:00 | `run-skill-eval.sh` | 已接入 `cron_common.sh`，评估 Skill 匹配质量 |
 | 记忆清理 | `memory-cleanup-daily` | 每日 13:00 | `memory-cleanup/daily_dryrun.sh` | 已接入 `cron_common.sh` |
-| 每日在线学习 | `每日在线学习` | 工作日 14:00 | `daily-learn/daily_learn.sh` | 已接入 `cron_common.sh` |
-| SkillOpt 增量优化 | `skillopt-nightly-run` | 每日 15:00 | `skillopt-runner/skillopt-nightly-run.sh` | `/root/.hermes/scripts/` 下的项目子目录入口已接入 `cron_common.sh`，workdir 指向 `/root/.hermes/skillopt-runner` |
+| Router 健康巡检 | `知识导航 Router 健康巡检` | 每日 14:00 | `kn-router-health-check.sh` | 已接入 `cron_common.sh`，检查 Router 解析失败率、recall 成功率、模型稳定性 |
+| SkillOpt 增量优化 | `skillopt-nightly-run` | 每日 15:00 | `skillopt-runner/skillopt-nightly-run.sh` | 已接入 `cron_common.sh`，workdir 指向 `/root/.hermes/skillopt-runner` |
 
 ### 其他保留任务
 
 | 任务 | 时间 | 说明 |
 |------|------|------|
-| 每周深度研究-知识树学习 | 周日 20:00 | LLM 驱动任务，保留 |
-| 知识树 k_vector 每周兜底维护 | 周六 14:30 | 低频兜底维护，保留 |
+| 知识树 k_vector 每周兜底维护 | 周六 09:00 | 低频兜底维护，保留 |
+| 每周深度研究-知识树学习 | 周日 09:00 | LLM 驱动任务，保留 |
 | 论文投稿提醒-改投 | 2026-08-06 09:00 一次性 | 提醒任务，保留 |
 
-**consolidation-monitor 说明**：当前运行环境和源码仓库中不存在 `consolidation-monitor.sh`，所以没有添加监控 cron，避免臆造不存在的脚本。现有知识树维护由 `knowledge-tree-consolidate.sh` 每周一 10:30 执行。
+**consolidation-monitor 说明**：当前运行环境和源码仓库中不存在 `consolidation-monitor.sh`，所以没有添加监控 cron，避免臆造不存在的脚本。现有知识树维护由 `knowledge-tree-consolidate.sh` 每周一 11:00 执行。
+
+**cron-periodic-detect.sh 说明**：已从 cron 调度中移除（标记为 P2 冗余，每小时检测太频繁且与其他巡检重复），文件仍存在但不被调度。
 
 ---
 
@@ -226,6 +230,6 @@ HINDSIGHT_IDLE_TIMEOUT=0  # 禁用空闲超时，防止假卡死
 
 ## 最后更新
 
-- 更新时间：`2026-06-19`
-- 更新内容：初始创建，补齐全部基础信息；澄清当前只统一 cron wrapper 调用模式，未实施完整统一调度框架
+- 更新时间：`2026-07-03`
+- 更新内容：知识树 consolidate cron 新增 Phase 6 质量基线采集 + 退化检测 + 飞书告警（对比聚类 Phase 6 模式）
 - 维护者：Hermes Agent

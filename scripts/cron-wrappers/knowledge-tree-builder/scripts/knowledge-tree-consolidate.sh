@@ -46,5 +46,120 @@ else
     _STEP_RESULTS+=("❌ 知识树 consolidate run (exit=$rc)")
 fi
 
+# ===== 基线对比 + 退化检测（Phase 6）=====
+BASELINE_LATEST="/root/.hermes/data/flywheel/kt-baseline-latest.json"
+BASELINE_PREV="/root/.hermes/data/flywheel/kt-baseline-prev.json"
+FLYWHEEL_DIR="$(dirname "$BASELINE_LATEST")"
+mkdir -p "$FLYWHEEL_DIR"
+
+if [[ -f "$BASELINE_LATEST" ]]; then
+    cron_section "基线对比 + 退化检测"
+
+    # 读取当前基线
+    CURRENT=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$BASELINE_LATEST'))
+    m = d['metrics']
+    print(f\"{m['avg_confidence']}|{m['total_kps']}|{m['fragment_domains']}|{m['orphan_kps']}\")
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null || echo "")
+
+    if [[ -n "$CURRENT" ]]; then
+        IFS='|' read -r CUR_CONF CUR_KPS CUR_FRAG CUR_ORPH <<< "$CURRENT"
+
+        if [[ ! -f "$BASELINE_PREV" ]]; then
+            # 首次运行，保存基线
+            cp "$BASELINE_LATEST" "$BASELINE_PREV"
+            cron_ok "首次基线已保存 (avg_conf=$CUR_CONF, kps=$CUR_KPS)"
+            _STEP_RESULTS+=("✅ 基线: 首次保存 (avg_conf=$CUR_CONF)")
+        else
+            # 读取前次基线
+            PREV=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$BASELINE_PREV'))
+    m = d['metrics']
+    print(f\"{m['avg_confidence']}|{m['total_kps']}|{m['fragment_domains']}|{m['orphan_kps']}\")
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null || echo "")
+
+            if [[ -n "$PREV" ]]; then
+                IFS='|' read -r PREV_CONF PREV_KPS PREV_FRAG PREV_ORPH <<< "$PREV"
+
+                # Python 内联计算 delta
+                DELTA_REPORT=$(python3 -c "
+import sys
+cur_conf = float('$CUR_CONF')
+prev_conf = float('$PREV_CONF')
+cur_kps = float('$CUR_KPS')
+prev_kps = float('$PREV_KPS')
+cur_orph = float('$CUR_ORPH')
+prev_orph = float('$PREV_ORPH')
+
+conf_diff = cur_conf - prev_conf
+kps_pct = ((cur_kps - prev_kps) / max(prev_kps, 1)) * 100
+orph_pct = ((cur_orph - prev_orph) / max(prev_orph, 1)) * 100
+
+alerts = []
+if conf_diff < -0.05:
+    alerts.append(f'confidence 下降 {conf_diff:.4f}')
+if kps_pct < -5:
+    alerts.append(f'知识点减少 {kps_pct:.2f}%')
+if orph_pct > 10:
+    alerts.append(f'孤儿节点增加 {orph_pct:.2f}%')
+
+# 输出用于 shell 解析的结构化结果
+result = {
+    'conf_diff': round(conf_diff, 4),
+    'kps_pct': round(kps_pct, 2),
+    'orph_pct': round(orph_pct, 2),
+    'alerts': alerts,
+    'stable': len(alerts) == 0,
+}
+import json
+print(json.dumps(result))
+" 2>/dev/null || echo "")
+
+                if [[ -n "$DELTA_REPORT" ]]; then
+                    HAS_ALERT=$(echo "$DELTA_REPORT" | python3 -c "import json,sys; d=json.load(sys.stdin); print('true' if not d['stable'] else 'false')" 2>/dev/null || echo "false")
+
+                    if [[ "$HAS_ALERT" == "true" ]]; then
+                        ALERT_MSG=$(echo "$DELTA_REPORT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('; '.join(d['alerts']))
+" 2>/dev/null)
+                        cron_warn "知识树退化: ${ALERT_MSG}"
+                        _STEP_RESULTS+=("🔥 退化告警: ${ALERT_MSG}")
+
+                        # 连续退化计数
+                        DECLINE_FILE="${FLYWHEEL_DIR}/kt-decline-count"
+                        CUR_DECLINE=$(cat "$DECLINE_FILE" 2>/dev/null || echo "0")
+                        CUR_DECLINE=$((CUR_DECLINE + 1))
+                        echo "$CUR_DECLINE" > "$DECLINE_FILE"
+
+                        if [[ "$CUR_DECLINE" -ge 3 ]]; then
+                            cron_err "🔥 知识树参数可能需要调整（连续 ${CUR_DECLINE} 周下降）"
+                            _STEP_RESULTS+=("🔥 连续 ${CUR_DECLINE} 周下降，需关注")
+                        fi
+                    else
+                        CONF_DIFF=$(echo "$DELTA_REPORT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['conf_diff'])" 2>/dev/null)
+                        cron_ok "知识树质量稳定 (avg_conf=$CUR_CONF, Δconf=$CONF_DIFF)"
+                        _STEP_RESULTS+=("✅ 质量稳定 (avg_conf=$CUR_CONF)")
+                        echo "0" > "${FLYWHEEL_DIR}/kt-decline-count" 2>/dev/null
+                    fi
+                fi
+            fi
+            # 更新前次基线
+            cp "$BASELINE_LATEST" "$BASELINE_PREV"
+        fi
+    fi
+fi
+
 # ===== 完成 =====
 cron_finish
