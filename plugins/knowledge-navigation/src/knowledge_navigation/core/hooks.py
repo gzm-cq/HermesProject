@@ -801,6 +801,35 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
     return mask
 
 
+def _expand_multi_hop(
+    kt_raw_results: list[dict[str, Any]],
+    kt_active: bool,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """多跳关联展开：从 KT 召回的知识点出发，沿 subject 展开同科目关联知识点。"""
+    if not kt_raw_results or not kt_active:
+        return kt_raw_results
+    try:
+        _seed_ids = [int(r["id"]) for r in kt_raw_results if r.get("id") and str(r["id"]).isdigit()]
+        if _seed_ids:
+            _mh_results = _multi_hop_recall(_seed_ids, top_k=2)
+            if _mh_results:
+                logger.info(
+                    "多跳关联展开: %d 条",
+                    len(_mh_results),
+                    extra={"session_id": session_id, "event": "multi_hop_expand", "count": len(_mh_results)},
+                )
+                _existing_ids = {r.get("id") for r in kt_raw_results}
+                for _mh in _mh_results:
+                    if _mh.get("id") not in _existing_ids:
+                        _mh["source"] = "multi-hop"
+                        kt_raw_results.append(_mh)
+                        _existing_ids.add(_mh.get("id"))
+    except Exception as e:
+        logger.debug("多跳 recall 异常（跳过）: %s", e)
+    return kt_raw_results
+
+
 def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
     """每次 LLM 调用前自动执行：三层门控 → LLM Router → 三路 mask 条件执行 → 后处理注入。"""
 
@@ -915,29 +944,8 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         if _s_active:
             _skill_context = _do_skill_match(user_message)
 
-    # 多跳关联展开：从 KT 召回的知识点出发，沿 subject 展开同科目下的关联知识点
-    _mh_results: list[dict] = []
-    if kt_raw_results and _kt_active:
-        try:
-            _seed_ids = [int(r["id"]) for r in kt_raw_results if r.get("id") and str(r["id"]).isdigit()]
-            if _seed_ids:
-                _mh_results = _multi_hop_recall(_seed_ids, top_k=2)
-                if _mh_results:
-                    logger.info(
-                        "多跳关联展开: %d 条",
-                        len(_mh_results),
-                        extra={"session_id": session_id, "event": "multi_hop_expand", "count": len(_mh_results)},
-                    )
-        except Exception as e:
-            logger.debug("多跳 recall 异常（跳过）: %s", e)
-
-    if _mh_results:
-        _existing_ids = {r.get("id") for r in kt_raw_results}
-        for _mh in _mh_results:
-            if _mh.get("id") not in _existing_ids:
-                _mh["source"] = "multi-hop"
-                kt_raw_results.append(_mh)
-                _existing_ids.add(_mh.get("id"))
+    # 多跳关联展开
+    kt_raw_results = _expand_multi_hop(kt_raw_results, _kt_active, session_id)
 
     # ===== Hindsight 失败/空结果时，知识树独立降级 =====
     if not result and _hs_active:
