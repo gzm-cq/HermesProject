@@ -830,6 +830,131 @@ def _expand_multi_hop(
     return kt_raw_results
 
 
+def _assemble_xml_output(
+    kept: list[dict[str, Any]],
+    skill_context: str,
+    session_id: str,
+    user_message: str,
+    ctx: dict[str, Any],
+) -> str | None:
+    """组装 XML 标签化上下文 + 记录日志 + 返回最终字符串。
+
+    ctx 包含: query_trunc, eval_match, raw_results, latency_ms, kt_raw_results,
+    excluded_count, kept_before_kt, kt_dedup_removed, score_comparison,
+    summary, kept_before_compress
+    """
+    query_trunc = ctx["query_trunc"]
+    eval_match = ctx["eval_match"]
+    raw_results = ctx["raw_results"]
+    latency_ms = ctx["latency_ms"]
+    kt_raw_results = ctx["kt_raw_results"]
+    excluded_count = ctx["excluded_count"]
+    kept_before_kt = ctx["kept_before_kt"]
+    kt_dedup_removed = ctx["kt_dedup_removed"]
+    score_comparison = ctx["score_comparison"]
+    summary = ctx["summary"]
+    kept_before_compress = ctx.get("kept_before_compress", len(kept))
+
+    # 分离 Hindsight 和知识树结果
+    hs_kept = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
+    kt_kept = [r for r in kept if r.get("source") == "knowledge_tree"]
+
+    context_lines: list[str] = []
+
+    # 1. 用户原始消息
+    context_lines.append(f"<user_query>\n{html.escape(user_message, quote=False)}\n</user_query>")
+
+    # 2. Hindsight 回忆
+    if hs_kept:
+        avg_score = sum(_candidate_score(r) for r in hs_kept) / max(len(hs_kept), 1)
+        hs_xml = "\n".join(
+            f'  <memory source="hindsight" node_id="{html.escape(str(r.get("id", "")), quote=True)}">'
+            f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</memory>'
+            for r in hs_kept
+        )
+        context_lines.append(
+            f"<recalled_memory source=\"hindsight\" count=\"{len(hs_kept)}\" score_avg=\"{avg_score:.2f}\">\n"
+            f"{hs_xml}\n"
+            f"</recalled_memory>"
+        )
+
+    # 3. 知识树节点
+    if kt_kept:
+        kt_xml = "\n".join(
+            f'  <memory source="knowledge_tree" node_id="{html.escape(str(r.get("id", "")), quote=True)}">'
+            f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</memory>'
+            for r in kt_kept
+        )
+        context_lines.append(
+            f"<knowledge source=\"knowledge_tree\" count=\"{len(kt_kept)}\">\n"
+            f"{kt_xml}\n"
+            f"</knowledge>"
+        )
+
+    # 4. 任务摘要（原样保留）
+    if summary:
+        context_lines.append(summary)
+
+    # 5. 系统状态
+    context_lines.append(
+        f"<system_state>\n"
+        f"pwd: {os.getcwd()}\n"
+        f"time: {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
+        f"</system_state>"
+    )
+
+    # 提取已召回并过滤后的 memory_id（用于离线 recall@k 评估）
+    recalled_ids = [m.get("id", "") for m in kept if m.get("id")]
+
+    # 构建日志 extra 字段
+    log_extra: dict[str, Any] = {
+        "session_id": session_id,
+        "query_trunc": query_trunc,
+        "event": "recall_success",
+        "total_results": len(raw_results),
+        "excluded_marked": excluded_count,
+        "kept_results": len(kept),
+        "dropped_results": len(raw_results) - kept_before_kt,
+        "score_stats": calculate_score_stats([_candidate_score(r) for r in kept]),
+        "injected_count": len(context_lines),
+        "total_chars": sum(len(line) for line in context_lines),
+        "has_knowledge_tree": len(kt_raw_results) > 0,
+        "kt_dedup_removed": kt_dedup_removed,
+        "latency_ms": latency_ms,
+        "score_comparison": score_comparison,
+        "recalled_ids": recalled_ids,
+    }
+    if CONFIG.enable_score_span_compress and kept_before_compress > len(kept):
+        log_extra["compressed_from"] = kept_before_compress
+        log_extra["compressed_to"] = len(kept)
+    if eval_match:
+        log_extra["eval_match_method"] = eval_match.get("match_method", "none")
+        log_extra["eval_match_confidence"] = round(float(eval_match.get("confidence", 0.0)), 4)
+        log_extra["eval_counted"] = bool(eval_match.get("counted"))
+        if eval_match.get("counted"):
+            log_extra["eval_query_id"] = eval_match["query_id"]
+            if eval_match["expected_ids"]:
+                expected_set = set(eval_match["expected_ids"])
+                log_extra["eval_expected_ids"] = eval_match["expected_ids"]
+                hindsight_ids = [rid for rid in recalled_ids if "-" in rid]
+                log_extra["eval_recall_hit"] = len(expected_set & set(hindsight_ids))
+                log_extra["eval_recall_k"] = len(eval_match["expected_ids"])
+        else:
+            log_extra["eval_candidate_id"] = eval_match["query_id"]
+    if summary:
+        log_extra["task_summary_round"] = _task_tracker.current_round(session_id)
+
+    logger.info("recall success", extra=log_extra)
+
+    # 追加自动加载的技能内容
+    if skill_context:
+        context_lines.append(skill_context)
+
+    if not context_lines:
+        return None
+    return "\n".join(context_lines)
+
+
 def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
     """每次 LLM 调用前自动执行：三层门控 → LLM Router → 三路 mask 条件执行 → 后处理注入。"""
 
@@ -1222,109 +1347,16 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
             },
         )
 
-    # 最终注入候选统一分数统计（Hindsight + KT，不含 task summary）
-    score_stats = calculate_score_stats([_candidate_score(r) for r in kept])
-
-    # ===== C-P0: 分来源语义标签化上下文组装 =====
-    # 分离 Hindsight 和知识树结果
-    hs_kept = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
-    kt_kept = [r for r in kept if r.get("source") == "knowledge_tree"]
-
-    context_lines: list[str] = []
-
-    # 1. 用户原始消息
-    context_lines.append(f"<user_query>\n{html.escape(user_message, quote=False)}\n</user_query>")
-
-    # 2. Hindsight 回忆
-    if hs_kept:
-        avg_score = sum(_candidate_score(r) for r in hs_kept) / max(len(hs_kept), 1)
-        hs_xml = "\n".join(
-            f'  <memory source="hindsight" node_id="{html.escape(str(r.get("id", "")), quote=True)}">'
-            f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</memory>'
-            for r in hs_kept
-        )
-        context_lines.append(
-            f"<recalled_memory source=\"hindsight\" count=\"{len(hs_kept)}\" score_avg=\"{avg_score:.2f}\">\n"
-            f"{hs_xml}\n"
-            f"</recalled_memory>"
-        )
-
-    # 3. 知识树节点
-    if kt_kept:
-        kt_xml = "\n".join(
-            f'  <memory source="knowledge_tree" node_id="{html.escape(str(r.get("id", "")), quote=True)}">'
-            f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</memory>'
-            for r in kt_kept
-        )
-        context_lines.append(
-            f"<knowledge source=\"knowledge_tree\" count=\"{len(kt_kept)}\">\n"
-            f"{kt_xml}\n"
-            f"</knowledge>"
-        )
-
-    # 4. 任务摘要（原样保留）
-    if summary:
-        context_lines.append(summary)
-
-    # 5. 系统状态
-    context_lines.append(
-        f"<system_state>\n"
-        f"pwd: {os.getcwd()}\n"
-        f"time: {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
-        f"</system_state>"
-    )
-
-    # 更新统计
-    kept_count = len(kept)
-
-    # 提取已召回并过滤后的 memory_id（用于离线 recall@k 评估）
-    recalled_ids = [m.get("id", "") for m in kept if m.get("id")]
-
-    # 构建日志 extra 字段
-    log_extra: dict[str, Any] = {
-        "session_id": session_id,
+    return _assemble_xml_output(kept, _skill_context, session_id, user_message, {
         "query_trunc": query_trunc,
-        "event": "recall_success",
-        "total_results": len(raw_results),
-        "excluded_marked": excluded_count,
-        "kept_results": len(kept),
-        "dropped_results": len(raw_results) - kept_before_kt,
-        "score_stats": score_stats,
-        "injected_count": len(context_lines),
-        "total_chars": sum(len(line) for line in context_lines),
-        "has_knowledge_tree": len(kt_raw_results) > 0,
-        "kt_dedup_removed": kt_dedup_removed,
+        "eval_match": eval_match,
+        "raw_results": raw_results,
         "latency_ms": latency_ms,
+        "kt_raw_results": kt_raw_results,
+        "excluded_count": excluded_count,
+        "kept_before_kt": kept_before_kt,
+        "kt_dedup_removed": kt_dedup_removed,
         "score_comparison": score_comparison,
-        "recalled_ids": recalled_ids,
-    }
-    if CONFIG.enable_score_span_compress and kept_before_compress > len(kept):
-        log_extra["compressed_from"] = kept_before_compress
-        log_extra["compressed_to"] = len(kept)
-    if eval_match:
-        log_extra["eval_match_method"] = eval_match.get("match_method", "none")
-        log_extra["eval_match_confidence"] = round(float(eval_match.get("confidence", 0.0)), 4)
-        log_extra["eval_counted"] = bool(eval_match.get("counted"))
-        if eval_match.get("counted"):
-            log_extra["eval_query_id"] = eval_match["query_id"]
-            if eval_match["expected_ids"]:
-                expected_set = set(eval_match["expected_ids"])
-                log_extra["eval_expected_ids"] = eval_match["expected_ids"]
-                # eval_recall_hit 只检查 Hindsight UUID，排除知识树整数 ID
-                hindsight_ids = [rid for rid in recalled_ids if "-" in rid]
-                log_extra["eval_recall_hit"] = len(expected_set & set(hindsight_ids))
-                log_extra["eval_recall_k"] = len(eval_match["expected_ids"])
-        else:
-            log_extra["eval_candidate_id"] = eval_match["query_id"]
-    if summary:
-        log_extra["task_summary_round"] = _task_tracker.current_round(session_id)
-
-    logger.info("recall success", extra=log_extra)
-
-    # 追加自动加载的技能内容
-    if _skill_context:
-        context_lines.append(_skill_context)
-
-    if not context_lines:
-        return None
-    return "\n".join(context_lines)
+        "summary": summary,
+        "kept_before_compress": kept_before_compress,
+    })
