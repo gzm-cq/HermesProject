@@ -125,8 +125,8 @@ for i in $(seq 0 $((TOTAL - 1))); do
 
     # 方式 2: 直接执行脚本（仅 no_agent）
     if [[ "$JOB_NO_AGENT" == "true" && -n "$JOB_SCRIPT" ]]; then
-        local script_path="/root/.hermes/scripts/${JOB_SCRIPT}"
-        local cd_cmd=""
+        script_path="/root/.hermes/scripts/${JOB_SCRIPT}"
+        cd_cmd=""
         [[ -n "$JOB_WORKDIR" ]] && cd_cmd="cd $JOB_WORKDIR && "
 
         cron_log "执行: ${cd_cmd}bash ${script_path} (catchup mode)"

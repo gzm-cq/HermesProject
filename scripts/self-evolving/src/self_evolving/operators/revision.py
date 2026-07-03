@@ -16,12 +16,13 @@ from self_evolving.models.failure_diagnosis import (
 )
 from self_evolving.models.trajectory import Trajectory
 from self_evolving.adapters.llm_client import LLMClient
+from self_evolving.prompt_loader import get_prompt
 
 logger = logging.getLogger(__name__)
 
-# ── Prompts ──────────────────────────────────────────────────────────
+# ── Prompts (硬编码 fallback，若 prompts.yaml 加载失败使用) ─────────────────
 
-AUTO_DETECT_PROMPT = """分析以下失败内容，判断最可能的错误类型。
+_FALLBACK_AUTO_DETECT = """分析以下失败内容，判断最可能的错误类型。
 
 失败内容：
 {failed_content}
@@ -45,7 +46,7 @@ AUTO_DETECT_PROMPT = """分析以下失败内容，判断最可能的错误类�
 - unknown: 无法确定
 """
 
-REFLECT_DIRECT_PROMPT = """分析以下失败内容，识别直接原因。
+_FALLBACK_REFLECT_DIRECT = """分析以下失败内容，识别直接原因。
 
 失败内容：
 {failed_content}
@@ -62,7 +63,7 @@ REFLECT_DIRECT_PROMPT = """分析以下失败内容，识别直接原因。
 }}
 """
 
-REFLECT_ROOT_PROMPT = """基于直接原因，深入分析根本原因。
+_FALLBACK_REFLECT_ROOT = """基于直接原因，深入分析根本原因。
 
 失败内容：
 {failed_content}
@@ -80,7 +81,7 @@ REFLECT_ROOT_PROMPT = """基于直接原因，深入分析根本原因。
 }}
 """
 
-REFLECT_DEEP_PROMPT = """执行第三层深度分析，追溯问题起源。
+_FALLBACK_REFLECT_DEEP = """执行第三层深度分析，追溯问题起源。
 
 失败内容：
 {failed_content}
@@ -99,7 +100,7 @@ REFLECT_DEEP_PROMPT = """执行第三层深度分析，追溯问题起源。
 }}
 """
 
-REVISE_CONTENT_PROMPT = """基于诊断结果，生成修正后的内容。
+_FALLBACK_REVISE_CONTENT = """基于诊断结果，生成修正后的内容。
 
 失败内容：
 {failed_content}
@@ -112,7 +113,7 @@ REVISE_CONTENT_PROMPT = """基于诊断结果，生成修正后的内容。
 请生成修正后的内容。只输出修正后的纯文本，不要额外解释。
 """
 
-FIX_TYPE_PROMPT = """基于失败类型和根因，推荐修复方式。
+_FALLBACK_FIX_TYPE = """基于失败类型和根因，推荐修复方式。
 
 失败类型：{failure_type}
 根本原因：{root_cause}
@@ -120,6 +121,25 @@ FIX_TYPE_PROMPT = """基于失败类型和根因，推荐修复方式。
 输出 JSON：
 {{"recommended_fix_type": "<修复类型>"}}
 """
+
+# Public accessors — 每次读取时从 loader 拉取最新（支持热更新）
+def AUTO_DETECT_PROMPT() -> str:
+    return get_prompt("revision", "auto_detect", _FALLBACK_AUTO_DETECT)
+
+def REFLECT_DIRECT_PROMPT() -> str:
+    return get_prompt("revision", "reflect_direct", _FALLBACK_REFLECT_DIRECT)
+
+def REFLECT_ROOT_PROMPT() -> str:
+    return get_prompt("revision", "reflect_root", _FALLBACK_REFLECT_ROOT)
+
+def REFLECT_DEEP_PROMPT() -> str:
+    return get_prompt("revision", "reflect_deep", _FALLBACK_REFLECT_DEEP)
+
+def REVISE_CONTENT_PROMPT() -> str:
+    return get_prompt("revision", "revise_content", _FALLBACK_REVISE_CONTENT)
+
+def FIX_TYPE_PROMPT() -> str:
+    return get_prompt("revision", "fix_type", _FALLBACK_FIX_TYPE)
 
 
 @dataclass
@@ -312,7 +332,7 @@ class RevisionOperator:
     # ── LLM-powered internal methods ────────────────────────────
 
     def _auto_detect_failure_type(self, content: str, context: str) -> FailureType:
-        prompt = AUTO_DETECT_PROMPT.format(
+        prompt = AUTO_DETECT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
             context=context[:1000],
         )
@@ -329,7 +349,7 @@ class RevisionOperator:
     def _reflect_direct(self, content: str, context: str,
                         failure_type: FailureType,
                         evidence: List[str]) -> str:
-        prompt = REFLECT_DIRECT_PROMPT.format(
+        prompt = REFLECT_DIRECT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
             context=context[:1000],
             failure_type=failure_type.value,
@@ -342,7 +362,7 @@ class RevisionOperator:
 
     def _reflect_root(self, content: str, context: str,
                       failure_type: FailureType, direct_cause: str) -> str:
-        prompt = REFLECT_ROOT_PROMPT.format(
+        prompt = REFLECT_ROOT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
             context=context[:1000],
             failure_type=failure_type.value,
@@ -357,7 +377,7 @@ class RevisionOperator:
     def _reflect_deep(self, content: str, context: str,
                       failure_type: FailureType, direct_cause: str,
                       root_cause: str) -> str:
-        prompt = REFLECT_DEEP_PROMPT.format(
+        prompt = REFLECT_DEEP_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
             context=context[:1000],
             failure_type=failure_type.value,
@@ -373,7 +393,7 @@ class RevisionOperator:
     def _generate_revised_content(self, content: str, context: str,
                                    diagnosis: DiagnosisResult,
                                    alternatives: List[AlternativeSolution]) -> str:
-        prompt = REVISE_CONTENT_PROMPT.format(
+        prompt = REVISE_CONTENT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
             failure_type=diagnosis.failure_type.value,
             direct_cause=diagnosis.direct_cause[:500],
@@ -385,7 +405,7 @@ class RevisionOperator:
         ])
 
     def _recommend_fix_type(self, failure_type: FailureType, root_cause: str) -> str:
-        prompt = FIX_TYPE_PROMPT.format(
+        prompt = FIX_TYPE_PROMPT().format(
             failure_type=failure_type.value,
             root_cause=root_cause[:500],
         )

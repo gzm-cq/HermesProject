@@ -11,12 +11,13 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
 from self_evolving.adapters.llm_client import LLMClient
+from self_evolving.prompt_loader import get_prompt
 
 logger = logging.getLogger(__name__)
 
-# ── Prompts ──────────────────────────────────────────────────────────
+# ── Prompts (硬编码 fallback，若 prompts.yaml 加载失败使用) ─────────────────
 
-CONFLICT_DETECT_PROMPT = """判断以下两个组件是否存在实质性冲突。
+_FALLBACK_CONFLICT_DETECT = """判断以下两个组件是否存在实质性冲突。
 
 组件A（{type_a}）：
 {content_a}
@@ -33,6 +34,10 @@ CONFLICT_DETECT_PROMPT = """判断以下两个组件是否存在实质性冲突�
     "reason": "<判断理由>"
 }}
 """
+
+def CONFLICT_DETECT_PROMPT() -> str:
+    """Hot-reloadable prompt accessor（每次调用从 loader 拉最新）。"""
+    return get_prompt("recombination", "conflict_detect", _FALLBACK_CONFLICT_DETECT)
 
 
 @dataclass
@@ -361,7 +366,7 @@ class RecombinationOperator:
             return 1.0
 
         # Ambiguous range: use LLM for deeper judgment
-        prompt = CONFLICT_DETECT_PROMPT.format(
+        prompt = CONFLICT_DETECT_PROMPT().format(
             type_a=comp_a.component_type, content_a=comp_a.content[:1000],
             type_b=comp_b.component_type, content_b=comp_b.content[:1000],
         )
@@ -379,7 +384,7 @@ class RecombinationOperator:
             return False, {}
         # Word-level fallback
         if self._jaccard_similarity(comp_a.content, comp_b.content) > self.config.jaccard_threshold_low:
-            prompt = CONFLICT_DETECT_PROMPT.format(
+            prompt = CONFLICT_DETECT_PROMPT().format(
                 type_a=comp_a.component_type, content_a=comp_a.content[:1000],
                 type_b=comp_b.component_type, content_b=comp_b.content[:1000],
             )

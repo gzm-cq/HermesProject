@@ -30,8 +30,8 @@ def test_recall_core_returns_empty_when_db_url_missing() -> None:
     assert owns is False
 
 
-def test_recall_core_owns_adapter_on_creation() -> None:
-    """未传入 adapter 时，_recall_core 创建并 owns_adapter=True。"""
+def test_recall_core_uses_pooled_adapter() -> None:
+    """S-2: 未传 adapter 时使用 thread-local 池化 adapter，不再创建新实例。"""
     cfg = MagicMock()
     cfg.db_url = "postgresql://test/db"
     cfg.embed_base_url = "https://api.test.com"
@@ -42,11 +42,14 @@ def test_recall_core_owns_adapter_on_creation() -> None:
     cfg.max_recall_results = 10
 
     mock_adapter = MagicMock()
-    with patch.object(public_api, "PluginDatabaseAdapter", return_value=mock_adapter):
-        with patch.object(public_api, "batch_embed", return_value=[[0.1] * 1024]):
-            with patch.object(public_api, "locate_subject", return_value=None):
-                kps, adapter, owns = public_api._recall_core("test", "query", cfg=cfg, adapter=None)
-    assert owns is True
+    mock_get = MagicMock(return_value=mock_adapter)
+    with patch.object(public_api, "_get_thread_adapter", mock_get):
+        with patch.object(public_api, "PluginDatabaseAdapter") as mock_cls:
+            with patch.object(public_api, "batch_embed", return_value=[[0.1] * 1024]):
+                with patch.object(public_api, "locate_subject", return_value=None):
+                    kps, adapter, _owns = public_api._recall_core("test", "query", cfg=cfg, adapter=None)
+    mock_get.assert_called_once_with("postgresql://test/db")
+    assert mock_cls.call_count == 0  # 不再直接创建
     assert adapter is mock_adapter
 
 
@@ -85,12 +88,12 @@ def test_recall_from_tree_formats_results() -> None:
     assert result == "- 知识点内容"
 
 
-def test_recall_from_tree_closes_owned_adapter() -> None:
-    """owns_adapter=True 时自动关闭 adapter。"""
+def test_recall_from_tree_pooled_adapter_not_closed() -> None:
+    """S-2: 池化 adapter 由 pool 管理，recall_from_tree 不再主动关闭。"""
     mock_adapter = MagicMock()
-    with patch.object(public_api, "_recall_core", return_value=([], mock_adapter, True)):
+    with patch.object(public_api, "_recall_core", return_value=([], mock_adapter, False)):
         public_api.recall_from_tree("session", "query")
-    mock_adapter.close.assert_called_once()
+    mock_adapter.close.assert_not_called()
 
 
 def test_recall_from_tree_does_not_close_borrowed_adapter() -> None:
@@ -119,9 +122,9 @@ def test_recall_from_tree_raw_returns_kp_list() -> None:
     assert result == kps
 
 
-def test_recall_from_tree_raw_closes_owned_adapter() -> None:
-    """owns_adapter=True 时自动关闭 adapter。"""
+def test_recall_from_tree_raw_pooled_adapter_not_closed() -> None:
+    """S-2: 池化 adapter由 pool 管理，recall_from_tree_raw 不再主动关闭。"""
     mock_adapter = MagicMock()
-    with patch.object(public_api, "_recall_core", return_value=([], mock_adapter, True)):
+    with patch.object(public_api, "_recall_core", return_value=([], mock_adapter, False)):
         public_api.recall_from_tree_raw("session", "query")
-    mock_adapter.close.assert_called_once()
+    mock_adapter.close.assert_not_called()

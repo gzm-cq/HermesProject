@@ -14,7 +14,7 @@ import pathlib
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional, Set, Tuple
+from typing import Any
 
 import yaml
 import subprocess
@@ -64,16 +64,16 @@ def save_state(state: dict):
         json.dump(state, f, ensure_ascii=False, indent=2)
     print(f'状态已保存: 累积 {len(state.get("skill_neg_feedback", {}))} 个技能的负反馈数据')
 
-def load_usage() -> Dict[str, Dict]:
+def load_usage() -> dict[str, dict]:
     if not USAGE_FILE.exists():
         return {}
     with open(USAGE_FILE, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def filter_eligible_skills(usage: Dict[str, Dict], denylist_patterns: List[str]) -> List[Tuple[str, Dict]]:
+def filter_eligible_skills(usage: dict[str, dict], denylist_patterns: list[str]) -> list[tuple[str, dict]]:
     """Filter eligible skills for SkillOpt optimization.
     不需要 allowlist — 完全数据驱动，由 curator 生命周期 + denylist 决定。"""
-    eligible: List[Tuple[str, Dict]] = []
+    eligible: list[tuple[str, dict]] = []
     for name, rec in usage.items():
         # Deny: pinned, archived, stale — reuse curator lifecycle judgment
         if rec.get('pinned', False):
@@ -246,7 +246,7 @@ def _harvest_state_db_sessions(since_iso: str | None) -> list[SessionDigest]:
     return digests
 
 
-def harvest_hermes_sessions(since_iso: Optional[str], max_sessions: int = 0) -> List[SessionDigest]:
+def harvest_hermes_sessions(since_iso: str | None, max_sessions: int = 0) -> list[SessionDigest]:
     """Harvest Hermes session JSONs -> SkillOpt-Sleep SessionDigest list.
     If since_iso is provided, only harvest sessions that ended after since_iso (incremental mode).
     
@@ -254,14 +254,14 @@ def harvest_hermes_sessions(since_iso: Optional[str], max_sessions: int = 0) -> 
     - *.jsonl → 旧格式，每行一条消息，每条有 role/content/timestamp/tool_name
     - session_*.json → 新格式，单个 JSON 含 messages 数组 + session_start/last_updated
     """
-    digests: List[SessionDigest] = _harvest_state_db_sessions(since_iso)
+    digests: list[SessionDigest] = _harvest_state_db_sessions(since_iso)
     session_dir = HERMES_HOME / 'sessions'
 
     def _make_digest(session_id: str, project: str,
                      started_at: str, ended_at: str,
-                     user_prompts: List[str], assistant_finals: List[str],
-                     tools_used: List[str], feedback: List[str],
-                     n_user: int, n_assistant: int, raw_path: str) -> Optional[SessionDigest]:
+                     user_prompts: list[str], assistant_finals: list[str],
+                     tools_used: list[str], feedback: list[str],
+                     n_user: int, n_assistant: int, raw_path: str) -> SessionDigest | None:
         if n_user == 0:
             return None
         return SessionDigest(
@@ -282,7 +282,7 @@ def harvest_hermes_sessions(since_iso: Optional[str], max_sessions: int = 0) -> 
     # ── 格式1: *.jsonl（旧格式，每行一条 JSON） ──
     for p in session_dir.glob('*.jsonl'):
         session_id = p.stem
-        messages: List[Dict] = []
+        messages: list[dict] = []
         try:
             with open(p, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -309,10 +309,10 @@ def harvest_hermes_sessions(since_iso: Optional[str], max_sessions: int = 0) -> 
             continue
 
         project = first.get('platform') or 'hermes-cli'
-        user_prompts: List[str] = []
-        assistant_finals: List[str] = []
-        tools_used: List[str] = []
-        feedback: List[str] = []
+        user_prompts: list[str] = []
+        assistant_finals: list[str] = []
+        tools_used: list[str] = []
+        feedback: list[str] = []
 
         for msg in messages:
             role = msg.get('role')
@@ -394,50 +394,89 @@ def harvest_hermes_sessions(since_iso: Optional[str], max_sessions: int = 0) -> 
         print(f'  (incremental: only sessions ending after {since_iso})')
     return digests
 
-def _detect_feedback(text: str) -> List[str]:
-    """Detect positive/negative feedback from Hermes user message text, inherits SkillOpt-Sleep's detector + adds Chinese keywords."""
+def _detect_feedback(text: str) -> list[str]:
+    """Detect positive/negative feedback from Hermes user message text.
+
+    使用词边界匹配（英文）+ 否定前缀排除（中文），减少子串误报：
+    - 英文用 re.search(rf'\\b{ph}\\b', ...) 匹配单词边界
+    - 中文短语在匹配后检查前缀是否包含否定词（不/没/未 等）
+    """
+    import re as _re
     lower = text.lower()
-    sigs: List[str] = []
-    # negative feedback: SkillOpt's original list
+    sigs: list[str] = []
+
+    # 中文否定前缀：出现在关键词前时反转情感
+    _CN_NEGATION_PREFIX = ('不', '没', '未', '别', '莫', '无')
+
+    def _cn_has_negation_before(phrase: str, source: str) -> bool:
+        """检查 phrase 在 source 中出现时，前一个字符是否为否定词。"""
+        idx = source.find(phrase)
+        while idx >= 0:
+            if idx == 0 or source[idx - 1] not in _CN_NEGATION_PREFIX:
+                return False  # 至少有一次出现无否定前缀 → 视为原语义
+            idx = source.find(phrase, idx + 1)
+        return True  # 所有出现都被否定前缀修饰
+
+    # negative feedback: SkillOpt's original list — 用词边界避免 "wrongly"/"nope-fully" 之类误配
     _NEGATIVE = (
-        "still broken", "still not", "still wrong", "doesn't work", "does not work", "that's wrong", "thats wrong", "incorrect", "wrong",
-        "no,", "nope", "fix it", "didn't", "did not", "broken", "error again", "still failing", "still fails", "not fixed",
+        "still broken", "still not", "still wrong", "doesn't work", "does not work",
+        "that's wrong", "thats wrong", "incorrect", "wrong",
+        "no,", "nope", "fix it", "didn't", "did not", "broken",
+        "error again", "still failing", "still fails", "not fixed",
     )
     _POSITIVE = (
-        "thanks", "thank you", "perfect", "great", "works now", "fixed", "that works", "lgtm", "looks good", "nice", "correct",
+        "thanks", "thank you", "perfect", "great", "works now", "fixed",
+        "that works", "lgtm", "looks good", "nice", "correct",
     )
     for ph in _NEGATIVE:
-        if ph in lower:
-            sigs.append(f'neg:{ph}')
+        # 多词短语用普通 in，单个英文单词用 word boundary
+        if ' ' in ph or ',' in ph or '.' in ph or "'" in ph:
+            if ph in lower:
+                sigs.append(f'neg:{ph}')
+        else:
+            if _re.search(rf'\b{_re.escape(ph)}\b', lower):
+                sigs.append(f'neg:{ph}')
     for ph in _POSITIVE:
-        if ph in lower:
-            sigs.append(f'pos:{ph}')
-    # Chinese additional
+        if ' ' in ph:
+            if ph in lower:
+                sigs.append(f'pos:{ph}')
+        else:
+            if _re.search(rf'\b{_re.escape(ph)}\b', lower):
+                sigs.append(f'pos:{ph}')
+
+    # Chinese negative — 大多本身含否定语义，直接匹配
     CN_NEGATIVE = (
-        '不对', '错了', '还不对', '还错', '还是错', '没改好', '没修好', '改不对', '仍然不对', '不正确', '还是不行', '错误',
+        '不对', '错了', '还不对', '还错', '还是错', '没改好', '没修好', '改不对',
+        '仍然不对', '不正确', '还是不行', '错误',
         '不行', '不好', '不可以',
         'bug', '缺陷', '失败',
     )
     for ph in CN_NEGATIVE:
         if ph in lower:
+            # 排除："没有错误" / "没有失败" — "错误"/"失败" 被否定前缀修饰后是正向语义
+            if ph in ('错误', '失败', 'bug', '缺陷') and _cn_has_negation_before(ph, lower):
+                continue
             sigs.append(f'neg:{ph}')
-    # Chinese positive — 注意排除「不可以」「不对了」等负反馈包含正反馈词的情况
+
+    # Chinese positive — 排除否定前缀出现的情况（不可以/没修好/未通过 等）
     CN_POSITIVE = (
-        '可以', '好了', '对了', '正确', '通过', '行了', '改好了', '修好了', '搞定', '没问题', '可用',
+        '可以', '好了', '对了', '正确', '通过', '行了', '改好了', '修好了', '搞定',
+        '没问题', '可用',
     )
     for ph in CN_POSITIVE:
-        if ph in lower:
-            # 排除：'不可以' 含 '可以'，'不对了' 含 '对了'
-            if ph == '可以' and '不可以' in lower:
-                continue
-            if ph == '对了' and '不对' in lower:
-                continue
-            if ph == '好了' and '不好' in lower:
-                continue
+        if ph not in lower:
+            continue
+        # 特殊短语：'没问题' 本身以'没'开头，是正向语义，跳过否定检查
+        if ph == '没问题':
             sigs.append(f'pos:{ph}')
+            continue
+        # 检查是否所有出现都被否定前缀修饰
+        if _cn_has_negation_before(ph, lower):
+            continue
+        sigs.append(f'pos:{ph}')
     return sigs
 
-def get_skill_path(skill_name: str) -> Optional[pathlib.Path]:
+def get_skill_path(skill_name: str) -> pathlib.Path | None:
     """Find the SKILL.md path for a skill name, handles category nesting."""
     base = HERMES_HOME / 'skills'
     for candidate in base.rglob(f'{skill_name}/SKILL.md'):
@@ -492,11 +531,11 @@ def message_mentions_skill(message: str, skill_name: str) -> bool:
 
 
 def rank_skills(
-    eligible: List[Tuple[str, Dict]],
-    digests: List[SessionDigest],
+    eligible: list[tuple[str, dict]],
+    digests: list[SessionDigest],
     state: dict,
     top_k: int = 5,
-) -> Tuple[List[Tuple[str, Dict, float, int, int]], dict, Dict[str, list]]:
+) -> tuple[list[tuple[str, dict, float, int, int]], dict, dict[str, list]]:
     """
     精排（增量）：从所有 eligible 技能中选出最值得优化的 top-K。
     只扫描增量 digests 的负反馈，合并到累积 state 中。
@@ -657,8 +696,8 @@ def patch_skill_hermes(skill_name: str, new_content: str, state: dict) -> bool:
     return True
 
 def filter_digests_by_since(
-    digests: List[SessionDigest], since_iso: str | None
-) -> List[SessionDigest]:
+    digests: list[SessionDigest], since_iso: str | None
+) -> list[SessionDigest]:
     """Filter sessions to only those ending after ``since_iso``.
 
     Args:
@@ -712,7 +751,7 @@ def _phase_rank(
     all_digests: list[SessionDigest],
     state: dict,
     runner_cfg: dict,
-) -> Tuple[list, Dict[str, list]]:
+) -> tuple[list, dict[str, list]]:
     """Phase 2: 精排 — 用新 harvest 的会话更新负反馈，选出 top-K。
 
     Returns:
@@ -841,7 +880,7 @@ def _phase_optimize(
     top_scored: list,
     skill_last_run: dict[str, str],
     state: dict,
-    skill_sessions: Dict[str, list],
+    skill_sessions: dict[str, list],
     sleep_cfg: dict,
     runner_cfg: dict,
     *,

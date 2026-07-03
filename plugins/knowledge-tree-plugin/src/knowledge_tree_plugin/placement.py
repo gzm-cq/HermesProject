@@ -189,6 +189,8 @@ def place_new_knowledge_points(
             for node, node_id in zip(pending_cache_nodes, node_ids):
                 node["id"] = node_id
             result["new_nodes"] = len(node_ids)
+            # 写入成功后失效 leaf cache，确保后续 recall 能看到新知识点
+            _reset_leaf_cache()
             # 写入实体关系到 kt_entity_links
             try:
                 for node_id, (name, text) in zip(node_ids, pending_records):

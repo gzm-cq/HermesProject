@@ -247,6 +247,9 @@ def _mmr_diversity(
     - λ → 1.0：纯相关性排序（接近原行为）
     - λ → 0.0：纯多样性排序
 
+    性能优化：候选数 > _MMR_MAX_CANDIDATES 时先按 score 降序截断，避免 O(n²) 爆炸。
+    默认 20，覆盖典型 max_results * 3 = 45 场景（截断到 20 内做 MMR 后再取 top-k）。
+
     Args:
         candidates: 已去重的候选集
         scores: 对应每个候选的 fused_score
@@ -259,12 +262,27 @@ def _mmr_diversity(
     if not candidates or max_results <= 0:
         return []
 
+    # ── 性能守门：候选数过多时截断 ──
+    _MMR_MAX_CANDIDATES = 20
+    if len(candidates) > _MMR_MAX_CANDIDATES:
+        # 按 score 降序截取 top-N（保持稳定），减少 O(n²) 相似度计算
+        indexed = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
+        top_idx = indexed[:_MMR_MAX_CANDIDATES]
+        candidates = [candidates[i] for i in top_idx]
+        scores = [scores[i] for i in top_idx]
+
     # 归一化分数到 [0,1]
     lo, hi = min(scores), max(scores)
     if hi - lo < 1e-6:
         norms = [0.5] * len(scores)
     else:
         norms = [(s - lo) / (hi - lo) for s in scores]
+
+    # 预计算文本内容，避免每轮循环重复 str/get 调用
+    texts = [
+        str(c.get("text", "") or c.get("name", ""))
+        for c in candidates
+    ]
 
     selected: list[int] = []
     remaining = set(range(len(candidates)))
@@ -275,14 +293,7 @@ def _mmr_diversity(
         for i in remaining:
             rel = norms[i]
             if selected:
-                c_text = str(candidates[i].get("text", "") or candidates[i].get("name", ""))
-                div = max(
-                    _jaccard(
-                        c_text,
-                        str(candidates[j].get("text", "") or candidates[j].get("name", "")),
-                    )
-                    for j in selected
-                )
+                div = max(_jaccard(texts[i], texts[j]) for j in selected)
             else:
                 div = 0.0
             mmr = lambda_mrr * rel - (1 - lambda_mrr) * div

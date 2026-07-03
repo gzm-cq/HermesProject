@@ -71,7 +71,7 @@ class TestPreLlmCall:
 
 
     def test_hindsight_timeout_does_not_wait_for_executor_shutdown(self) -> None:
-        """Future 超时后必须 shutdown(wait=False)，否则 with executor 会继续卡主线程。"""
+        """Future 超时后应取消，不等待 executor shutdown（S-4 共享线程池）。"""
         from concurrent.futures import TimeoutError as FuturesTimeout
 
         class FakeFuture:
@@ -83,28 +83,21 @@ class TestPreLlmCall:
             def cancel(self):
                 self.cancelled = True
 
-        class FakeExecutor:
-            instance = None
+            def done(self):
+                return False
 
-            def __init__(self, max_workers):
-                self.max_workers = max_workers
-                self.future = FakeFuture()
-                self.shutdown_kwargs = None
-                FakeExecutor.instance = self
+        fake_future = FakeFuture()
 
-            def submit(self, *args, **kwargs):
-                return self.future
+        def fake_submit(fn, *args, **kwargs):
+            return fake_future
 
-            def shutdown(self, **kwargs):
-                self.shutdown_kwargs = kwargs
-
-        with patch("concurrent.futures.ThreadPoolExecutor", FakeExecutor), patch.object(CONFIG, "timeout_seconds", 0.01):
+        with patch.object(nav_hooks._recall_executor, "submit", fake_submit), \
+             patch.object(CONFIG, "timeout_seconds", 0.01), \
+             patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": True, "s": True}):
             result = pre_llm_call("session-123", "12345678901", platform="cli")
             assert result is None
 
-        assert FakeExecutor.instance is not None
-        assert FakeExecutor.instance.future.cancelled is True
-        assert FakeExecutor.instance.shutdown_kwargs == {"wait": False, "cancel_futures": True}
+        assert fake_future.cancelled is True
 
     @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
     def test_internal_maintenance_prompt_skips_recall(self, mock_recall: MagicMock) -> None:
@@ -728,7 +721,7 @@ class TestRouterMask:
         with patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True):
             fake_kt = [{"id": 1, "text": "kt node", "score": 0.8}]
             with patch.object(nav_hooks, "_do_kt_recall", return_value=fake_kt):
-                with patch.object(nav_hooks, "_multi_hop_recall", return_value=[]):
+                with patch.object(nav_hooks, "_multi_hop_recall", return_value=[], create=True):
                     with patch.object(nav_hooks, "_do_skill_match", return_value=""):
                         with self._patch_router({"h": False, "kt": True, "s": False}):
                             result = pre_llm_call("sess2", self.LONG_QUERY, platform="cli")
@@ -754,7 +747,7 @@ class TestRouterMask:
         }
         with patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True):
             with patch.object(nav_hooks, "_do_kt_recall", return_value=[]):
-                with patch.object(nav_hooks, "_multi_hop_recall", return_value=[]):
+                with patch.object(nav_hooks, "_multi_hop_recall", return_value=[], create=True):
                     with patch.object(nav_hooks, "_do_skill_match", return_value=""):
                         with self._patch_router({"h": True, "kt": True, "s": True}):
                             result = pre_llm_call("sess4", self.LONG_QUERY, platform="cli")

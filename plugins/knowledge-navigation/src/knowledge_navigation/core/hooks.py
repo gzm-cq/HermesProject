@@ -16,8 +16,20 @@ import re
 import threading
 import time
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from logging.handlers import RotatingFileHandler
 from typing import Any
+
+# 顶层可选依赖：网关运行时应始终可用；导入失败时降级为 None，函数内做 None 检查
+try:
+    import requests as _requests  # noqa: N816 —— 与函数内旧别名 _req 保持语义一致
+except ImportError:  # pragma: no cover — 极端隔离环境降级
+    _requests = None  # type: ignore[assignment]
+
+try:
+    import psycopg2 as _psycopg2  # noqa: N816 —— 与函数内旧别名 _pg 保持语义一致
+except ImportError:  # pragma: no cover — psycopg2 未安装时因果链 boost 自动禁用
+    _psycopg2 = None  # type: ignore[assignment]
 
 
 
@@ -48,49 +60,63 @@ except ImportError as _kt_err:
     def _recall_knowledge_tree_raw(*args: object, **kwargs: object) -> list:
         return []
 
-# PG 连接缓存：{db_url: (conn, last_used_timestamp)}
+# 共享线程池：复用 ThreadPoolExecutor 避免每次 pre_llm_call 创建/销毁开销
+# 最多 3 路并行 recall（Hindsight + KnowledgeTree + SkillMatch）
+_recall_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="recall")
+
+# PG 连接缓存：thread-local 存储，每个线程拥有独立连接
+# psycopg2 connection 不是线程安全的，多线程并发使用同一连接会导致竞态
 # _causal_boost 使用，避免每次 recall 新建连接
-_pg_conn_cache: dict[str, tuple["psycopg2.extensions.connection | None", float]] = {}
-_pg_conn_cache_lock = threading.Lock()
+_pg_conn_local = threading.local()
 _PG_CONN_TTL = 300  # 5 分钟无使用自动关闭
 
 
 def _get_cached_conn(db_url: str, pg_module) -> "psycopg2.extensions.connection | None":
-    """从连接缓存获取复用 PG 连接，超时未用的自动关闭。"""
-    global _pg_conn_cache
+    """从 thread-local 获取复用 PG 连接，超时未用的自动关闭。
+
+    使用 threading.local() 确保每个线程拥有独立连接，
+    避免 psycopg2 connection 被多线程并发使用的竞态问题。
+    """
     now = time.time()
-    with _pg_conn_cache_lock:
-        # 清理过期连接
-        stale = [k for k, (_, ts) in _pg_conn_cache.items() if now - ts > _PG_CONN_TTL]
-        for k in stale:
-            try:
-                _pg_conn_cache[k][0].close()
-            except Exception:
-                logger.debug("PG 连接关闭失败（缓存清理路径）: %s", k)
-                pass
-            del _pg_conn_cache[k]
-        # 返回缓存连接或新建
-        if db_url in _pg_conn_cache:
-            conn, _ = _pg_conn_cache[db_url]
-            try:
-                # 健康检查
-                with conn.cursor() as _cur:
-                    _cur.execute("SELECT 1")
-                _pg_conn_cache[db_url] = (conn, now)
-                return conn
-            except Exception:
-                # 连接失效，清理后重新创建
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                del _pg_conn_cache[db_url]
+
+    # 获取当前线程的连接缓存
+    if not hasattr(_pg_conn_local, "conn_map"):
+        _pg_conn_local.conn_map = {}  # type: ignore[attr-defined]
+
+    conn_map = _pg_conn_local.conn_map  # type: ignore[attr-defined]
+
+    # 清理当前线程的过期连接
+    stale = [k for k, (_, ts) in conn_map.items() if now - ts > _PG_CONN_TTL]
+    for k in stale:
         try:
-            conn = pg_module.connect(db_url, connect_timeout=5)
-            _pg_conn_cache[db_url] = (conn, now)
+            conn_map[k][0].close()
+        except Exception:
+            logger.debug("PG 连接关闭失败（缓存清理路径）: %s", k)
+            pass
+        del conn_map[k]
+
+    # 返回缓存连接或新建
+    if db_url in conn_map:
+        conn, _ = conn_map[db_url]
+        try:
+            # 健康检查
+            with conn.cursor() as _cur:
+                _cur.execute("SELECT 1")
+            conn_map[db_url] = (conn, now)
             return conn
         except Exception:
-            return None
+            # 连接失效，清理后重新创建
+            try:
+                conn.close()
+            except Exception:
+                pass
+            del conn_map[db_url]
+    try:
+        conn = pg_module.connect(db_url, connect_timeout=5)
+        conn_map[db_url] = (conn, now)
+        return conn
+    except Exception:
+        return None
 
 
 from knowledge_navigation.core.filtering import (
@@ -257,14 +283,15 @@ from knowledge_navigation.core.circuit_breaker import circuit_is_open, circuit_r
 
 def _batch_embed(texts: list[str]) -> list[list[float]] | None:
     """调用 SiliconFlow embedding API（bge-m3），供 cross_domain_dedup 使用。"""
-    import os as _os
-    import requests as _req
+    if _requests is None:
+        logger.debug("_batch_embed: requests 模块不可用")
+        return None
     api_key = get_env("SILICONFLOW_API_KEY", "")
     if not api_key:
         logger.debug("_batch_embed: SILICONFLOW_API_KEY 未设置")
         return None
     try:
-        resp = _req.post(
+        resp = _requests.post(
             "https://api.siliconflow.cn/v1/embeddings",
             json={"model": "BAAI/bge-m3", "input": texts},
             headers={"Authorization": f"Bearer {api_key}"},
@@ -297,7 +324,8 @@ def _causal_boost(
         alpha: 提权系数，越大因果影响越强
         cap: 最大提权上限，防翻转排序
     """
-    import os as _os
+    if _psycopg2 is None:
+        return
     db_url = get_env("KT_DB_URL", "")
     if not db_url:
         return
@@ -305,10 +333,8 @@ def _causal_boost(
     if not recalled_ids:
         return
     try:
-        import psycopg2 as _pg
-
-        # 从连接缓存获取复用连接
-        conn = _get_cached_conn(db_url, _pg)
+        # 从连接缓存获取复用连接（thread-local）
+        conn = _get_cached_conn(db_url, _psycopg2)
         if conn is None:
             return
         with conn.cursor() as cursor:
@@ -330,9 +356,9 @@ def _causal_boost(
                 boost = 1.0 + alpha * from_score * (weight or 0.5)
                 current = rerank_map[to_id]
                 rerank_map[to_id] = current * min(boost, cap)
-        # 更新缓存时间戳
-        with _pg_conn_cache_lock:
-            _pg_conn_cache[db_url] = (conn, time.time())
+        # 更新 thread-local 缓存时间戳
+        if hasattr(_pg_conn_local, "conn_map"):
+            _pg_conn_local.conn_map[db_url] = (conn, time.time())  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("causal_boost 失败: %s", e)
 
@@ -408,31 +434,23 @@ def _load_eval_queries() -> list[dict[str, Any]]:
 
 
 # 中文停用字 — 单字过滤，避免噪声匹配
-_CJK_STOP_CHARS = frozenset(
-    "的了在是有和就不人都也到说要去会着这他那她它那些吗吧呢啊哦嗯嘛"
-)
+# 注：完整定义已迁至 core.text_utils.CJK_STOP_CHARS
+from knowledge_navigation.core.text_utils import CJK_STOP_CHARS as _CJK_STOP_CHARS
 
 
 def _extract_keywords(text: str) -> set[str]:
     """提取文本中的有意义关键词（仅用于 eval query 匹配）。
 
-    注意：此函数与 `skill_matcher._extract_keywords()` 是不同的算法。
-    - 本函数：英文 + 仅 CJK 二字组，更保守，用于 eval query 关键词匹配
-    - skill_matcher：英文 + 中文整段 + 2-gram 子串，更激进，用于 skill 预筛选
-
-    策略：
-    - 英文词/标识符（>= 2 字符，转小写）
-    - CJK 二字组（如果首字不是停用字）
+    委托 core.text_utils.extract_keywords，保守配置：
+    英文 >=2 字符 + CJK 2-gram（无原始整段）
     """
-    keywords: set[str] = set()
-    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_\-\.]*", text):
-        if len(token) >= 2:
-            keywords.add(token.lower())
-    cjk_chars = re.findall(r"[\u4e00-\u9fff]", text)
-    for i in range(len(cjk_chars) - 1):
-        if cjk_chars[i] not in _CJK_STOP_CHARS:
-            keywords.add(cjk_chars[i] + cjk_chars[i + 1])
-    return keywords
+    from knowledge_navigation.core.text_utils import extract_keywords as _tu_extract
+    return _tu_extract(
+        text,
+        min_en_length=2,
+        include_cjk_bigrams=True,
+        include_cjk_full=False,
+    )
 
 
 def _normalize_eval_text(text: str) -> str:
@@ -711,55 +729,58 @@ def _candidate_score(result: dict[str, Any]) -> float:
     return 0.0
 
 
-def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
-    """每次 LLM 调用前自动执行：三层门控 → LLM Router → 三路 mask 条件执行 → 后处理注入。"""
+def _pass_gates(session_id: str, user_message: str, platform: str, is_first_turn: bool) -> tuple[bool, dict | None]:
+    """三层门控 + eval bypass 判断。
 
+    Returns:
+        (should_continue, eval_match)
+        should_continue=False 表示 pre_llm_call 应立即 return None
+        eval_match: 命中 eval query 时返回匹配详情，否则为 None
+    """
     # 第0道门：eval query 无条件放行（跳过生产门控）
-    _eval_match = _match_eval_query(user_message) if CONFIG.eval_match_enabled else None
-    if _eval_match:
+    eval_match = _match_eval_query(user_message) if CONFIG.eval_match_enabled else None
+    if eval_match:
         logger.info(
             "eval_query bypass gate",
             extra={
                 "session_id": session_id,
-                "eval_query_id": _eval_match.get("query_id"),
+                "eval_query_id": eval_match.get("query_id"),
                 "event": "eval_query_bypass",
             },
         )
+        return True, eval_match
 
-    # 第一道门：非用户平台（curator/cron/子代理等）→ 无条件跳过
-    if not _eval_match and skip_non_user(kwargs.get("platform", "")):
+    # 第一道门：非用户平台
+    if skip_non_user(platform):
         logger.debug(
             "非用户平台跳过 pre_llm_call",
             extra={"session_id": session_id, "event": "skip_non_user"},
         )
-        return None
+        return False, None
 
-    # 第一.五道门：系统提示词（子代理/cron/review 的第一轮长英文消息）
-    if not _eval_match and skip_system_prompt(user_message, kwargs.get("is_first_turn", False)):
+    # 第一.五道门：系统提示词
+    if skip_system_prompt(user_message, is_first_turn):
         logger.debug(
             "系统提示词跳过 pre_llm_call",
             extra={"session_id": session_id, "event": "skip_system_prompt"},
         )
-        return None
+        return False, None
 
     # 第二道门：文本门控 — 操作型对话跳过
-    if not _eval_match:
-        skip_reason = skip_pre_llm_call(user_message)
-        if skip_reason:
-            logger.debug(
-                "turn_gate 跳过 pre_llm_call: %s",
-                skip_reason,
-                extra={"session_id": session_id, "event": "skip_operational"},
-            )
-            return None
+    skip_reason = skip_pre_llm_call(user_message)
+    if skip_reason:
+        logger.debug(
+            "turn_gate 跳过 pre_llm_call: %s",
+            skip_reason,
+            extra={"session_id": session_id, "event": "skip_operational"},
+        )
+        return False, None
 
-    # 熔断器：连续失败后跳过 Hindsight recall（知识树不受熔断影响）
-    _hs_circuit_open = False
-    if circuit_is_open():
-        logger.info("熔断器跳过 Hindsight recall，知识树仍尝试")
-        _hs_circuit_open = True
+    return True, None
 
-    # ===== LLM Router: 三路 mask 决策 =====
+
+def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
+    """调用 Router 决策三路 mask，异常时 fallback 全开。"""
     try:
         mask = _router_route(
             session_id,
@@ -777,6 +798,30 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         mask["h"], mask["kt"], mask["s"],
         extra={"session_id": session_id, "event": "router_mask", "mask": mask},
     )
+    return mask
+
+
+def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
+    """每次 LLM 调用前自动执行：三层门控 → LLM Router → 三路 mask 条件执行 → 后处理注入。"""
+
+    # ===== 门控阶段（三层门控 + eval bypass）=====
+    _should_continue, _eval_match = _pass_gates(
+        session_id,
+        user_message,
+        kwargs.get("platform", ""),
+        kwargs.get("is_first_turn", False),
+    )
+    if not _should_continue:
+        return None
+
+    # 熔断器：连续失败后跳过 Hindsight recall（知识树不受熔断影响）
+    _hs_circuit_open = False
+    if circuit_is_open():
+        logger.info("熔断器跳过 Hindsight recall，知识树仍尝试")
+        _hs_circuit_open = True
+
+    # ===== LLM Router: 三路 mask 决策 =====
+    mask = _get_router_mask(session_id, user_message)
 
     # 全 false → 不注入任何内容
     if not any(mask.values()):
@@ -799,13 +844,10 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     _skill_context = ""
 
     if _active_count >= 2:
-        # 多路并行（与原行为一致，避免延迟退化）
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-
-        executor = ThreadPoolExecutor(max_workers=_active_count)
-        hs_future = executor.submit(_do_hindsight_recall, user_message) if _hs_active else None
-        kt_future = executor.submit(_do_kt_recall, session_id, user_message) if _kt_active else None
-        sk_future = executor.submit(_do_skill_match, user_message) if _s_active else None
+        # 多路并行（使用共享线程池，避免创建/销毁开销）
+        hs_future = _recall_executor.submit(_do_hindsight_recall, user_message) if _hs_active else None
+        kt_future = _recall_executor.submit(_do_kt_recall, session_id, user_message) if _kt_active else None
+        sk_future = _recall_executor.submit(_do_skill_match, user_message) if _s_active else None
         try:
             if hs_future is not None:
                 try:
@@ -843,7 +885,13 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
                 except Exception as e:
                     logger.debug("Skill match future error: %s", e)
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            # 取消未完成的 future（共享线程池不 shutdown）
+            if hs_future is not None and not hs_future.done():
+                hs_future.cancel()
+            if kt_future is not None and not kt_future.done():
+                kt_future.cancel()
+            if sk_future is not None and not sk_future.done():
+                sk_future.cancel()
     else:
         # 单路串行（节省线程开销，延迟无差别）
         if _hs_active:
@@ -1211,10 +1259,9 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         context_lines.append(summary)
 
     # 5. 系统状态
-    import os as _os
     context_lines.append(
         f"<system_state>\n"
-        f"pwd: {_os.getcwd()}\n"
+        f"pwd: {os.getcwd()}\n"
         f"time: {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
         f"</system_state>"
     )

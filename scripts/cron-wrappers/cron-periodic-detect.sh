@@ -25,7 +25,10 @@ cron_init "cron-periodic-detect"
 CRON_SKIP_FINISH_NOTIFY=true   # 脚本自发送摘要通知，不让 cron_finish 重复发
 
 # ===== 去重状态文件 =====
-DEDUP_FILE="/tmp/cron-periodic-dedup.json"
+# 放置在持久化目录，避免系统重启后 /tmp 清空导致重复告警
+DEDUP_DIR="${CRON_STATE_DIR:-${HERMES_HOME:-/root/.hermes}/lib/cron-state}"
+mkdir -p "$DEDUP_DIR"
+DEDUP_FILE="${DEDUP_DIR}/cron-periodic-dedup.json"
 [[ -f "$DEDUP_FILE" ]] || echo '{}' > "$DEDUP_FILE"
 
 # ===== 阶段 1：Python 分析 =====

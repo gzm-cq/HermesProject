@@ -1,0 +1,178 @@
+# Self-Evolving LLM Prompts
+#
+# 三大算子（Revision / Recombination / Refinement）的 LLM prompt 集中管理。
+# 修改本文件后重启服务即可生效，无需改代码。
+#
+# 占位符使用 Python str.format() 风格：{variable_name}
+# 每个 prompt 独立缩进保留（YAML 的 | 块字面量保留换行）
+
+revision:
+  auto_detect: |
+    分析以下失败内容，判断最可能的错误类型。
+
+    失败内容：
+    {failed_content}
+
+    任务上下文：
+    {context}
+
+    请从以下类型中选择一个，输出 JSON：
+    {{
+        "failure_type": "<类型>",
+        "reason": "<选择原因>"
+    }}
+
+    类型定义：
+    - invalid_tool_call: 工具调用格式/名称错误
+    - argument_mismatch: 参数类型/格式不匹配
+    - state_mismatch: 状态与预期不一致
+    - recovery_failure: 错误恢复机制失败
+    - missing_tool_call: 缺少必要的工具调用
+    - response_mismatch: 输出不符合预期
+    - unknown: 无法确定
+
+  reflect_direct: |
+    分析以下失败内容，识别直接原因。
+
+    失败内容：
+    {failed_content}
+
+    任务上下文：
+    {context}
+
+    失败类型：{failure_type}
+
+    输出 JSON：
+    {{
+        "direct_cause": "<一句话描述直接原因>",
+        "evidence": ["<证据1>", "<证据2>"]
+    }}
+
+  reflect_root: |
+    基于直接原因，深入分析根本原因。
+
+    失败内容：
+    {failed_content}
+
+    任务上下文：
+    {context}
+
+    失败类型：{failure_type}
+    直接原因：{direct_cause}
+
+    输出 JSON：
+    {{
+        "root_cause": "<一句话描述根本原因>",
+        "confidence": 0.0-1.0
+    }}
+
+  reflect_deep: |
+    执行第三层深度分析，追溯问题起源。
+
+    失败内容：
+    {failed_content}
+
+    任务上下文：
+    {context}
+
+    失败类型：{failure_type}
+    直接原因：{direct_cause}
+    根本原因：{root_cause}
+
+    输出 JSON：
+    {{
+        "deep_analysis": "<系统性原因分析>",
+        "systemic_pattern": "<是否属于系统性问题>"
+    }}
+
+  revise_content: |
+    基于诊断结果，生成修正后的内容。
+
+    失败内容：
+    {failed_content}
+
+    诊断结果：
+    - 失败类型：{failure_type}
+    - 直接原因：{direct_cause}
+    - 根本原因：{root_cause}
+
+    请生成修正后的内容。只输出修正后的纯文本，不要额外解释。
+
+  fix_type: |
+    基于失败类型和根因，推荐修复方式。
+
+    失败类型：{failure_type}
+    根本原因：{root_cause}
+
+    输出 JSON：
+    {{"recommended_fix_type": "<修复类型>"}}
+
+recombination:
+  conflict_detect: |
+    判断以下两个组件是否存在实质性冲突。
+
+    组件A（{type_a}）：
+    {content_a}
+
+    组件B（{type_b}）：
+    {content_b}
+
+    输出 JSON：
+    {{
+        "has_conflict": true/false,
+        "conflict_severity": 0.0-1.0,
+        "is_complementary": true/false,
+        "similarity": 0.0-1.0,
+        "reason": "<判断理由>"
+    }}
+
+refinement:
+  risk_scan: |
+    扫描以下内容，识别潜在风险。
+
+    内容：
+    {content}
+
+    输出 JSON：
+    {{
+        "risk_factors": [
+            {{
+                "category": "syntax|logic|security|performance|compatibility|unknown",
+                "description": "<风险描述>",
+                "severity": "none|low|medium|high|critical",
+                "likelihood": 0.0-1.0,
+                "impact": 0.0-1.0
+            }}
+        ]
+    }}
+
+    请基于代码/内容的实际上下文判断，不要仅靠关键词匹配。
+
+  redundancy_scan: |
+    扫描以下内容中的冗余。
+
+    内容：
+    {content}
+
+    输出 JSON：
+    {{
+        "redundancies": [
+            {{
+                "type": "duplicate|redundant_step|unnecessary_state|repetitive",
+                "content": "<冗余内容片段>",
+                "severity": 0.0-1.0,
+                "removal_safety": 0.0-1.0
+            }}
+        ]
+    }}
+
+    识别真正冗余的部分（重复逻辑、可合并步骤、不必要中间状态），
+    不要误报正常代码结构。
+
+  compress: |
+    请优化以下内容，在保持信息完整性的前提下压缩到约一半长度。
+
+    内容：
+    {content}
+
+    输出压缩后的纯文本内容，不要额外解释。

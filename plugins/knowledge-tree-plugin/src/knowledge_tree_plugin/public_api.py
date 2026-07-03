@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -17,9 +18,63 @@ logger = logging.getLogger(__name__)
 # 独立的配置懒加载（不依赖 hooks 模块的私有状态，避免跨模块状态耦合）
 _api_config: PluginConfig | None = None
 
-# 公共 API 被 knowledge-navigation 的 pre_llm_call 高频调用。
-# 注意: psycopg2 连接/cursor 非线程安全，不能跨线程共享。
-# 每次调用创建新适配器，由调用方负责关闭。
+# Thread-local adapter 池：每个线程复用 PG 连接，避免每次调用新建/关闭
+# psycopg2 connection 非线程安全，thread-local 确保每线程独立连接
+_adapter_local = threading.local()
+_ADAPTER_TTL = 300  # 5 分钟无使用自动关闭重建
+
+
+def _get_thread_adapter(db_url: str) -> PluginDatabaseAdapter | None:
+    """从 thread-local 获取或创建 adapter，按 TTL 自动刷新。"""
+    if not hasattr(_adapter_local, "entries"):
+        _adapter_local.entries = {}  # type: ignore[attr-defined]
+
+    entries = _adapter_local.entries  # type: ignore[attr-defined]
+    now = time.time()
+
+    # 清理过期 adapter
+    stale = [k for k, (_, ts) in entries.items() if now - ts > _ADAPTER_TTL]
+    for k in stale:
+        try:
+            entries[k][0].close()
+        except Exception:
+            pass
+        del entries[k]
+
+    # 返回缓存或新建
+    if db_url in entries:
+        adapter, _ = entries[db_url]
+        try:
+            # 健康检查
+            adapter.cursor.execute("SELECT 1")
+            entries[db_url] = (adapter, now)
+            return adapter
+        except Exception:
+            try:
+                adapter.close()
+            except Exception:
+                pass
+            del entries[db_url]
+
+    try:
+        adapter = PluginDatabaseAdapter(db_url)
+        entries[db_url] = (adapter, now)
+        return adapter
+    except Exception as e:
+        logger.warning("thread adapter 创建失败: %s", e)
+        return None
+
+
+def _invalidate_thread_adapter(db_url: str) -> None:
+    """失效当前线程的 adapter（出错时调用）。"""
+    if hasattr(_adapter_local, "entries"):
+        entries = _adapter_local.entries  # type: ignore[attr-defined]
+        if db_url in entries:
+            try:
+                entries[db_url][0].close()
+            except Exception:
+                pass
+            del entries[db_url]
 
 
 def _get_api_config() -> PluginConfig:
@@ -45,23 +100,25 @@ def _recall_core(
     Returns:
         (kp_results, adapter, owns_adapter)
         kp_results: attention_filter 返回的知识点列表 [{id, name, text, score}]
-        adapter: DB 适配器（调用方需根据 owns_adapter 决定是否关闭）
-        owns_adapter: 是否由本函数创建（调用方负责关闭）
+        adapter: DB 适配器
+        owns_adapter: 是否由本函数创建（thread-local 池管理，调用方无需关闭）
     """
     owns_adapter = False
+    db_url_used = ""
 
     try:
         cfg = cfg or _get_api_config()
         if adapter is None:
-            if not cfg.db_url:
-                db_url = os.environ.get("KT_DB_URL", "")
-                if not db_url:
-                    raise RuntimeError("KT_DB_URL 未配置")
-                cfg.db_url = db_url
-            adapter = PluginDatabaseAdapter(cfg.db_url)
+            db_url = cfg.db_url or os.environ.get("KT_DB_URL", "")
+            if not db_url:
+                raise RuntimeError("KT_DB_URL 未配置")
+            cfg.db_url = db_url
+            db_url_used = db_url
+            # 使用 thread-local 池，adapter 由池管理
+            adapter = _get_thread_adapter(db_url)
             if adapter is None:
                 raise RuntimeError("知识树 DB 连接不可用")
-            owns_adapter = True
+            # owns_adapter 保持 False：调用方无需关闭 pooled adapter
     except Exception as e:
         logger.warning("知识树 recall 初始化失败: %s", e)
         return [], None, False
@@ -141,14 +198,10 @@ def _recall_core(
             "知识树 recall 异常: %s", e,
             extra={"session_id": session_id, "event": "recall_error"},
         )
-        if owns_adapter and adapter is not None:
-            try:
-                adapter.close()
-            except Exception:
-                pass
-            adapter = None
-            owns_adapter = False
-        return [], adapter, owns_adapter
+        # 异常时失效 pooled adapter，下次调用会重建
+        if db_url_used:
+            _invalidate_thread_adapter(db_url_used)
+        return [], None, False
 
 
 def recall_from_tree(
@@ -169,22 +222,15 @@ def recall_from_tree(
         格式化注入文本，无可匹配知识点时返回 None
     """
     t0 = time.time()
-    kp_results, inner_adapter, owns_adapter = _recall_core(
+    kp_results, _inner_adapter, _owns_adapter = _recall_core(
         session_id, user_message, cfg, adapter
     )
-    try:
-        if not kp_results:
-            return None
-        context_lines = format_context_lines(kp_results)
-        if not context_lines:
-            return None
-        return "\n".join(context_lines)
-    finally:
-        if owns_adapter and inner_adapter is not None:
-            try:
-                inner_adapter.close()
-            except Exception:
-                pass
+    if not kp_results:
+        return None
+    context_lines = format_context_lines(kp_results)
+    if not context_lines:
+        return None
+    return "\n".join(context_lines)
 
 
 def recall_from_tree_raw(
@@ -204,14 +250,9 @@ def recall_from_tree_raw(
     Returns:
         知识点列表 [{id, name, text, score}]，无可匹配时返回空列表
     """
-    kp_results, inner_adapter, owns_adapter = _recall_core(
+    kp_results, _inner_adapter, _owns_adapter = _recall_core(
         session_id, user_message, cfg, adapter
     )
-    if owns_adapter and inner_adapter is not None:
-        try:
-            inner_adapter.close()
-        except Exception:
-            pass
     return kp_results
 
 
@@ -245,15 +286,17 @@ def multi_hop_recall(
     if not seed_kp_ids:
         return []
 
-    owns_adapter = False
+    db_url_used = ""
     try:
         cfg = cfg or _get_api_config()
         if adapter is None:
             db_url = cfg.db_url or os.environ.get("KT_DB_URL", "")
             if not db_url:
                 return []
-            adapter = PluginDatabaseAdapter(db_url)
-            owns_adapter = True
+            db_url_used = db_url
+            adapter = _get_thread_adapter(db_url)
+            if adapter is None:
+                return []
     except Exception as e:
         logger.warning("多跳 recall 初始化失败: %s", e)
         return []
@@ -318,13 +361,10 @@ def multi_hop_recall(
 
     except Exception as e:
         logger.warning("多跳 recall 查询失败: %s", e)
+        # 异常时失效 pooled adapter，下次调用会重建
+        if db_url_used:
+            _invalidate_thread_adapter(db_url_used)
         return []
-    finally:
-        if owns_adapter and adapter is not None:
-            try:
-                adapter.close()
-            except Exception:
-                pass
 
 
 def _strategy_subject(

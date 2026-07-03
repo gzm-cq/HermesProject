@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+import html as _html
 import logging
 import re
+import time
 from typing import Any
 
 import numpy as np
@@ -26,6 +28,53 @@ logger = logging.getLogger(__name__)
 _CJK_STOP_CHARS = frozenset(
     "的了在是有和就不人都也到说要去会着这他那她它那些吗吧呢啊哦嗯嘛"
 )
+
+# ========== domain centroid 缓存 ==========
+# domain 节点的 k_vector 通常为 NULL，需从子节点均值实时计算，
+# 冷启动或关键词未命中时，多个 domain 逐个查询会引发 N+1 问题。
+# 添加 TTL 缓存，避免重复计算。
+_DOMAIN_CENTROID_TTL = 300.0  # 5 分钟
+_domain_centroid_cache: dict[int, tuple[np.ndarray, float]] = {}  # domain_id → (centroid, timestamp)
+
+
+def _get_domain_centroid(
+    domain: dict[str, Any],
+    adapter: Any,
+) -> np.ndarray | None:
+    """获取 domain 的 centroid 向量，带 TTL 缓存避免 N+1 查询。
+
+    优先使用 domain.k_vector；若为 NULL，从子节点 k_vector 均值实时算并缓存。
+    """
+    k_vec = domain.get("k_vector")
+    if k_vec is not None:
+        return np.array(k_vec, dtype=np.float32) if not isinstance(k_vec, np.ndarray) else k_vec
+
+    domain_id = domain.get("id")
+    if domain_id is None:
+        return None
+
+    now = time.time()
+    cached = _domain_centroid_cache.get(domain_id)
+    if cached is not None and (now - cached[1]) < _DOMAIN_CENTROID_TTL:
+        return cached[0]
+
+    # 缓存未命中，从子节点算 centroid
+    children = adapter.get_child_nodes(domain_id)
+    child_vectors = [
+        np.array(c["k_vector"], dtype=np.float32)
+        for c in children if c.get("k_vector") is not None
+    ]
+    if not child_vectors:
+        return None
+
+    centroid = np.mean(child_vectors, axis=0)
+    _domain_centroid_cache[domain_id] = (centroid, now)
+    return centroid
+
+
+def _reset_domain_centroid_cache() -> None:
+    """重置 domain centroid 缓存（测试用）。"""
+    _domain_centroid_cache.clear()
 
 
 def _extract_keywords(text: str) -> list[str]:
@@ -93,26 +142,16 @@ def locate_best_subject(
     if not domains:
         return None
 
-    # 计算每个 domain 的 centroid（subject 节点的 k_vector 通常为 NULL，
-    # 需要用子 knowledge_point 的 k_vector 实时算均值）
+    # 计算每个 domain 的 centroid — 使用 TTL 缓存避免 N+1 查询
     best_domain: dict[str, Any] | None = None
     best_score = -1.0
     query_vec = np.array(query_embedding, dtype=np.float32)
 
     for domain in domains:
-        k_vec = domain.get("k_vector")
-        if k_vec is None:
-            # 从子节点实时算 centroid
-            children = adapter.get_child_nodes(domain["id"])
-            child_vectors = [
-                np.array(c["k_vector"], dtype=np.float32)
-                for c in children if c.get("k_vector") is not None
-            ]
-            if child_vectors:
-                k_vec = np.mean(child_vectors, axis=0)
-            else:
-                continue
-        score = cosine_similarity(query_vec, k_vec if isinstance(k_vec, np.ndarray) else np.array(k_vec, dtype=np.float32))
+        centroid = _get_domain_centroid(domain, adapter)
+        if centroid is None:
+            continue
+        score = cosine_similarity(query_vec, centroid)
         if score > best_score:
             best_score = score
             best_domain = domain
@@ -125,6 +164,7 @@ def locate_best_subject(
         logger.debug(
             "locate_best_subject: embedding match -> %s (score=%.4f)",
             best_domain.get("name", ""), best_score,
+            extra={"event": "locate_best_subject.hit", "domain": best_domain.get("name", ""), "score": round(best_score, 4)},
         )
         return best_domain
 
@@ -162,9 +202,10 @@ def locate_subject(
         logger.debug(
             "locate_subject: match -> %s (depth=%d)",
             best.get("name", ""), best.get("depth", 0),
+            extra={"event": "locate_subject.hit", "subject": best.get("name", ""), "depth": best.get("depth", 0)},
         )
     else:
-        logger.debug("locate_subject: no match found")
+        logger.debug("locate_subject: no match found", extra={"event": "locate_subject.miss"})
     return best
 
 
@@ -264,7 +305,11 @@ def attention_filter(
         return result
 
     except Exception:
-        logger.debug("attention_filter 异常，返回空结果", exc_info=True)
+        logger.debug(
+            "attention_filter 异常，返回空结果",
+            exc_info=True,
+            extra={"event": "attention_filter.error"},
+        )
         return []
 
 
@@ -429,7 +474,6 @@ def format_context_lines(
     for kp in knowledge_points:
         text = kp.get("text", "") or kp.get("name", "")
         if text:
-            import html as _html
             node_id = kp.get("id", "")
             score = kp.get("score", 0.0)
             # 动态读取 source 字段，避免多跳 strategy 信息丢失

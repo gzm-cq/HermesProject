@@ -15,12 +15,13 @@ from self_evolving.models.risk_assessment import (
     RISK_LEVEL_SCORES,
 )
 from self_evolving.adapters.llm_client import LLMClient
+from self_evolving.prompt_loader import get_prompt
 
 logger = logging.getLogger(__name__)
 
-# ── Prompts ──────────────────────────────────────────────────────────
+# ── Prompts (硬编码 fallback) ────────────────────────────────────────
 
-RISK_SCAN_PROMPT = """扫描以下内容，识别潜在风险。
+_FALLBACK_RISK_SCAN = """扫描以下内容，识别潜在风险。
 
 内容：
 {content}
@@ -41,7 +42,7 @@ RISK_SCAN_PROMPT = """扫描以下内容，识别潜在风险。
 请基于代码/内容的实际上下文判断，不要仅靠关键词匹配。
 """
 
-REDUNDANCY_SCAN_PROMPT = """扫描以下内容中的冗余。
+_FALLBACK_REDUNDANCY_SCAN = """扫描以下内容中的冗余。
 
 内容：
 {content}
@@ -62,13 +63,22 @@ REDUNDANCY_SCAN_PROMPT = """扫描以下内容中的冗余。
 不要误报正常代码结构。
 """
 
-COMPRESS_PROMPT = """请优化以下内容，在保持信息完整性的前提下压缩到约一半长度。
+_FALLBACK_COMPRESS = """请优化以下内容，在保持信息完整性的前提下压缩到约一半长度。
 
 内容：
 {content}
 
 输出压缩后的纯文本内容，不要额外解释。
 """
+
+def RISK_SCAN_PROMPT() -> str:
+    return get_prompt("refinement", "risk_scan", _FALLBACK_RISK_SCAN)
+
+def REDUNDANCY_SCAN_PROMPT() -> str:
+    return get_prompt("refinement", "redundancy_scan", _FALLBACK_REDUNDANCY_SCAN)
+
+def COMPRESS_PROMPT() -> str:
+    return get_prompt("refinement", "compress", _FALLBACK_COMPRESS)
 
 
 @dataclass
@@ -214,7 +224,7 @@ class RefinementOperator:
 
         # LLM-based: detect structural redundancies for larger content
         if len(content) > 500:
-            prompt = REDUNDANCY_SCAN_PROMPT.format(
+            prompt = REDUNDANCY_SCAN_PROMPT().format(
                 content=content[:self.config.max_input_length],
             )
             data = self._call_llm_json([
@@ -239,7 +249,7 @@ class RefinementOperator:
 
         # LLM-based risk scanning
         if self.config.risk_scanning_enabled and len(content) > 200:
-            prompt = RISK_SCAN_PROMPT.format(
+            prompt = RISK_SCAN_PROMPT().format(
                 content=content[:self.config.max_input_length],
             )
             data = self._call_llm_json([
@@ -406,7 +416,7 @@ class RefinementOperator:
             return "\n".join(compressed)
 
         # Large content: use LLM for compression
-        prompt = COMPRESS_PROMPT.format(content=content[:self.config.max_input_length])
+        prompt = COMPRESS_PROMPT().format(content=content[:self.config.max_input_length])
         compressed = self._call_llm_text([
             {"role": "system", "content": "你是内容压缩专家，保持信息完整性的同时最大化压缩。"},
             {"role": "user", "content": prompt},

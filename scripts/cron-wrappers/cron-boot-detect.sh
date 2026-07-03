@@ -28,7 +28,7 @@ cron_section "分析 cron job 状态"
 ANALYSIS_FILE=$(mktemp /tmp/cron-boot-analysis-XXXXXX.json)
 trap "rm -f '$ANALYSIS_FILE'" EXIT
 
-python3 <<PY > "$ANALYSIS_FILE"
+python3 <<'PY' > "$ANALYSIS_FILE"
 import json, os
 from datetime import datetime, timezone
 
@@ -132,18 +132,23 @@ fi
 
 # ===== 阶段 2：生成报告 =====
 cron_section "生成恢复报告"
-REPORT_TEXT=$(python3 -c "
+REPORT_HEADER_TS=$(date '+%Y-%m-%d %H:%M')
+REPORT_TEXT=$(ANALYSIS_FILE="$ANALYSIS_FILE" REPORT_HEADER_TS="$REPORT_HEADER_TS" python3 <<'PY'
 import json
+import os
 
-with open('$ANALYSIS_FILE') as f:
+analysis_path = os.environ["ANALYSIS_FILE"]
+header_ts = os.environ.get("REPORT_HEADER_TS", "")
+
+with open(analysis_path) as f:
     data = json.load(f)
 
-lines = ['⚡ 系统恢复报告 — $(date '+%Y-%m-%d %H:%M')', '']
+lines = [f'⚡ 系统恢复报告 — {header_ts}', '']
 
 lines.append('━━━━━ 补跑成功 — Hermes scheduler 已自动处理 ━━━━━')
 if data.get('caught_up'):
     for j in data['caught_up']:
-        lines.append(f\"  ✅ {j['job_name']} 补跑于 {j['ran_at']}\")
+        lines.append(f"  ✅ {j['job_name']} 补跑于 {j['ran_at']}")
 else:
     lines.append('  （无补跑执行）')
 lines.append('')
@@ -151,7 +156,7 @@ lines.append('')
 lines.append('━━━━━ 错过未补跑 — fast-forward，下次正常排程 ━━━━━')
 if data.get('fast_forwarded'):
     for j in data['fast_forwarded']:
-        lines.append(f\"  ⚪ {j['job_name']} 上次 {j['last_run']}, 错过了 {j['missed_ticks']} 个 tick\")
+        lines.append(f"  ⚪ {j['job_name']} 上次 {j['last_run']}, 错过了 {j['missed_ticks']} 个 tick")
 else:
     lines.append('  （无错过）')
 lines.append('')
@@ -160,16 +165,17 @@ exh = data.get('failed_exhausted', [])
 lines.append('━━━━━ 失败重试耗尽 — 需人工介入 ━━━━━')
 if exh:
     for j in exh:
-        lines.append(f\"  ❌ {j['job_name']}\")
-        lines.append(f\"     ├ 失败时间: {j.get('last_run', '未知')}\")
-        lines.append(f\"     └ 原因: {j.get('last_error', '未知')}\")
+        lines.append(f"  ❌ {j['job_name']}")
+        lines.append(f"     ├ 失败时间: {j.get('last_run', '未知')}")
+        lines.append(f"     └ 原因: {j.get('last_error', '未知')}")
 else:
     lines.append('  （无失败重试耗尽）')
 
 print('\n'.join(lines))
 # 最后一行是状态标记
 print('ALERT' if exh else 'OK')
-")
+PY
+)
 
 STATUS=$(echo "$REPORT_TEXT" | tail -1)
 BODY=$(echo "$REPORT_TEXT" | head -n -1)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +25,10 @@ _LARGE_INPUT_CHARS = 12000
 _MAX_PARALLEL_CHUNKS = 3
 _MAX_XL_CHUNKS = 6
 _JACCARD_DEDUP_THRESHOLD = 0.85
+
+# 全局并行提取信号量：限制跨请求的 LLM 并发数，避免高频对话瞬间打爆 API 限流
+# 默认允许 6 路并发（覆盖单次 XL 输入 6 chunk），可通过环境变量调整
+_GLOBAL_EXTRACT_SEMAPHORE = threading.Semaphore(6)
 
 # 准入门控：建议/配置/命令类非知识条目模式（与 admit.py 同规）
 _GUARD_SUGGESTION_PATTERNS: list[re.Pattern[str]] = [
@@ -217,21 +222,26 @@ def _extract_one_chunk(
     llm_retries: int = 1,
     llm_timeout_seconds: int = 30,
 ) -> list[str]:
-    """执行单块 LLM 知识提取。"""
+    """执行单块 LLM 知识提取。
+
+    通过全局信号量 _GLOBAL_EXTRACT_SEMAPHORE 限速，
+    避免高频对话瞬间打爆 LLM API 限流。
+    """
     from knowledge_tree_builder.phase.merged import analyze_and_split
 
-    cfg = AppConfig(
-        llm_api_url=api_url,
-        llm_api_key=api_key,
-        llm_model=model,
-        extract_temperature=0.0,
-        max_candidates_per_article=max_points,
-        article_max_chars=max(len(chunk_text), 1),
-        llm_retries=llm_retries,
-        llm_request_timeout_seconds=llm_timeout_seconds,
-    )
-    atomics, _ = analyze_and_split(chunk_text, title, config=cfg)
-    return [a["text"] for a in atomics if len(a.get("text", "")) >= min_length]
+    with _GLOBAL_EXTRACT_SEMAPHORE:
+        cfg = AppConfig(
+            llm_api_url=api_url,
+            llm_api_key=api_key,
+            llm_model=model,
+            extract_temperature=0.0,
+            max_candidates_per_article=max_points,
+            article_max_chars=max(len(chunk_text), 1),
+            llm_retries=llm_retries,
+            llm_request_timeout_seconds=llm_timeout_seconds,
+        )
+        atomics, _ = analyze_and_split(chunk_text, title, config=cfg)
+        return [a["text"] for a in atomics if len(a.get("text", "")) >= min_length]
 
 
 def extract_from_dialog(

@@ -1,9 +1,13 @@
-"""全局测试 fixtures。"""
+"""全局测试 fixtures。
+
+注意：所有 hooks/e2e 测试默认 mock Router 返回全开 + HAS_KNOWLEDGE_TREE=True + 禁用
+eval queries 加载，避免真实 HTTP 请求和网络超时。需要自定义行为可自行 patch。
+"""
 
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # pytest 进程必须写临时 trace，避免污染生产 trace.log。
 os.environ["KN_TRACE_LOG_PATH"] = os.path.join(
@@ -49,6 +53,24 @@ def cleanup_hooks_globals() -> None:
         except Exception:
             pass
         nav_hooks._use_logger = None
+
+
+@pytest.fixture(autouse=True)
+def mock_router_and_eval() -> None:
+    """全局 mock Router 返回全开 + HAS_KNOWLEDGE_TREE=True + 禁用 eval queries。
+
+    避免真实 HTTP 请求和网络超时，所有 hooks/e2e 测试默认 Router 全开。
+    需要自定义行为的测试可用自己的 patch.object 覆盖（内层 wins）。
+    """
+    import knowledge_navigation.core.hooks as nav_hooks
+
+    with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": True, "s": True}), \
+         patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True), \
+         patch.object(nav_hooks, "_eval_queries", []), \
+         patch.object(nav_hooks, "_do_hindsight_recall", return_value=None), \
+         patch.object(nav_hooks, "_do_kt_recall", return_value=[]), \
+         patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        yield
 
 
 @pytest.fixture

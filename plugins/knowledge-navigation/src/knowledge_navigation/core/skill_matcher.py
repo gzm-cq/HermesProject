@@ -13,6 +13,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -62,9 +63,11 @@ _skill_index: dict[str, dict[str, Any]] | None = None
 使用文件路径作为 key，便于增量更新时快速查找。
 """
 
-# ── Embedding 缓存 ──
-_embedding_cache: dict[str, np.ndarray] = {}  # skill_path → embedding vector
-_query_embedding_cache: dict[str, tuple[float, np.ndarray]] = {}  # query → (timestamp, embedding)
+# ── Embedding 缓存（LRU 淘汰，防止内存泄漏） ──
+_EMBEDDING_CACHE_MAX = 512  # skill embedding 缓存上限
+_QUERY_EMBEDDING_CACHE_MAX = 256  # query embedding 缓存上限
+_embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()  # skill_path → embedding vector
+_query_embedding_cache: OrderedDict[str, tuple[float, np.ndarray]] = OrderedDict()  # query → (timestamp, embedding)
 
 # ── Embedding 熔断机制（线程安全） ──
 _embedding_fail_count: int = 0  # 连续失败次数
@@ -133,14 +136,19 @@ def _get_embedding_config() -> tuple[str, str, str, int]:
 
 
 def _get_query_embedding(query: str, model: str, url: str, api_key: str) -> np.ndarray | None:
-    """获取 query 的 embedding，带缓存（TTL 30 分钟）。"""
+    """获取 query 的 embedding，带缓存（TTL 30 分钟，LRU 淘汰）。"""
     global _query_embedding_cache
 
     now = time.time()
     if query in _query_embedding_cache:
         ts, emb = _query_embedding_cache[query]
         if now - ts < _QUERY_EMBEDDING_CACHE_TTL:
+            # LRU: 移到末尾标记为最近使用
+            _query_embedding_cache.move_to_end(query)
             return emb
+        else:
+            # 过期，删除
+            del _query_embedding_cache[query]
 
     try:
         import httpx
@@ -154,6 +162,9 @@ def _get_query_embedding(query: str, model: str, url: str, api_key: str) -> np.n
         data = resp.json()
         embedding = np.array(data["data"][0]["embedding"], dtype=np.float32)
         _query_embedding_cache[query] = (now, embedding)
+        # LRU 淘汰：超过上限时删除最旧条目
+        while len(_query_embedding_cache) > _QUERY_EMBEDDING_CACHE_MAX:
+            _query_embedding_cache.popitem(last=False)
         return embedding
     except Exception as e:
         logger.debug("Embedding API 调用失败: %s", e)
@@ -171,6 +182,8 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
         path = skill.get("path", "")
         if path in _embedding_cache:
             result[path] = _embedding_cache[path]
+            # LRU: 移到末尾标记为最近使用
+            _embedding_cache.move_to_end(path)
         else:
             text = f"{skill.get('name', '')} {skill.get('description', '')}"
             texts_to_fetch.append((path, text))
@@ -202,6 +215,9 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
                     emb = np.array(item["embedding"], dtype=np.float32)
                     _embedding_cache[path] = emb
                     result[path] = emb
+            # LRU 淘汰：超过上限时删除最旧条目
+            while len(_embedding_cache) > _EMBEDDING_CACHE_MAX:
+                _embedding_cache.popitem(last=False)
         except Exception as e:
             logger.debug("Embedding 批量获取失败 (batch %d-%d): %s", i, i + len(batch), e)
 
@@ -485,30 +501,19 @@ def strip_frontmatter(text: str) -> str:
 def _extract_keywords(text: str) -> set[str]:
     """从文本中提取关键词（中英文混合）。
 
-    - 英文：按非字母数字分割，转小写，过滤停用词和长度 < 2 的
-    - 中文：提取连续 2+ 汉字的片段（简单 n-gram）
+    委托 core.text_utils.extract_keywords，skill 预筛选激进配置：
+    - 英文 >=2 字符
+    - CJK 连续段 + 2-gram 子串
+    - 额外过滤 skill 场景专用停用词表 _STOPWORDS
     """
-    keywords: set[str] = set()
-
-    # 英文单词
-    en_words = re.findall(r'[a-zA-Z][a-zA-Z0-9_\-\.]+', text.lower())
-    for w in en_words:
-        if len(w) >= 2 and w not in _STOPWORDS:
-            keywords.add(w)
-
-    # 中文片段（2+ 连续汉字）
-    zh_segments = re.findall(r'[\u4e00-\u9fff]{2,}', text)
-    for seg in zh_segments:
-        # 整段作为关键词
-        if seg not in _STOPWORDS:
-            keywords.add(seg)
-        # 2-gram 子串（增加召回）
-        for i in range(len(seg) - 1):
-            gram = seg[i:i+2]
-            if gram not in _STOPWORDS:
-                keywords.add(gram)
-
-    return keywords
+    from knowledge_navigation.core.text_utils import extract_keywords as _tu_extract
+    raw = _tu_extract(
+        text,
+        min_en_length=2,
+        include_cjk_bigrams=True,
+        include_cjk_full=True,
+    )
+    return {k for k in raw if k not in _STOPWORDS}
 
 
 def _keyword_prescreen(
