@@ -5,7 +5,7 @@
 **状态**: ✅ 已实施（Phase 1-3 全部落地）
 > **实施证据**：
 > - Phase 1: `cron_common.sh` 已实现 `cron_run_step_retry()`（exponential backoff）、catchup 模式标记、`_write_state_file()` 写入 `cron-state/` 目录
-> - Phase 2: `cron-boot-detect.sh` 已创建并纳入 cron 调度；`cron-periodic-detect.sh` 已创建但因冗余已从 cron 调度中移除
+> - Phase 2: `cron-boot-detect.sh` 已创建并纳入 cron 调度；`cron-periodic-detect.sh` 已创建，2026-06-24 因冗余从调度移除，2026-07-03 恢复上线（静默模式，无异常不推送）
 > - Phase 3: `cron-catchup-repair.sh` 已创建
 
 ## 0. 核心逻辑

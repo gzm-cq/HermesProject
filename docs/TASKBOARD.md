@@ -61,5 +61,6 @@
 | MC-01 | memory-cleanup merge/compress 质量增强 | 2026-06-15 | [memory-cleanup-optimization-plan](specs/completed/memory-cleanup-optimization-plan.md) |
 | SE-01 | 自进化飞轮 Phase A | 2026-05-30 | [task-inventory](specs/completed/task-inventory.md) |
 | CRON-05 | Cron 环境变量兜底 + Skill Eval timeout 修复 | 2026-07-03 | [cron-env-loader-spec](specs/completed/cron-env-loader-spec.md) |
+| CRON-06 | cron-periodic-detect 恢复上线（L2 静默检测） | 2026-07-03 | [cron-self-healing-spec](specs/completed/cron-self-healing-spec.md) |
 
 > 完整已完成列表见 [specs/completed/](specs/completed/) 目录
