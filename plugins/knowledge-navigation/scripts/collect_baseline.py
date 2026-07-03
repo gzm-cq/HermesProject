@@ -889,7 +889,9 @@ def main() -> None:
             print(f"  (原始数据已写入 {output_path})")
 
     # 没有 --delta 时也保存基线（供 cron delta 检测使用）
-    save_baseline(baseline)
+    # --delta 模式已在 line 874 保存过，不能重复保存否则 prev 被 latest 覆盖
+    if not args["delta"]:
+        save_baseline(baseline)
 
 
 if __name__ == "__main__":

@@ -556,6 +556,10 @@ def rank_skills(
                 if session_has_neg:
                     skill_neg[name] += tool_count
                     new_neg += tool_count
+                    # ── 工具路径也要收集 session（与文本路径对称）──
+                    if (not skill_sessions[name] or
+                        skill_sessions[name][-1].session_id != d.session_id):
+                        skill_sessions[name].append(d)
 
     print(f'本轮新增负反馈: {new_neg} 次 | 累积负反馈技能数: {len(skill_neg)}')
 
