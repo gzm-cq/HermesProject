@@ -47,24 +47,59 @@ else
     _STEP_RESULTS+=("✅ Router 解析失败: 0 次")
 fi
 
-# ===== 2. 检查 recall 成功率 =====
+# ===== 2. 检查 recall 成功率（最近 24h）=====
 cron_section "Recall 成功率检查"
 
 if [[ -f "${PLUGIN_DIR}/trace.log" ]]; then
-    TOTAL_CALLS=$(grep -c "recall_success\|recall_error" "${PLUGIN_DIR}/trace.log" 2>/dev/null || echo 0)
-    SUCCESS_CALLS=$(grep -c "recall_success" "${PLUGIN_DIR}/trace.log" 2>/dev/null || echo 0)
+    # 按 timestamp 字段过滤最近 24h 的 recall_success / recall_error 事件
+    # trace.log 为 JSON Lines，每行有 "timestamp" 字段（ISO 8601 UTC）
+    _RECALL_STATS=$(python3 -c "
+import json, sys
+from datetime import datetime, timezone, timedelta
+
+cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+total = success = 0
+with open('${PLUGIN_DIR}/trace.log', 'r') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        event = d.get('event', '')
+        if event not in ('recall_success', 'recall_error', 'recall_timeout'):
+            continue
+        ts_str = d.get('timestamp', '')
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            continue
+        if ts < cutoff:
+            continue
+        total += 1
+        if event == 'recall_success':
+            success += 1
+print(f'{success} {total}')
+" 2>/dev/null || echo "0 0")
+
+    SUCCESS_CALLS=$(echo "$_RECALL_STATS" | awk '{print $1}')
+    TOTAL_CALLS=$(echo "$_RECALL_STATS" | awk '{print $2}')
     FAIL_CALLS=$((TOTAL_CALLS - SUCCESS_CALLS))
-    
+
     if [[ "$TOTAL_CALLS" -gt 0 ]]; then
         RATE=$((SUCCESS_CALLS * 100 / TOTAL_CALLS))
-        cron_ok "Recall: ${SUCCESS_CALLS}/${TOTAL_CALLS} 成功 (${RATE}%)"
-        _STEP_RESULTS+=("✅ Recall 成功率: ${RATE}% (${SUCCESS_CALLS}/${TOTAL_CALLS})")
+        cron_ok "Recall: ${SUCCESS_CALLS}/${TOTAL_CALLS} 成功 (${RATE}%) (24h)"
+        _STEP_RESULTS+=("✅ Recall 成功率: ${RATE}% (${SUCCESS_CALLS}/${TOTAL_CALLS}) (24h)")
     else
-        cron_warn "trace.log 无 recall 记录"
-        _STEP_RESULTS+=("⚠️ trace.log 无 recall 记录")
+        cron_ok "Recall: 无最近 24h 事件（可能刚部署）"
+        _STEP_RESULTS+=("✅ Recall: 无最近 24h 事件")
     fi
 else
-    cron_warn "trace.log 不存在"
+    cron_warn "trace.log 不存在: ${PLUGIN_DIR}/trace.log"
     _STEP_RESULTS+=("⚠️ trace.log 不存在")
 fi
 
