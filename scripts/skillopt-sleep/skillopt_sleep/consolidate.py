@@ -20,8 +20,15 @@ from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
 
 # Self-contained validation gate (vendored from SkillOpt; zero dependency on the
 # research package, so this open-source tool stays decoupled from the paper code).
-from skillopt_sleep.gate import evaluate_gate, select_gate_score
-_HAVE_REPO_GATE = True
+try:
+    from skillopt_sleep.gate import evaluate_gate, select_gate_score
+    _HAVE_REPO_GATE = True
+except ImportError:
+    _HAVE_REPO_GATE = False
+    evaluate_gate = None  # type: ignore[assignment]
+    def select_gate_score(hard: float, soft: float, metric: str, mixed_weight: float) -> float:  # type: ignore[no-redef]
+        """Fallback: use hard score when gate module unavailable."""
+        return hard
 
 
 @dataclass
@@ -205,7 +212,7 @@ def consolidate(
         final_hard, final_soft = _gate_last_hard, _gate_last_soft
         final_score = select_gate_score(final_hard, final_soft, gate_metric, gate_mixed_weight)
         base_gate_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
-        if _HAVE_REPO_GATE:
+        if _HAVE_REPO_GATE and evaluate_gate is not None:
             gate = evaluate_gate(
                 candidate_skill=cand_skill,
                 cand_hard=final_hard,

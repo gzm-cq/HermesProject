@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 _LEAF_CACHE_TTL = 60.0  # 秒
 _leaf_cache: list[dict[str, Any]] | None = None
 _leaf_cache_at: float = 0.0
+_leaf_cache_lock = threading.Lock()
 
 _CONFLICT_KEYWORDS = ("不", "不是", "不能", "无效", "不再", "相反", "错误", "不要")
 
@@ -285,22 +288,24 @@ def _extract_entities(text: str) -> list[str]:
 
 
 def _get_cached_leaf_nodes(adapter: Any) -> list[dict[str, Any]]:
-    """TTL 缓存的 get_leaf_nodes，避免每轮 placement 都查 PG。"""
+    """TTL 缓存的 get_leaf_nodes，避免每轮 placement 都查 PG。线程安全。"""
     global _leaf_cache, _leaf_cache_at
     now = time.time()
-    if _leaf_cache is not None and (now - _leaf_cache_at) < _LEAF_CACHE_TTL:
+    with _leaf_cache_lock:
+        if _leaf_cache is not None and (now - _leaf_cache_at) < _LEAF_CACHE_TTL:
+            return _leaf_cache
+        _leaf_cache = adapter.get_leaf_nodes()
+        _leaf_cache_at = now
+        assert _leaf_cache is not None
         return _leaf_cache
-    _leaf_cache = adapter.get_leaf_nodes()
-    _leaf_cache_at = now
-    assert _leaf_cache is not None
-    return _leaf_cache
 
 
 def _reset_leaf_cache() -> None:
-    """重置 leaf cache（供测试使用）。"""
+    """重置 leaf cache（供测试使用）。线程安全。"""
     global _leaf_cache, _leaf_cache_at
-    _leaf_cache = None
-    _leaf_cache_at = 0.0
+    with _leaf_cache_lock:
+        _leaf_cache = None
+        _leaf_cache_at = 0.0
 
 
 def _prepare_placement_context(adapter: Any, parent_node: dict[str, Any] | None) -> PlacementContext:

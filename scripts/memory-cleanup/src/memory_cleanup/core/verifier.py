@@ -119,7 +119,8 @@ def phase2_verify(
             )
             if not has_real_fix:
                 result["verdict"] = "correct"
-                result["note"] = f"corrected_text 无效（overlap={effective_overlap:.2f}，kw={kw_overlap:.2f} char={char_overlap:.2f if total_kw < 3 else kw_overlap:.2f}），降级为 correct"
+                _char_val = char_overlap if total_kw < 3 else kw_overlap
+                result["note"] = f"corrected_text 无效（overlap={effective_overlap:.2f}，kw={kw_overlap:.2f} char={_char_val:.2f}），降级为 correct"
 
         return {"index": idx, "original": text, "session_snippet": snippet or "", **result}
 

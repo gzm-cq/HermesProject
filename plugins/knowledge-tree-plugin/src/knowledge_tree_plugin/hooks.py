@@ -8,6 +8,7 @@ post_llm_call:
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import queue
@@ -54,6 +55,7 @@ _task_queue: queue.Queue["ExtractTask"] = queue.Queue(maxsize=_QUEUE_MAXSIZE)
 _worker_started = False
 _worker_lock = threading.Lock()
 _extract_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kt-extract-timeout")
+atexit.register(lambda: _extract_executor.shutdown(wait=False, cancel_futures=True))
 
 # 轻量门控：匹配明显执行状态/日志/命令输出，避免无意义 LLM 提取
 _STATUS_PATTERNS: tuple[re.Pattern[str], ...] = (

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import random
 from itertools import combinations
 from typing import Any
 
@@ -759,8 +760,10 @@ class ConsolidationEngine:
                 continue
             # 性能优化：同科超过 100 个 KPs 时随机采样 100 个，避免 O(n²) 性能问题
             if len(kid_list) > 100:
-                import random
-                kid_list = random.sample(kid_list, 100)
+                # 确定性种子：基于 kid_list 内容，保证同一输入同一输出
+                _seed = hash(frozenset(kid_list)) % (2**32)
+                rng = random.Random(_seed)
+                kid_list = rng.sample(kid_list, 100)
             for i, ka in enumerate(kid_list[:-1]):
                 va = all_kps.get(ka)
                 if va is None:
