@@ -1140,6 +1140,191 @@ def _assemble_xml_output(
     return "\n".join(context_lines)
 
 
+def _post_process_recall(
+    result: dict[str, Any] | None,
+    kt_raw_results: list[dict[str, Any]],
+    hs_active: bool,
+    kt_active: bool,
+    skill_context: str,
+    session_id: str,
+    user_message: str,
+    query_trunc: str,
+    t0: float,
+    eval_match_param: dict | None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+    """后处理：降级 + 使用日志 + 过滤 + boost + 因果链 + 压缩 + 跨域去重 + KT对齐。
+
+    Returns:
+        (kept, meta) — kept 为 None 时调用方应早期返回。
+        meta 包含 latency_ms, raw_results, excluded_count 等中间统计值。
+    """
+    # ===== Hindsight 失败/空结果时，知识树独立降级 =====
+    if not result and hs_active:
+        if not kt_raw_results:
+            logger.info(
+                "recall empty (Hindsight + KT)",
+                extra={
+                    "session_id": session_id,
+                    "query_trunc": query_trunc,
+                    "event": "recall_empty",
+                    "latency_ms": int((time.time() - t0) * 1000),
+                },
+            )
+            return None, {}
+        logger.info(
+            "Hindsight 无结果，使用 KT-only fallback",
+            extra={"session_id": session_id, "query_trunc": query_trunc, "event": "hindsight_fail_kt_fallback", "kt_count": len(kt_raw_results)},
+        )
+        result = {"results": [], "trace": {}}
+
+    if result is None:
+        result = {"results": [], "trace": {}}
+
+    latency_ms = int((time.time() - t0) * 1000)
+    raw_results = result.get("results", [])
+
+    # ===== P2-2 Phase A: 记录召回使用日志 =====
+    _ul = _get_use_logger()
+    if _ul is not None:
+        try:
+            if hs_active and raw_results:
+                _ul.log_recall(
+                    query=user_message,
+                    results=raw_results,
+                    source="hindsight",
+                    session_id=session_id,
+                )
+            if kt_raw_results:
+                _ul.log_recall(
+                    query=user_message,
+                    results=kt_raw_results,
+                    source="knowledge_tree",
+                    session_id=session_id,
+                )
+            if skill_context:
+                _ul.log_recall(
+                    query=user_message,
+                    results=[{"id": "skill_context", "score": 1.0}],
+                    source="skill",
+                    session_id=session_id,
+                )
+        except Exception as _ul_err:
+            logger.debug("use_log record failed silently: %s", _ul_err)
+
+    if not raw_results and not kt_raw_results:
+        if hs_active:
+            circuit_record_success()
+        logger.info(
+            "recall empty results",
+            extra={
+                "session_id": session_id,
+                "query_trunc": query_trunc,
+                "event": "recall_empty_results",
+                "latency_ms": latency_ms,
+            },
+        )
+        return None, {}
+
+    if raw_results:
+        circuit_record_success()
+
+    filtered_raw, excluded_count = exclude_marked(raw_results) if raw_results else ([], 0)
+    trace_data = result.get("trace", {})
+    rerank_map = extract_rerank_scores(trace_data) if raw_results else {}
+
+    if rerank_map and filtered_raw:
+        for r in filtered_raw:
+            nid = r.get("id", "")
+            score = rerank_map.get(nid)
+            if score is not None:
+                r.setdefault("score", score)
+                r.setdefault("rerank_score", score)
+
+    if filtered_raw:
+        _hit_counter.boost_scores(filtered_raw, rerank_map)
+
+    if CONFIG.enable_causal_chain and rerank_map:
+        try:
+            _causal_boost(filtered_raw, rerank_map, CONFIG.causal_boost_alpha, CONFIG.causal_boost_cap)
+        except Exception:
+            logger.debug("causal_boost 异常（非关键路径，跳过）")
+
+    effective_max = _compaction.get_effective_max_results(session_id, CONFIG.max_results)
+    mentioned_at_map = _build_mentioned_at_map(filtered_raw)
+    kept, all_scores, score_comparison = filter_by_score(
+        filtered_raw, rerank_map,
+        min_score=CONFIG.min_score,
+        max_results=effective_max,
+        enable_temporal=CONFIG.enable_temporal,
+        mentioned_at_map=mentioned_at_map,
+    )
+
+    kept_before_compress = len(kept)
+
+    if CONFIG.enable_score_span_compress and kept:
+        from knowledge_navigation.core.filtering import extract_ce_raw_scores, compress_by_score_span
+        ce_raw_map = extract_ce_raw_scores(trace_data)
+        kept = compress_by_score_span(
+            kept, ce_raw_map, effective_max,
+            CONFIG.score_span_top3_threshold,
+            CONFIG.score_span_half_threshold,
+        )
+    kept_before_kt = len(kept)
+
+    if eval_match_param is None:
+        eval_match = _match_eval_query(user_message) if CONFIG.eval_match_enabled else None
+    else:
+        eval_match = eval_match_param
+
+    summary = _task_tracker.get_summary_prompt(session_id)
+
+    if not kept and summary is None:
+        if not kt_active:
+            return None, {}
+        # 知识树可能返回结果，继续
+
+    kt_dedup_removed = 0
+    if kt_raw_results and kept:
+        dedup_action = CONFIG.cross_domain_dedup_action
+        dedup_demote_factor = CONFIG.cross_domain_dedup_demote_factor
+        if CONFIG.cross_domain_dedup_mode == "text_embedding":
+            kt_raw_results, kt_dedup_removed = cross_domain_dedup(
+                hindsight_results=kept, kt_results=kt_raw_results,
+                threshold=0.65, embed_fn=_batch_embed,
+                action=dedup_action, demote_factor=dedup_demote_factor,
+            )
+        else:
+            kt_raw_results, kt_dedup_removed = cross_domain_dedup(
+                hindsight_results=kept, kt_results=kt_raw_results,
+                threshold=0.65, embed_fn=None,
+                action=dedup_action, demote_factor=dedup_demote_factor,
+            )
+        if kt_dedup_removed:
+            logger.info(
+                "跨域去重（%s）移除 %d 条知识树重复结果",
+                dedup_action, kt_dedup_removed,
+                extra={"session_id": session_id, "kt_dedup_removed": kt_dedup_removed},
+            )
+
+    for kp in kt_raw_results:
+        candidate = _build_knowledge_tree_candidate(kp)
+        if candidate and candidate.get("final_score", 0) >= CONFIG.min_score:
+            kept.append(candidate)
+
+    return kept, {
+        "latency_ms": latency_ms,
+        "raw_results": raw_results,
+        "excluded_count": excluded_count,
+        "kept_before_kt": kept_before_kt,
+        "kt_dedup_removed": kt_dedup_removed,
+        "score_comparison": score_comparison,
+        "kept_before_compress": kept_before_compress,
+        "summary": summary,
+        "eval_match": eval_match,
+        "kt_raw_results": kt_raw_results,
+    }
+
+
 def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
     """每次 LLM 调用前自动执行：三层门控 → LLM Router → 三路 mask 条件执行 → 后处理注入。"""
 
@@ -1187,189 +1372,24 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     # 多跳关联展开
     kt_raw_results = _expand_multi_hop(kt_raw_results, _kt_active, session_id)
 
-    # ===== Hindsight 失败/空结果时，知识树独立降级 =====
-    if not result and _hs_active:
-        if not kt_raw_results:
-            # 两侧均无结果（空结果是正常业务状态，不触发熔断）
-            logger.info(
-                "recall empty (Hindsight + KT)",
-                extra={
-                    "session_id": session_id,
-                    "query_trunc": query_trunc,
-                    "event": "recall_empty",
-                    "latency_ms": int((time.time() - t0) * 1000),
-                },
-            )
-            return _skill_context if _skill_context else None
-        # Hindsight 失败但知识树有结果 → 用 KT-only 继续
-        logger.info(
-            "Hindsight 无结果，使用 KT-only fallback",
-            extra={"session_id": session_id, "query_trunc": query_trunc, "event": "hindsight_fail_kt_fallback", "kt_count": len(kt_raw_results)},
-        )
-        result = {"results": [], "trace": {}}
-
-    # 确保 result 是 dict（H 未激活或 H 无结果但 KT 继续），下游 .get() 不报错
-    if result is None:
-        result = {"results": [], "trace": {}}
-
-    latency_ms = int((time.time() - t0) * 1000)
-    raw_results = result.get("results", [])
-
-    # ===== P2-2 Phase A: 记录召回使用日志 =====
-    _ul = _get_use_logger()
-    if _ul is not None:
-        try:
-            if _hs_active and raw_results:
-                _ul.log_recall(
-                    query=user_message,
-                    results=raw_results,
-                    source="hindsight",
-                    session_id=session_id,
-                )
-            if _kt_active and kt_raw_results:
-                _ul.log_recall(
-                    query=user_message,
-                    results=kt_raw_results,
-                    source="knowledge_tree",
-                    session_id=session_id,
-                )
-            if _s_active and _skill_context:
-                _ul.log_recall(
-                    query=user_message,
-                    results=[{"id": "skill_context", "score": 1.0}],
-                    source="skill",
-                    session_id=session_id,
-                )
-        except Exception as _ul_err:
-            logger.debug("use_log record failed silently: %s", _ul_err)
-
-    if not raw_results and not kt_raw_results:
-        # 两侧均无结果
-        if _hs_active:
-            circuit_record_success()
-        logger.info(
-            "recall empty results",
-            extra={
-                "session_id": session_id,
-                "query_trunc": query_trunc,
-                "event": "recall_empty_results",
-                "latency_ms": latency_ms,
-            },
-        )
-        return _skill_context if _skill_context else None
-
-    if raw_results:
-        circuit_record_success()
-
-    # 排除已标记条目
-    filtered_raw, excluded_count = exclude_marked(raw_results) if raw_results else ([], 0)
-
-    # 提取 rerank 分数
-    trace_data = result.get("trace", {})
-    rerank_map = extract_rerank_scores(trace_data) if raw_results else {}
-
-    # 回填 rerank_score 到原始结果上，供下游（含日志/测试）使用
-    if rerank_map and filtered_raw:
-        for r in filtered_raw:
-            nid = r.get("id", "")
-            score = rerank_map.get(nid)
-            if score is not None:
-                r.setdefault("score", score)
-                r.setdefault("rerank_score", score)
-
-    # ===== C-P1-4: 本地重要性缓存 — boost 高频记忆 =====
-    if filtered_raw:
-        _hit_counter.boost_scores(filtered_raw, rerank_map)
-
-    # ===== 因果链 boost：被因果链引用的记忆提权 =====
-    if CONFIG.enable_causal_chain and rerank_map:
-            try:
-                _causal_boost(filtered_raw, rerank_map, CONFIG.causal_boost_alpha, CONFIG.causal_boost_cap)
-            except Exception:
-                logger.debug("causal_boost 异常（非关键路径，跳过）")
-                pass
-
-    # ===== C-P1-1: 轻量级 Compaction — 长对话中减少注入 =====
-    effective_max = _compaction.get_effective_max_results(session_id, CONFIG.max_results)
-
-    # 构建 mentioned_at 映射（时态融合需要）
-    mentioned_at_map = _build_mentioned_at_map(filtered_raw)
-
-    # 过滤结果（始终同时计算 base + temporal 双分对比）
-    kept, all_scores, score_comparison = filter_by_score(
-        filtered_raw,
-        rerank_map,
-        min_score=CONFIG.min_score,
-        max_results=effective_max,
-        enable_temporal=CONFIG.enable_temporal,
-        mentioned_at_map=mentioned_at_map,
+    # ===== 后处理（降级 + 过滤 + boost + 因果链 + 压缩 + 跨域去重 + KT对齐）=====
+    _pp_result, _pp_meta = _post_process_recall(
+        result, kt_raw_results, _hs_active, _kt_active, _skill_context,
+        session_id, user_message, query_trunc, t0, _eval_match,
     )
-
-    kept_before_compress = len(kept)
-
-    # ===== C-P3: CE 分数跨度压缩 — 差距大时裁切低质量结果 =====
-    if CONFIG.enable_score_span_compress and kept:
-        from knowledge_navigation.core.filtering import extract_ce_raw_scores, compress_by_score_span
-        ce_raw_map = extract_ce_raw_scores(trace_data)
-        kept = compress_by_score_span(
-            kept, ce_raw_map, effective_max,
-            CONFIG.score_span_top3_threshold,
-            CONFIG.score_span_half_threshold,
-        )
-    kept_before_kt = len(kept)  # 压缩后、KT 追加前
-
-    # 复用顶部 eval 检查结果，避免重复调用 _match_eval_query
-    if _eval_match is None:
-        eval_match = _match_eval_query(user_message) if CONFIG.eval_match_enabled else None
-    else:
-        eval_match = _eval_match
-
-    # ===== C-P1-3: 定期任务回述 =====
-    summary = _task_tracker.get_summary_prompt(session_id)
-
-    if not kept and summary is None:
-        # H 路没有结果，检查 KT 路是否可能有结果
-        if not _kt_active:
-            return _skill_context if _skill_context else None
-        # 知识树可能返回结果，继续
-
-    # ===== 跨域语义去重：知识域 vs 经验域（默认文本 n-gram，无 API 调用）=====
-    kt_dedup_removed = 0
-    if kt_raw_results and kept:
-        # 读取配置，支持 KN_CROSS_DOMAIN_DEDUP_ACTION=remove/demote 和 KN_CROSS_DEDUP_DEMOTE_FACTOR
-        dedup_action = CONFIG.cross_domain_dedup_action
-        dedup_demote_factor = CONFIG.cross_domain_dedup_demote_factor
-        if CONFIG.cross_domain_dedup_mode == "text_embedding":
-            kt_raw_results, kt_dedup_removed = cross_domain_dedup(
-                hindsight_results=kept,
-                kt_results=kt_raw_results,
-                threshold=0.65,
-                embed_fn=_batch_embed,
-                action=dedup_action,
-                demote_factor=dedup_demote_factor,
-            )
-        else:
-            kt_raw_results, kt_dedup_removed = cross_domain_dedup(
-                hindsight_results=kept,
-                kt_results=kt_raw_results,
-                threshold=0.65,
-                embed_fn=None,  # 文本模式，不调用 embedding API
-                action=dedup_action,
-                demote_factor=dedup_demote_factor,
-            )
-        if kt_dedup_removed:
-            logger.info(
-                "跨域去重（%s）移除 %d 条知识树重复结果",
-                dedup_action,
-                kt_dedup_removed,
-                extra={"session_id": session_id, "kt_dedup_removed": kt_dedup_removed},
-            )
-
-    # 知识树结果对齐统一候选结构，保证进入 score_stats 的条目都有 final_score
-    for kp in kt_raw_results:
-        candidate = _build_knowledge_tree_candidate(kp)
-        if candidate and candidate.get("final_score", 0) >= CONFIG.min_score:
-            kept.append(candidate)
+    if _pp_result is None:
+        return _skill_context if _skill_context else None
+    kept = _pp_result
+    latency_ms = _pp_meta["latency_ms"]
+    raw_results = _pp_meta["raw_results"]
+    excluded_count = _pp_meta["excluded_count"]
+    kept_before_kt = _pp_meta["kept_before_kt"]
+    kt_dedup_removed = _pp_meta["kt_dedup_removed"]
+    score_comparison = _pp_meta["score_comparison"]
+    kept_before_compress = _pp_meta.get("kept_before_compress", len(kept))
+    summary = _pp_meta.get("summary")
+    eval_match = _pp_meta.get("eval_match", _eval_match)
+    kt_raw_results = _pp_meta.get("kt_raw_results", kt_raw_results)
 
     kept, _skill_context = _dedup_and_budget(kept, session_id, _skill_context)
 
