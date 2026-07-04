@@ -218,6 +218,7 @@ def main() -> None:
             "query": query,
             "expected_ids": [m["id"]],
             "fact_type": m["fact_type"],
+            "dimension": "semantic",
         })
 
     output = args.output or ""

@@ -62,5 +62,6 @@
 | SE-01 | 自进化飞轮 Phase A | 2026-05-30 | [task-inventory](specs/completed/task-inventory.md) |
 | CRON-05 | Cron 环境变量兜底 + Skill Eval timeout 修复 | 2026-07-03 | [cron-env-loader-spec](specs/completed/cron-env-loader-spec.md) |
 | CRON-06 | cron-periodic-detect 恢复上线（L2 静默检测） | 2026-07-03 | [cron-self-healing-spec](specs/completed/cron-self-healing-spec.md) |
+| KN-08 | eval_queries_auto.json dimension 补全 + 生成器修复 | 2026-07-04 | — |
 
 > 完整已完成列表见 [specs/completed/](specs/completed/) 目录
