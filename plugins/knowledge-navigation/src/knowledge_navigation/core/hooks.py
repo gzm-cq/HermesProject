@@ -895,6 +895,97 @@ def _execute_recall(
     return result, kt_raw_results, skill_context
 
 
+def _dedup_and_budget(
+    kept: list[dict[str, Any]],
+    session_id: str,
+    skill_context: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Turn-to-turn 去重 + 文本去重 + Token 预算守门。"""
+    # Turn-to-turn 去重：session 级 LRU
+    _touch_injected_session(session_id)
+    _session_history = _injected_ids[session_id]
+    _turn_dedup_count = 0
+    if CONFIG.turn_to_turn_dedup_mode == "demote":
+        demoted = 0
+        for r in kept:
+            nid = str(r.get("id", ""))
+            if nid and nid in _session_history:
+                demoted_score = _candidate_score(r) * 0.1
+                r["final_score"] = demoted_score
+                r["rerank_score"] = demoted_score
+                demoted += 1
+        if demoted:
+            logger.info("turn-to-turn 降权: %d 条已注入记忆分数降至 0.1x", demoted)
+        kept.sort(key=_candidate_score, reverse=True)
+    else:
+        for r in list(kept):
+            nid = str(r.get("id", ""))
+            if nid and nid in _session_history:
+                kept.remove(r)
+                _turn_dedup_count += 1
+        if _turn_dedup_count:
+            logger.info("turn-to-turn 去重: 移除 %d 条已注入记忆", _turn_dedup_count)
+    for r in kept:
+        nid = str(r.get("id", ""))
+        if nid:
+            _session_history[nid] = time.time()
+    if len(_session_history) > _INJECTED_LRU_MAX:
+        for _ in range(_INJECTED_LRU_MAX // 2):
+            _session_history.popitem(last=False)
+
+    from knowledge_navigation.core.filtering import dedup_by_text as _dedup_by_text
+    kept = _dedup_by_text(kept)
+
+    if CONFIG.enable_token_budget:
+        hs_list = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
+        kt_list = [r for r in kept if r.get("source") == "knowledge_tree"]
+        skill_list = []
+        if skill_context:
+            skill_list = [{"text": skill_context, "source": "skill", "final_score": 1.0}]
+
+        hs_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_list)
+        kt_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_list)
+        skill_tokens_before = estimate_tokens(skill_context) if skill_context else 0
+
+        hs_kept_tb, kt_kept_tb, skill_kept_tb = apply_token_budget(
+            hs_list, kt_list, skill_list,
+            CONFIG.token_budget_total,
+            CONFIG.token_budget_hindsight_ratio,
+            CONFIG.token_budget_kt_ratio,
+            CONFIG.token_budget_skill_ratio,
+        )
+
+        hs_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb)
+        kt_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_kept_tb)
+        skill_tokens_after = estimate_tokens(skill_kept_tb[0]["text"]) if skill_kept_tb else 0
+
+        kept = hs_kept_tb + kt_kept_tb
+        if skill_kept_tb:
+            skill_context = skill_kept_tb[0]["text"]
+        else:
+            skill_context = ""
+
+        logger.info(
+            "Token budget: hs %d→%d, kt %d→%d, skill %d→%d (total budget=%d)",
+            hs_tokens_before, hs_tokens_after,
+            kt_tokens_before, kt_tokens_after,
+            skill_tokens_before, skill_tokens_after,
+            CONFIG.token_budget_total,
+            extra={
+                "event": "token_budget",
+                "hs_tokens_before": hs_tokens_before,
+                "hs_tokens_after": hs_tokens_after,
+                "kt_tokens_before": kt_tokens_before,
+                "kt_tokens_after": kt_tokens_after,
+                "skill_tokens_before": skill_tokens_before,
+                "skill_tokens_after": skill_tokens_after,
+                "total_budget": CONFIG.token_budget_total,
+            },
+        )
+
+    return kept, skill_context
+
+
 def _expand_multi_hop(
     kt_raw_results: list[dict[str, Any]],
     kt_active: bool,
@@ -1280,96 +1371,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         if candidate and candidate.get("final_score", 0) >= CONFIG.min_score:
             kept.append(candidate)
 
-    # Turn-to-turn 去重：session 级 LRU
-    _touch_injected_session(session_id)
-    _session_history = _injected_ids[session_id]
-    _turn_dedup_count = 0
-    if CONFIG.turn_to_turn_dedup_mode == "demote":
-        # 降权模式：已注入过的记忆大幅降低分数，但保留在候选池中
-        demoted = 0
-        for r in kept:
-            nid = str(r.get("id", ""))
-            if nid and nid in _session_history:
-                demoted_score = _candidate_score(r) * 0.1
-                r["final_score"] = demoted_score
-                r["rerank_score"] = demoted_score
-                demoted += 1
-        if demoted:
-            logger.info("turn-to-turn 降权: %d 条已注入记忆分数降至 0.1x", demoted)
-        # 重新排序：分数最低的排在末尾
-        kept.sort(key=_candidate_score, reverse=True)
-    else:
-        # 移除模式：原行为，硬删除
-        for r in list(kept):
-            nid = str(r.get("id", ""))
-            if nid and nid in _session_history:
-                kept.remove(r)
-                _turn_dedup_count += 1
-        if _turn_dedup_count:
-            logger.info("turn-to-turn 去重: 移除 %d 条已注入记忆", _turn_dedup_count)
-    # 记录本轮即将注入的 node_id
-    for r in kept:
-        nid = str(r.get("id", ""))
-        if nid:
-            _session_history[nid] = time.time()
-    # LRU 上限 256，超限时淘汰最早的一半
-    if len(_session_history) > _INJECTED_LRU_MAX:
-        for _ in range(_INJECTED_LRU_MAX // 2):
-            _session_history.popitem(last=False)
-
-    # 文本去重：同一轮 recall 中 Jaccard 相似度 > 0.8 的只保留一条
-    from knowledge_navigation.core.filtering import dedup_by_text as _dedup_by_text
-    kept = _dedup_by_text(kept)
-
-    # ===== P1-1: Token 预算守门 =====
-    if CONFIG.enable_token_budget:
-        hs_list = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
-        kt_list = [r for r in kept if r.get("source") == "knowledge_tree"]
-        skill_list = []
-        if _skill_context:
-            skill_list = [{"text": _skill_context, "source": "skill", "final_score": 1.0}]
-
-        hs_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_list)
-        kt_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_list)
-        skill_tokens_before = estimate_tokens(_skill_context) if _skill_context else 0
-
-        hs_kept_tb, kt_kept_tb, skill_kept_tb = apply_token_budget(
-            hs_list,
-            kt_list,
-            skill_list,
-            CONFIG.token_budget_total,
-            CONFIG.token_budget_hindsight_ratio,
-            CONFIG.token_budget_kt_ratio,
-            CONFIG.token_budget_skill_ratio,
-        )
-
-        hs_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb)
-        kt_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_kept_tb)
-        skill_tokens_after = estimate_tokens(skill_kept_tb[0]["text"]) if skill_kept_tb else 0
-
-        kept = hs_kept_tb + kt_kept_tb
-        if skill_kept_tb:
-            _skill_context = skill_kept_tb[0]["text"]
-        else:
-            _skill_context = ""
-
-        logger.info(
-            "Token budget: hs %d→%d, kt %d→%d, skill %d→%d (total budget=%d)",
-            hs_tokens_before, hs_tokens_after,
-            kt_tokens_before, kt_tokens_after,
-            skill_tokens_before, skill_tokens_after,
-            CONFIG.token_budget_total,
-            extra={
-                "event": "token_budget",
-                "hs_tokens_before": hs_tokens_before,
-                "hs_tokens_after": hs_tokens_after,
-                "kt_tokens_before": kt_tokens_before,
-                "kt_tokens_after": kt_tokens_after,
-                "skill_tokens_before": skill_tokens_before,
-                "skill_tokens_after": skill_tokens_after,
-                "total_budget": CONFIG.token_budget_total,
-            },
-        )
+    kept, _skill_context = _dedup_and_budget(kept, session_id, _skill_context)
 
     return _assemble_xml_output(kept, _skill_context, session_id, user_message, {
         "query_trunc": query_trunc,
