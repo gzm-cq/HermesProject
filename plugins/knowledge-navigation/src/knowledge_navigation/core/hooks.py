@@ -801,6 +801,100 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
     return mask
 
 
+def _execute_recall(
+    session_id: str,
+    user_message: str,
+    hs_active: bool,
+    kt_active: bool,
+    s_active: bool,
+    active_count: int,
+    t0: float,
+    query_trunc: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
+    """执行三路 recall（Hindsight + 知识树 + Skill），并行或串行。
+
+    Returns:
+        (hindsight_result, kt_raw_results, skill_context)
+    """
+    result: dict[str, Any] | None = None
+    kt_raw_results: list[dict[str, Any]] = []
+    skill_context = ""
+
+    if active_count >= 2:
+        # 多路并行（使用共享线程池，避免创建/销毁开销）
+        hs_future = _recall_executor.submit(_do_hindsight_recall, user_message) if hs_active else None
+        kt_future = _recall_executor.submit(_do_kt_recall, session_id, user_message) if kt_active else None
+        sk_future = _recall_executor.submit(_do_skill_match, user_message) if s_active else None
+        try:
+            if hs_future is not None:
+                try:
+                    result = hs_future.result(timeout=CONFIG.timeout_seconds)
+                except FuturesTimeout:
+                    hs_future.cancel()
+                    circuit_record_failure("exception")
+                    logger.error(
+                        "Hindsight recall 超时（%d 秒）",
+                        CONFIG.timeout_seconds,
+                        extra={"session_id": session_id, "query_trunc": query_trunc, "event": "recall_timeout"},
+                    )
+                except Exception as e:
+                    circuit_record_failure("exception")
+                    logger.error(
+                        "Hindsight recall error",
+                        extra={"session_id": session_id, "query_trunc": query_trunc, "error": f"{type(e).__name__}: {e}", "event": "recall_error"},
+                    )
+
+            if kt_future is not None:
+                remaining = max(0.1, CONFIG.timeout_seconds - (time.time() - t0))
+                try:
+                    kt_raw_results = kt_future.result(timeout=remaining)
+                except FuturesTimeout:
+                    kt_future.cancel()
+                    logger.warning("知识树 recall 超时（%.1f 秒）", remaining)
+                    kt_raw_results = []
+                except Exception as e:
+                    logger.warning("知识树 recall 异常（跳过）: %s", e)
+                    kt_raw_results = []
+
+            if sk_future is not None:
+                try:
+                    skill_context = sk_future.result(timeout=5)
+                except Exception as e:
+                    logger.debug("Skill match future error: %s", e)
+        finally:
+            # 取消未完成的 future（共享线程池不 shutdown）
+            if hs_future is not None and not hs_future.done():
+                hs_future.cancel()
+            if kt_future is not None and not kt_future.done():
+                kt_future.cancel()
+            if sk_future is not None and not sk_future.done():
+                sk_future.cancel()
+    else:
+        # 单路串行（节省线程开销，延迟无差别）
+        if hs_active:
+            try:
+                result = _do_hindsight_recall(user_message)
+                if result is None:
+                    circuit_record_failure("exception")
+            except Exception as e:
+                circuit_record_failure("exception")
+                logger.error(
+                    "Hindsight recall error",
+                    extra={"session_id": session_id, "query_trunc": query_trunc, "error": f"{type(e).__name__}: {e}", "event": "recall_error"},
+                )
+                result = None
+        if kt_active:
+            try:
+                kt_raw_results = _do_kt_recall(session_id, user_message)
+            except Exception as e:
+                logger.warning("知识树 recall 异常（跳过）: %s", e)
+                kt_raw_results = []
+        if s_active:
+            skill_context = _do_skill_match(user_message)
+
+    return result, kt_raw_results, skill_context
+
+
 def _expand_multi_hop(
     kt_raw_results: list[dict[str, Any]],
     kt_active: bool,
@@ -993,81 +1087,11 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     _s_active = mask["s"]
     _active_count = sum([_hs_active, _kt_active, _s_active])
 
-    result = None
-    kt_raw_results: list[dict[str, Any]] = []
-    _skill_context = ""
-
-    if _active_count >= 2:
-        # 多路并行（使用共享线程池，避免创建/销毁开销）
-        hs_future = _recall_executor.submit(_do_hindsight_recall, user_message) if _hs_active else None
-        kt_future = _recall_executor.submit(_do_kt_recall, session_id, user_message) if _kt_active else None
-        sk_future = _recall_executor.submit(_do_skill_match, user_message) if _s_active else None
-        try:
-            if hs_future is not None:
-                try:
-                    result = hs_future.result(timeout=CONFIG.timeout_seconds)
-                except FuturesTimeout:
-                    hs_future.cancel()
-                    circuit_record_failure("exception")
-                    logger.error(
-                        "Hindsight recall 超时（%d 秒）",
-                        CONFIG.timeout_seconds,
-                        extra={"session_id": session_id, "query_trunc": query_trunc, "event": "recall_timeout"},
-                    )
-                except Exception as e:
-                    circuit_record_failure("exception")
-                    logger.error(
-                        "Hindsight recall error",
-                        extra={"session_id": session_id, "query_trunc": query_trunc, "error": f"{type(e).__name__}: {e}", "event": "recall_error"},
-                    )
-
-            if kt_future is not None:
-                remaining = max(0.1, CONFIG.timeout_seconds - (time.time() - t0))
-                try:
-                    kt_raw_results = kt_future.result(timeout=remaining)
-                except FuturesTimeout:
-                    kt_future.cancel()
-                    logger.warning("知识树 recall 超时（%.1f 秒）", remaining)
-                    kt_raw_results = []
-                except Exception as e:
-                    logger.warning("知识树 recall 异常（跳过）: %s", e)
-                    kt_raw_results = []
-
-            if sk_future is not None:
-                try:
-                    _skill_context = sk_future.result(timeout=5)
-                except Exception as e:
-                    logger.debug("Skill match future error: %s", e)
-        finally:
-            # 取消未完成的 future（共享线程池不 shutdown）
-            if hs_future is not None and not hs_future.done():
-                hs_future.cancel()
-            if kt_future is not None and not kt_future.done():
-                kt_future.cancel()
-            if sk_future is not None and not sk_future.done():
-                sk_future.cancel()
-    else:
-        # 单路串行（节省线程开销，延迟无差别）
-        if _hs_active:
-            try:
-                result = _do_hindsight_recall(user_message)
-                if result is None:
-                    circuit_record_failure("exception")
-            except Exception as e:
-                circuit_record_failure("exception")
-                logger.error(
-                    "Hindsight recall error",
-                    extra={"session_id": session_id, "query_trunc": query_trunc, "error": f"{type(e).__name__}: {e}", "event": "recall_error"},
-                )
-                result = None
-        if _kt_active:
-            try:
-                kt_raw_results = _do_kt_recall(session_id, user_message)
-            except Exception as e:
-                logger.warning("知识树 recall 异常（跳过）: %s", e)
-                kt_raw_results = []
-        if _s_active:
-            _skill_context = _do_skill_match(user_message)
+    result, kt_raw_results, _skill_context = _execute_recall(
+        session_id, user_message,
+        _hs_active, _kt_active, _s_active, _active_count,
+        t0, query_trunc,
+    )
 
     # 多跳关联展开
     kt_raw_results = _expand_multi_hop(kt_raw_results, _kt_active, session_id)
