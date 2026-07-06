@@ -96,7 +96,7 @@ class KnowledgeNavigationConfig:
     # Recall behavior
     max_results: int = field(default=3)
     max_text_length: int = field(default=200)
-    min_score: float = field(default=0.45)
+    min_score: float = field(default=0.35)
 
     # Performance
     timeout_seconds: int = field(default=25)

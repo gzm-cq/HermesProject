@@ -46,6 +46,18 @@ def load_jobs():
 def load_state(name):
     p = os.path.join(STATE_DIR, f"{name}.json")
     if not os.path.exists(p):
+        # Fallback: search all state files by job_name field
+        if os.path.isdir(STATE_DIR):
+            for f in os.listdir(STATE_DIR):
+                if not f.endswith('.json'):
+                    continue
+                try:
+                    with open(os.path.join(STATE_DIR, f)) as fp:
+                        data = json.load(fp)
+                    if data.get("job_name") == name:
+                        return data
+                except Exception:
+                    pass
         return {}
     with open(p) as f:
         return json.load(f)
@@ -64,7 +76,7 @@ def count_missed_cron(expr, last):
         cnt += 1
     return cnt
 
-result = {"caught_up": [], "fast_forwarded": [], "failed_exhausted": []}
+result = {"caught_up": [], "fast_forwarded": [], "failed_exhausted": [], "failed_unexhausted": []}
 now_ts = NOW.timestamp()
 
 for job in load_jobs():
@@ -84,6 +96,15 @@ for job in load_jobs():
     # 失败重试耗尽
     if exhausted and last_status == "error":
         result["failed_exhausted"].append({
+            "job_name": jname, "job_id": jid,
+            "last_run": last_run,
+            "last_error": st.get("last_error", ""),
+        })
+        continue
+
+    # 失败但未耗尽重试
+    if last_status == "error":
+        result["failed_unexhausted"].append({
             "job_name": jname, "job_id": jid,
             "last_run": last_run,
             "last_error": st.get("last_error", ""),
@@ -120,6 +141,31 @@ for job in load_jobs():
             "job_name": jname, "job_id": jid,
             "last_run": last_run, "missed_ticks": missed,
         })
+
+# Orphan scan: state files with status=fail not matched by any cron job name
+if os.path.isdir(STATE_DIR):
+    existing = set()
+    for lst in result.values():
+        if isinstance(lst, list):
+            for j in lst:
+                existing.add(j.get("job_name", ""))
+    for f in os.listdir(STATE_DIR):
+        if not f.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(STATE_DIR, f)) as fp:
+                data = json.load(fp)
+            if data.get("status") in ("fail", "error"):
+                name = data.get("job_name", f.replace('.json', ''))
+                if name not in existing:
+                    result["failed_exhausted"].append({
+                        "job_name": name, "job_id": "",
+                        "last_run": data.get("run_at", ""),
+                        "last_error": data.get("last_error", f"status={data.get('status','')}"),
+                    })
+                    existing.add(name)
+        except Exception:
+            pass
 
 print(json.dumps(result, ensure_ascii=False))
 PY
@@ -170,10 +216,21 @@ if exh:
         lines.append(f"     └ 原因: {j.get('last_error', '未知')}")
 else:
     lines.append('  （无失败重试耗尽）')
+lines.append('')
+
+unexh = data.get('failed_unexhausted', [])
+if unexh:
+    lines.append('━━━━━ 执行异常（重试中）━━━━━')
+    for j in unexh:
+        lines.append(f"  ⚠️ {j['job_name']}")
+        lines.append(f"     ├ 上次运行: {j.get('last_run', '未知')}")
+        if j.get('last_error'):
+            lines.append(f"     └ 原因: {j['last_error'][:80]}")
+    lines.append('')
 
 print('\n'.join(lines))
 # 最后一行是状态标记
-print('ALERT' if exh else 'OK')
+print('ALERT' if (exh or unexh) else 'OK')
 PY
 )
 
@@ -185,7 +242,7 @@ cron_section "推送恢复报告"
 if [[ "$STATUS" == "ALERT" ]]; then
     cron_notify "⚠️ [Cron 自愈] 系统恢复 — 有 job 需人工介入" "$BODY"
     cron_finish
-    exit 1
+    exit 0  # 检测到异常是脚本正常工作，不应用 exit 1 让 systemd 误判为服务失败
 else
     cron_notify "✅ [Cron 自愈] 系统恢复 — 无异常" "$BODY"
     cron_finish

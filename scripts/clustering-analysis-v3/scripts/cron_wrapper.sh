@@ -324,7 +324,7 @@ if should_skip "4"; then
 else
     if is_apply_mode; then
         section "④ 聚类分析 --apply"
-        if PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" CLUSTERING_DB_URL="$CLUSTERING_DB_URL" python3 -c "
+        if PYTHONPATH="$PROJECT_DIR/src:$PROJECT_DIR/scripts:${PYTHONPATH:-}" CLUSTERING_DB_URL="$CLUSTERING_DB_URL" python3 -c "
 from clustering_analysis.cli import run
 run(apply=True, dry_run=False, cleanup=False, force=True, skip_entity=False, config_path='config/default.yaml')
 " 2>>"$LOG_FILE" | tee -a "$LOG_FILE"; then
@@ -336,7 +336,7 @@ run(apply=True, dry_run=False, cleanup=False, force=True, skip_entity=False, con
         fi
     else
         section "④ 聚类分析 dry-run"
-        if PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" CLUSTERING_DB_URL="$CLUSTERING_DB_URL" python3 -c "
+        if PYTHONPATH="$PROJECT_DIR/src:$PROJECT_DIR/scripts:${PYTHONPATH:-}" CLUSTERING_DB_URL="$CLUSTERING_DB_URL" python3 -c "
 from clustering_analysis.cli import run
 run(apply=False, dry_run=True, cleanup=False, force=True, skip_entity=False, config_path='config/default.yaml')
 " 2>>"$LOG_FILE" | tee -a "$LOG_FILE"; then

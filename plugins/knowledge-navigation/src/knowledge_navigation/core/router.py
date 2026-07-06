@@ -60,6 +60,29 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
             except (json.JSONDecodeError, ValueError):
                 pass
 
+    # 4) Salvage truncated JSON: progressively strip trailing incomplete kv pairs
+    #    e.g. {"h": false, "kt": false, "s": true, "confidence":  ← max_tokens cutoff
+    if data is None:
+        m = re.search(r'\{.*', text)  # from first { to end
+        if m:
+            candidate = m.group(0).rstrip()
+            for _ in range(10):  # max attempts
+                candidate = candidate.rstrip().rstrip(',').rstrip(':').rstrip()
+                try:
+                    data = json.loads(candidate + '}')
+                    break
+                except json.JSONDecodeError:
+                    last_comma = candidate.rfind(',')
+                    if last_comma > 0:
+                        candidate = candidate[:last_comma]
+                    else:
+                        break
+
+    # After salvage, require all 3 mask keys present — partial mask is dangerous
+    # (missing key → False → route closed when it should be open)
+    if isinstance(data, dict) and not all(k in data for k in ('h', 'kt', 's')):
+        return None
+
     if not isinstance(data, dict):
         return None
 
@@ -128,7 +151,7 @@ def route(
                 json={
                     "model": model,
                     "temperature": 0.1,
-                    "max_tokens": 256,
+                    "max_tokens": 512,
                     "messages": [
                         {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
                         {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
@@ -140,12 +163,11 @@ def route(
             resp.raise_for_status()
             choice = resp.json()["choices"][0]["message"]
             raw = choice.get("content") or ""
-            if not raw:
+            if not raw.strip():
                 rc = choice.get("reasoning_content", "") or ""
                 if rc:
-                    m = re.search(r"\{[^}]*[\"']h[\"'][^}]*\}", rc, re.DOTALL)
-                    if m:
-                        raw = m.group(0)
+                    logger.info("Router content 为空, 使用 reasoning_content (%d chars)", len(rc))
+                    raw = rc
             raw = raw.strip()
 
             mask = _parse_mask(raw)

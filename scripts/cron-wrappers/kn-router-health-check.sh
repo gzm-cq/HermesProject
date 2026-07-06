@@ -9,7 +9,7 @@
 #   - 检查 gateway 日志中 "Router JSON 解析失败" 次数
 #   - 检查 trace.log 中 recall 成功率
 #   - 检查 Router 模型响应稳定性（抽样 5 次）
-#   - 无异常静默退出，有异常才飞书通知
+#   - 每次巡检完成都推送飞书通知
 
 set -euo pipefail
 
@@ -35,7 +35,9 @@ cron_section "Router 解析失败检查"
 # 用 journalctl 查最近 24h 的失败次数
 FAIL_COUNT=0
 if command -v journalctl &>/dev/null; then
-    FAIL_COUNT=$(journalctl -u hermes-gateway --since "24 hours ago" --no-pager 2>/dev/null | grep -c "Router JSON 解析失败" || echo 0)
+    FAIL_COUNT=$(journalctl -u hermes-gateway --since "24 hours ago" --no-pager 2>/dev/null | grep -c "Router JSON 解析失败" || true)
+    FAIL_COUNT=$(echo "$FAIL_COUNT" | tr -dc '0-9')
+    FAIL_COUNT=${FAIL_COUNT:-0}
 fi
 
 # 允许少量 JSON 解析失败（<5次/24h 属于 LLM 正常波动，fallback 兜底不阻断）
@@ -120,7 +122,7 @@ resp = httpx.post(
     json={
         'model': 's-deepseek-v4-flash',
         'temperature': 0.1,
-        'max_tokens': 256,
+        'max_tokens': 512,
         'messages': [
             {'role': 'system', 'content': '你是一个注入路由判断器。输出 JSON: {\"h\": bool, \"kt\": bool, \"s\": bool}'},
             {'role': 'user', 'content': '消息：测试\n\nJSON 输出：'}
@@ -130,7 +132,9 @@ resp = httpx.post(
     timeout=10,
 )
 data = resp.json()
-content = data['choices'][0]['message'].get('content', '')
+content = data['choices'][0]['message'].get('content', '') or ''
+if not content.strip():
+    content = data['choices'][0]['message'].get('reasoning_content', '') or ''
 print('OK' if content and 'h' in content else 'FAIL')
 " 2>/dev/null || echo "FAIL")
         if [[ "$RESP" == "OK" ]]; then
@@ -158,8 +162,6 @@ cron_section "巡检汇总"
 if [[ "$FAIL_COUNT" -le 5 && "$STABILITY_PASS" -ge "$_STABILITY_MIN" ]]; then
     cron_ok "知识导航 Router 巡检全部通过 ✅"
     _STEP_RESULTS+=("✅ 巡检全部通过")
-    # 无异常静默退出，不推送飞书
-    CRON_SKIP_FINISH_NOTIFY=true
 else
     cron_warn "知识导航 Router 巡检发现异常 ⚠️"
     _STEP_RESULTS+=("⚠️ 巡检发现异常，见上方详情")

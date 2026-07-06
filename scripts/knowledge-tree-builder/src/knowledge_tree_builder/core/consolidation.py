@@ -78,14 +78,11 @@ class ConsolidationEngine:
         """)
         fragment_domains = float(cursor.fetchone()[0] or 0)
 
-        # 4. orphan_kps
+        # 4. orphan_kps — 真正脱离树的知识点（parent_id IS NULL）
         cursor.execute("""
             SELECT COUNT(*) FROM knowledge_tree kp
             WHERE kp.node_type = 'knowledge_point'
-            AND NOT EXISTS (
-                SELECT 1 FROM knowledge_tree_edges e
-                WHERE e.from_node_id = kp.id OR e.to_node_id = kp.id
-            )
+            AND kp.parent_id IS NULL
         """)
         orphan_kps = float(cursor.fetchone()[0] or 0)
 

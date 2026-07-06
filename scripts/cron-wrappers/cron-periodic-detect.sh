@@ -78,10 +78,16 @@ for job in jobs_data:
     if not job.get("enabled", True):
         continue
     jname = job.get("name", job.get("id", ""))
+    # 排除自身，避免 stale error 自指死循环
+    if jname == "cron-periodic-detect":
+        continue
     ls = job.get("last_status", "")
     lr = job.get("last_run_at", "") or "从未运行"
     sched = job.get("schedule_display", "")
     st = load_state(jname)
+    # state file 的 status 更准确：jobs.json last_status 可能缓存为 ok
+    if st.get("status") in ("fail", "error"):
+        ls = "error"
     exhausted = st.get("overall_retries_exhausted", False)
     last_error = st.get("last_error", "")
 
@@ -101,13 +107,39 @@ for job in jobs_data:
         "last_error": last_error,
     })
 
+# Scan state files for orphan failures (job name mismatch between jobs.json and state files)
+if os.path.isdir(STATE_DIR):
+    for f in os.listdir(STATE_DIR):
+        if not f.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(STATE_DIR, f)) as fp:
+                data = json.load(fp)
+            if data.get("status") in ("fail", "error"):
+                name = data.get("job_name", f.replace('.json', ''))
+                # 排除自身，避免 stale error 自指死循环
+                if name == "cron-periodic-detect":
+                    continue
+                if not any(j["name"] == name for j in all_jobs):
+                    all_jobs.append({
+                        "name": name,
+                        "status": "error",
+                        "last_run": data.get("run_at", ""),
+                        "schedule": "",
+                        "exhausted": data.get("overall_retries_exhausted", False),
+                        "last_error": data.get("last_error", ""),
+                    })
+                    status_count["error"] += 1
+        except Exception:
+            pass
+
 # alert/recovery 检测
 alert = []
 recovered = []
 
 for j in all_jobs:
-    if j["status"] == "error" and j["exhausted"]:
-        error_key = j["last_error"][:60]
+    if j["status"] == "error":
+        error_key = j.get("last_error", "")[:60] or f"error-{j['name']}"
         prev = dedup.get(j["name"], {})
         prev_key = prev.get("error_key", "")
         prev_ts = prev.get("alerted_at", 0)
@@ -121,7 +153,7 @@ for j in all_jobs:
             dedup[j["name"]] = {"error_key": error_key, "alerted_at": NOW.isoformat()}
 
     elif prev := dedup.get(j["name"], {}):
-        if prev.get("error_key") and (j["status"] != "error" or not j["exhausted"]):
+        if prev.get("error_key") and (j["status"] != "error"):
             recovered.append(j)
             dedup.pop(j["name"], None)
 

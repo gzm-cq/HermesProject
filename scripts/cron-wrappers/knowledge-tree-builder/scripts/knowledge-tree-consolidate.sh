@@ -36,14 +36,36 @@ fi
 : "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required. Set it in /root/.hermes/.env}"
 
 # ===== 执行合并 =====
-cron_section "知识树 consolidate run"
-if python3 -m knowledge_tree_builder.cli consolidate run; then
+cron_section "知识树 consolidate run (--merge-domains)"
+if python3 -m knowledge_tree_builder.cli consolidate run --merge-domains; then
     cron_ok "知识树合并完成"
-    _STEP_RESULTS+=("✅ 知识树 consolidate run")
+    _STEP_RESULTS+=("✅ 知识树 consolidate run --merge-domains")
 else
     rc=$?
     cron_err "知识树合并失败 (exit=$rc)"
     _STEP_RESULTS+=("❌ 知识树 consolidate run (exit=$rc)")
+fi
+
+# ===== 处理超时审查项 =====
+cron_section "处理超时审查项"
+if python3 -m knowledge_tree_builder.cli consolidate process-timeouts; then
+    cron_ok "超时审查项处理完成"
+    _STEP_RESULTS+=("✅ process-timeouts")
+else
+    rc=$?
+    cron_warn "超时审查项处理失败 (exit=$rc)"
+    _STEP_RESULTS+=("⚠️ process-timeouts (exit=$rc)")
+fi
+
+# ===== 重新分类 general/root 下的知识点 =====
+cron_section "redistribute 重新分类"
+if python3 -m knowledge_tree_builder.cli redistribute; then
+    cron_ok "redistribute 完成"
+    _STEP_RESULTS+=("✅ redistribute")
+else
+    rc=$?
+    cron_warn "redistribute 失败 (exit=$rc)"
+    _STEP_RESULTS+=("⚠️ redistribute (exit=$rc)")
 fi
 
 # ===== 基线对比 + 退化检测（Phase 6）=====

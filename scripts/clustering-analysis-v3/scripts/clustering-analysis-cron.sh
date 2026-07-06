@@ -40,4 +40,13 @@ else
 fi
 
 # ===== 完成 =====
-cron_finish
+_rc=0
+cron_finish || _rc=$?
+
+# 写入 state 文件供飞轮验证（使用实际退出码，不硬编码 success）
+mkdir -p /root/.hermes/lib/cron-state
+_final_status="success"
+if [[ ${_rc} -ne 0 ]]; then
+    _final_status="fail"
+fi
+echo "{\"job_name\":\"clustering-analysis\",\"status\":\"${_final_status}\",\"cron_mode\":\"normal\",\"run_at\":\"$(date -Iseconds)\"}" > /root/.hermes/lib/cron-state/clustering-analysis.json

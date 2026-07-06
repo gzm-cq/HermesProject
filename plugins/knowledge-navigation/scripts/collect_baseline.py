@@ -197,6 +197,32 @@ def welch_ttest(a: list[float], b: list[float]) -> dict[str, Any]:
     }
 
 
+# ========== 维度关键词分类器 ==========
+
+_DIMENSION_KEYWORDS: dict[str, list[str]] = {
+    "semantic": ["是什么意思", "概念", "定义", "什么是", "介绍一下", "概述", "理解", "功能", "特性", "什么功能"],
+    "entity": ["谁", "哪个团队", "哪些人", "公司", "项目", "产品", "位置"],
+    "causal": ["为什么", "原因", "导致", "影响", "关联", "引起", "因果关系"],
+    "temporal": ["什么时候", "多久", "频率", "历史", "最近", "这周", "昨天", "趋势"],
+    "conflict": ["区别", "差异", "对比", "不同", "矛盾", "冲突", "vs"],
+    "tool": ["怎么操作", "如何设置", "命令", "配置", "部署", "安装", "启动", "cli"],
+    "debug": ["报错", "失败", "错误", "异常", "卡死", "超时", "bug"],
+    "api": ["接口", "endpoint", "http", "调接口", "请求", "返回"],
+    "complex": ["架构", "方案", "设计", "怎么实现", "体系", "框架", "整体"],
+    "numeric": ["多少", "数量", "比例", "百分", "size", "count", "几天"],
+    "workflow": ["流程", "步骤", "怎么做", "顺序", "整个流程", "管线", "pipeline", "审核", "审查", "review", "审计"],
+}
+
+
+def _classify_dimension_by_keywords(qid: str) -> str:
+    """用关键词推断查询维度，作为 trace.log 未存 dimension 时的兜底。"""
+    for dim, keywords in _DIMENSION_KEYWORDS.items():
+        for kw in keywords:
+            if kw in qid:
+                return dim
+    return "unknown"
+
+
 # ========== 基线采集 ==========
 
 def find_log_file() -> str:
@@ -319,8 +345,8 @@ def collect_baseline(log_file: str = "") -> dict:
         counted_true = sum(1 for r in records if r["eval_counted"])
         counted_false = n - counted_true
 
-        # 推断维度（从 qid 格式：semantic_xxx, entity_xxx 等）
-        dim = qid.split("_")[0] if "_" in qid else "unknown"
+        # 推断维度：eval 前缀 qid 用 split，中文查询用关键词分类
+        dim = qid.split("_")[0] if "_" in qid else _classify_dimension_by_keywords(qid)
 
         baseline[qid] = {
             "total_requests": n,
