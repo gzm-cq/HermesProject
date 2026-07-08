@@ -25,12 +25,7 @@ cron_init "knowledge-tree-consolidate"
 cd /root/.hermes/scripts/knowledge-tree-builder
 source venv/bin/activate
 
-if [[ -f /root/.hermes/.env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source /root/.hermes/.env
-  set +a
-fi
+# .env 加载已由 cron_common.sh 在 source 时统一处理，无需重复加载
 
 : "${KT_DB_URL:?KT_DB_URL is required. Set it in /root/.hermes/.env}"
 : "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required. Set it in /root/.hermes/.env}"

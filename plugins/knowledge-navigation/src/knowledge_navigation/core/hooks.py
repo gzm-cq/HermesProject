@@ -88,12 +88,12 @@ def _get_cached_conn(db_url: str, pg_module) -> "psycopg2.extensions.connection 
     # 清理当前线程的过期连接
     stale = [k for k, (_, ts) in conn_map.items() if now - ts > _PG_CONN_TTL]
     for k in stale:
-        try:
-            conn_map[k][0].close()
-        except Exception:
-            logger.debug("PG 连接关闭失败（缓存清理路径）: %s", k)
-            pass
-        del conn_map[k]
+        conn_entry = conn_map.pop(k, None)
+        if conn_entry:
+            try:
+                conn_entry[0].close()
+            except Exception:
+                logger.debug("PG 连接关闭失败（缓存清理路径）: %s", k)
 
     # 返回缓存连接或新建
     if db_url in conn_map:
@@ -106,11 +106,12 @@ def _get_cached_conn(db_url: str, pg_module) -> "psycopg2.extensions.connection 
             return conn
         except Exception:
             # 连接失效，清理后重新创建
-            try:
-                conn.close()
-            except Exception:
-                pass
-            del conn_map[db_url]
+            conn_entry = conn_map.pop(db_url, None)
+            if conn_entry:
+                try:
+                    conn_entry[0].close()
+                except Exception:
+                    pass
     try:
         conn = pg_module.connect(db_url, connect_timeout=5)
         conn_map[db_url] = (conn, now)

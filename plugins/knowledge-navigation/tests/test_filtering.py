@@ -306,10 +306,10 @@ class TestCalculateTimeScore:
         assert score < 0.1
 
     def test_medium_memory(self) -> None:
-        """测试 30 天前记忆分数约 exp(-30/14) ≈ 0.12。"""
+        """测试 30 天前记忆分数约 exp(-30/30) ≈ 0.37（halflife 默认 30 天）。"""
         medium = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         score = calculate_time_score(medium)
-        assert 0.08 < score < 0.2
+        assert 0.35 < score < 0.38
 
     def test_none_returns_mid(self) -> None:
         """测试 None 返回中性值。"""

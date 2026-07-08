@@ -35,6 +35,7 @@ if ! python3 "$EVAL_SCRIPT" --json > /tmp/skill_eval_result.json 2>/dev/null; th
     _STEP_RESULTS+=("⚠️ Skill Eval: 脚本执行失败")
     CRON_SKIP_FINISH_NOTIFY=false
     cron_finish
+    exit 0
 fi
 
 CUR_RESULT=$(cat /tmp/skill_eval_result.json)
@@ -64,7 +65,14 @@ cur, prev = float('$CUR_F1'), float('$PREV_F1')
 print(f'{(cur-prev)/prev*100:.1f}' if prev > 0 else '0.0')
 " 2>/dev/null)
 
-        if (( $(echo "$DELTA < -10" | bc -l 2>/dev/null || echo 0) )); then
+        # 用 Python 进行浮点比较（避免依赖 bc 命令）
+        IS_REGRESSED=$(python3 -c "
+try:
+    d = float('$DELTA')
+    print('1' if d < -10 else '0')
+except: print('0')
+" 2>/dev/null)
+        if [[ "$IS_REGRESSED" == "1" ]]; then
             cron_warn "Skill Matcher 退化 ${DELTA}% (prev=$PREV_F1 → cur=$CUR_F1)"
             _STEP_RESULTS+=("⚠️ Skill Eval: 退化 ${DELTA}%")
         else

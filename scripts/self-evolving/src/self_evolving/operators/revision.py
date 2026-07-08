@@ -181,8 +181,9 @@ class RevisionConfig:
                     llm_api_key=revision_cfg.get("llm_api_key", ""),
                     llm_timeout=revision_cfg.get("llm_timeout", cls.llm_timeout),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                # 记录加载失败原因，使用默认配置
+                logger.warning("从 %s 加载 RevisionConfig 失败，使用默认配置: %s", path, e)
         return cls()
 
     @classmethod

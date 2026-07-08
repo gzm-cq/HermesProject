@@ -1,10 +1,13 @@
 """测试共享 Fixtures"""
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from kanban_reflection.config import KanbanReflectionConfig
 

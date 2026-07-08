@@ -818,20 +818,29 @@ def _parse_args() -> dict[str, Any]:
         "trigger": False,
         "log_file": "",
     }
-    skip_next = False
+    # 用 consume 计数器支持消费多个后续参数（避免 skip_next 单次跳过的边界问题）
+    consume = 0
     for i, arg in enumerate(sys.argv[1:]):
-        if skip_next:
-            skip_next = False
+        if consume > 0:
+            consume -= 1
             continue
         if arg == "--compare":
-            args["compare"] = (sys.argv[i + 2] if len(sys.argv) > i + 2 else "",
-                               sys.argv[i + 3] if len(sys.argv) > i + 3 else "")
-            skip_next = True
+            # --compare 后面必须跟两个位置参数（prev_file, current_file）
+            # i 对应 argv[1+i]，下一个是 argv[2+i]，再下一个是 argv[3+i]
+            if (len(sys.argv) > i + 3
+                    and not sys.argv[i + 2].startswith("--")
+                    and not sys.argv[i + 3].startswith("--")):
+                args["compare"] = (sys.argv[i + 2], sys.argv[i + 3])
+                consume = 2  # 消费接下来的两个位置参数
+            else:
+                print("错误: --compare 需要两个参数 (prev_file, current_file)", file=sys.stderr)
+                args["compare"] = ("", "")
         elif arg == "--judge":
             args["judge"] = True
             # 可选 log_file 跟在 --judge 后
             if len(sys.argv) > i + 2 and not sys.argv[i + 2].startswith("--"):
                 args["log_file"] = sys.argv[i + 2]
+                consume = 1
         elif arg == "--json":
             args["json"] = True
         elif arg == "--delta":

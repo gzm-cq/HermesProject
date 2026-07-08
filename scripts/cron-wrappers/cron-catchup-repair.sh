@@ -130,6 +130,7 @@ for i in $(seq 0 $((TOTAL - 1))); do
         [[ -n "$JOB_WORKDIR" ]] && cd_cmd="cd $JOB_WORKDIR && "
 
         cron_log "执行: ${cd_cmd}bash ${script_path} (catchup mode)"
+        # 通过 CRON_MODE 环境变量传递模式（cron_init 已支持读取环境变量作为兜底）
         if CRON_MODE=catchup bash "${script_path}" 2>&1; then
             cron_ok "${JOB_NAME} 追赶成功"
             SUCCESS_JOBS+=("✅ $JOB_NAME")
@@ -158,6 +159,6 @@ _body=""
 [[ ${#SUCCESS_JOBS[@]} -gt 0 ]] && _body="${_body}✅ 成功: ${SUCCESS_JOBS[*]}"
 [[ ${#FAILED_JOBS[@]} -gt 0 ]] && _body="${_body}${_body:+$'\n'}❌ 失败: ${FAILED_JOBS[*]}"
 
-cron_notify "⚡ $_subject" "$_body"
+cron_notify "⚡ $_subject" "$_body" || true
 cron_finish
 [[ ${#FAILED_JOBS[@]} -gt 0 ]] && exit 1 || exit 0

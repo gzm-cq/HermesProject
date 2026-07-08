@@ -34,13 +34,7 @@ if [[ -f venv/bin/activate ]]; then
     source venv/bin/activate
 fi
 
-# 加载共享环境变量
-if [[ -f /root/.hermes/.env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source /root/.hermes/.env
-  set +a
-fi
+# .env 加载已由 cron_common.sh 在 source 时统一处理，无需重复加载
 
 # LLM judge 配置（使用本地 LiteLLM proxy，兜底默认值）
 export LLM_API_URL="${LLM_API_URL:-${KT_LLM_API_URL:-http://127.0.0.1:4142/v1/chat/completions}}"

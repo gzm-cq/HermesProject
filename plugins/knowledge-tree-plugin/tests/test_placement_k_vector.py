@@ -34,4 +34,5 @@ def test_place_new_knowledge_points_passes_embeddings_to_batch_insert(mock_adapt
         [("知识点A", "知识点A"), ("知识点B", "知识点B")],
         parent_id=2,
         k_vectors=embeddings,
+        commit=False,
     )

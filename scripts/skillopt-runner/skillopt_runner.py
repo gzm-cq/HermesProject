@@ -13,6 +13,7 @@ import argparse
 import pathlib
 import re
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -20,6 +21,8 @@ import yaml
 import subprocess
 import shutil
 from collections import defaultdict
+
+_STATE_LOCK = threading.Lock()
 
 # SkillOpt-Sleep 克隆在本地，必须在 import 前插入 sys.path
 SKILLOPT_HOME = pathlib.Path('/root/.hermes/skillopt-runner')
@@ -42,10 +45,30 @@ STATE_FILE = SKILLOPT_HOME / 'state.json'
 
 
 def load_state() -> dict:
-    """加载状态：迭代计数器、负反馈累积数据"""
+    """加载状态：迭代计数器、负反馈累积数据
+
+    容错处理：
+    - 文件不存在：返回默认空状态
+    - JSON 损坏：备份损坏文件后返回默认空状态（避免每次都崩）
+    - 旧格式字段：自动迁移到新格式
+    """
     if STATE_FILE.exists():
-        with open(STATE_FILE, 'r', encoding='utf-8') as f:
-            s = json.load(f)
+        try:
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                s = json.load(f)
+        except (json.JSONDecodeError, ValueError) as e:
+            # 备份损坏的 state 文件，重置为空（不阻断运行）
+            try:
+                backup_path = STATE_FILE.with_suffix('.corrupted')
+                shutil.copy2(STATE_FILE, backup_path)
+                print(f'Warning: state.json 损坏已备份到 {backup_path}，原因: {e}', file=sys.stderr)
+            except Exception:
+                pass
+            return {
+                'skill_last_run': {},
+                'skill_neg_feedback': {},
+                'skill_total_mentions': {},
+            }
         # 兼容旧格式：迁移 last_run_iso → skill_last_run
         if 'last_run_iso' in s and 'skill_last_run' not in s:
             s['skill_last_run'] = {}
@@ -58,17 +81,32 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    """保存状态到 state.json"""
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    print(f'状态已保存: 累积 {len(state.get("skill_neg_feedback", {}))} 个技能的负反馈数据')
+    """保存状态到 state.json（线程安全）。
+
+    Note: 当前锁仅保护文件写入，state 字典的修改在单线程上下文中安全。
+    若未来引入并行 worker，需将 state 的 read-modify-write 也纳入锁保护。
+    """
+    with _STATE_LOCK:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        print(f'状态已保存: 累积 {len(state.get("skill_neg_feedback", {}))} 个技能的负反馈数据')
 
 def load_usage() -> dict[str, dict]:
+    """加载使用统计。损坏时备份并返回空 dict。"""
     if not USAGE_FILE.exists():
         return {}
-    with open(USAGE_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(USAGE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, ValueError) as e:
+        try:
+            backup_path = USAGE_FILE.with_suffix('.corrupted')
+            shutil.copy2(USAGE_FILE, backup_path)
+            print(f'Warning: usage.json 损坏已备份到 {backup_path}，原因: {e}', file=sys.stderr)
+        except Exception:
+            pass
+        return {}
 
 def filter_eligible_skills(usage: dict[str, dict], denylist_patterns: list[str]) -> list[tuple[str, dict]]:
     """Filter eligible skills for SkillOpt optimization.
@@ -639,10 +677,45 @@ def rank_skills(
     return top, state, skill_sessions
 
 
+def _security_scan(content: str) -> tuple[bool, str]:
+    """基础安全扫描：检查新内容是否包含危险模式。
+
+    Returns:
+        (is_safe, reason) - is_safe=True 表示通过；reason 为失败原因
+    """
+    import re as _re
+    # 危险模式：可能执行任意命令、删除文件、提示词注入等
+    DANGEROUS_PATTERNS: list[tuple[_re.Pattern[str], str]] = [
+        (_re.compile(r'rm\s+-rf\s+/', _re.IGNORECASE), '危险的 rm -rf 路径'),
+        (_re.compile(r'\bsudo\s+', _re.IGNORECASE), '包含 sudo 提权'),
+        (_re.compile(r'curl\s+[^|]*\|\s*bash', _re.IGNORECASE), 'curl | bash 远程执行'),
+        (_re.compile(r'wget\s+[^|]*\|\s*bash', _re.IGNORECASE), 'wget | bash 远程执行'),
+        (_re.compile(r'eval\s*\(', _re.IGNORECASE), '包含 eval 调用'),
+        (_re.compile(r'exec\s*\(', _re.IGNORECASE), '包含 exec 调用'),
+        (_re.compile(r'(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions?'),
+         '疑似 prompt injection: ignore instructions'),
+        (_re.compile(r'(?i)you\s+are\s+now\s+(a|an)\s+'),
+         '疑似 prompt injection: 角色重定义'),
+        (_re.compile(r'(?i)disregard\s+(all\s+)?(safety|security|ethical)'),
+         '疑似 prompt injection: 绕过安全'),
+        (_re.compile(r'AKIA[0-9A-Z]{16}'), '疑似 AWS access key'),
+    ]
+    for pattern, reason in DANGEROUS_PATTERNS:
+        if pattern.search(content):
+            return False, f'安全扫描失败: {reason}'
+    return True, 'OK'
+
+
 def patch_skill_hermes(skill_name: str, new_content: str, state: dict) -> bool:
     """Patch skill via Hermes skill_manage tool — merge edit into existing SKILL.md.
     安全特性：保留 frontmatter + append 到正文 + atomic write + security scan + 回滚。
     部署成功 → 自动清零该技能的累积负反馈。"""
+    # 0. 安全扫描（先于文件操作，避免先备份后拒绝）
+    is_safe, reason = _security_scan(new_content)
+    if not is_safe:
+        print(f'SECURITY: 拒绝写入 {skill_name}: {reason}')
+        return False
+
     p = get_skill_path(skill_name)
     if not p:
         print(f'ERROR: cannot find SKILL.md for skill {skill_name}')
@@ -950,38 +1023,50 @@ def main() -> int:
                         help='Dry run: do not apply any changes')
     args = parser.parse_args()
 
-    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-        our_cfg = yaml.safe_load(f) or {}
-    runner_cfg, sleep_cfg = split_config(our_cfg)
-    denylist_patterns = runner_cfg.get('denylist_patterns', [
-        'lark-', 'sn-', 'gstack-',
-    ])
+    state: dict = {}
+    try:
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            our_cfg = yaml.safe_load(f) or {}
+        runner_cfg, sleep_cfg = split_config(our_cfg)
+        denylist_patterns = runner_cfg.get('denylist_patterns', [
+            'lark-', 'sn-', 'gstack-',
+        ])
 
-    state = load_state()
-    skill_last_run = state.setdefault('skill_last_run', {})
+        state = load_state()
+        skill_last_run = state.setdefault('skill_last_run', {})
 
-    # ── Phase 1: harvest ──
-    all_digests = _phase_harvest(state, skill_last_run, runner_cfg)
+        # ── Phase 1: harvest ──
+        all_digests = _phase_harvest(state, skill_last_run, runner_cfg)
 
-    # ── Phase 2: rank ──
-    usage = load_usage()
-    eligible = filter_eligible_skills(usage, denylist_patterns)
-    print(f'Found {len(eligible)} eligible skills for optimization')
-    if not eligible:
-        save_state(state)
-        print('No eligible skills found, exiting')
+        # ── Phase 2: rank ──
+        usage = load_usage()
+        eligible = filter_eligible_skills(usage, denylist_patterns)
+        print(f'Found {len(eligible)} eligible skills for optimization')
+        if not eligible:
+            save_state(state)
+            print('No eligible skills found, exiting')
+            return 0
+
+        top_scored, skill_sessions = _phase_rank(eligible, all_digests, state, runner_cfg)
+        if not top_scored:
+            return 0
+
+        # ── Phase 3: per-skill optimize ──
+        _phase_optimize(
+            top_scored, skill_last_run, state, skill_sessions,
+            sleep_cfg, runner_cfg, dry_run=args.dry_run,
+        )
         return 0
-
-    top_scored, skill_sessions = _phase_rank(eligible, all_digests, state, runner_cfg)
-    if not top_scored:
-        return 0
-
-    # ── Phase 3: per-skill optimize ──
-    _phase_optimize(
-        top_scored, skill_last_run, state, skill_sessions,
-        sleep_cfg, runner_cfg, dry_run=args.dry_run,
-    )
-    return 0
+    except Exception as e:
+        # 全局兜底：未捕获异常时尝试保存当前 state，避免下次从头开始
+        print(f'FATAL: 未捕获异常 {type(e).__name__}: {e}', file=__import__('sys').stderr)
+        if state:
+            try:
+                save_state(state)
+                print('已保存当前 state 以便下次恢复')
+            except Exception:
+                pass
+        return 1
 
 if __name__ == '__main__':
     sys.exit(main())

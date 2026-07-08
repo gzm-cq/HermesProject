@@ -61,7 +61,13 @@ def phase2_verify(
         text = entries[idx]
         reason = r.get("原因", "")
 
-        sess = session_db.search(text)
+        try:
+            sess = session_db.search(text)
+        except Exception as e:
+            # session_db.search 异常不应该导致整个 verify 流程失败
+            # 降级为"未找到相关会话"，让 LLM 单独判断
+            logger.warning("session_db.search 异常，降级处理 (text=%s): %s", text[:50], e)
+            sess = {"found": False, "confidence": 0.0, "snippet": "", "timestamp": 0}
         confidence = float(sess.get("confidence", 0.0) or 0.0)
         sess_text = str(sess.get("snippet", "无相关会话")) if sess.get("found") else "无相关会话"
         sess_ts = sess.get("timestamp", 0)

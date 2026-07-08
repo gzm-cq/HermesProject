@@ -34,7 +34,12 @@ DEDUP_FILE="${DEDUP_DIR}/cron-periodic-dedup.json"
 # ===== 阶段 1：Python 分析 =====
 cron_section "扫描 job 状态"
 ANALYSIS_FILE=$(mktemp /tmp/cron-periodic-analysis-XXXXXX.json)
-trap "rm -f '$ANALYSIS_FILE'" EXIT
+REPORT_FILE=""
+cleanup() {
+    [[ -n "$ANALYSIS_FILE" ]] && rm -f "$ANALYSIS_FILE"
+    [[ -n "$REPORT_FILE" ]] && rm -f "$REPORT_FILE"
+}
+trap cleanup EXIT
 
 python3 <<PY > "$ANALYSIS_FILE"
 import json, os
@@ -172,7 +177,6 @@ cron_section "生成检查报告"
 
 # 用 heredoc 避免 bash 展开 $total 等变量
 REPORT_FILE=$(mktemp /tmp/cron-periodic-report-XXXXXX.txt)
-trap "rm -f '$REPORT_FILE'" EXIT
 
 export ANALYSIS_FILE
 python3 <<'PY' > "$REPORT_FILE"
@@ -226,12 +230,12 @@ _STEP_RESULTS+=("💠 检查 $JOB_TOTAL 个 job: ✅$JOB_OK ❌$JOB_ERR ⚪$JOB_
 
 # ===== 阶段 3+4+5：恢复/告警/摘要（互斥，只发一条） =====
 if [[ "$ALERT_COUNT" -gt 0 ]]; then
-    cron_notify "⚠️ [Cron 自愈] ${ALERT_COUNT} 个 job 需人工介入" "$SUMMARY_TEXT"
+    cron_notify "⚠️ [Cron 自愈] ${ALERT_COUNT} 个 job 需人工介入" "$SUMMARY_TEXT" || true
     cron_finish
     exit 1
 
 elif [[ "$RECOVERED_COUNT" -gt 0 ]]; then
-    cron_notify "✅ [Cron 自愈] Job 恢复正常" "$SUMMARY_TEXT"
+    cron_notify "✅ [Cron 自愈] Job 恢复正常" "$SUMMARY_TEXT" || true
     cron_finish
     exit 0
 

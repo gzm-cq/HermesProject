@@ -1097,7 +1097,121 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "kt_orphan_pct": kt_m.get("orphan_pct", 0),
     })
 
+    # === 优化方向 ===
+    L.append("## 💡 优化方向")
+    L.append("")
+    recs = generate_recommendations(
+        router_m, skill_m, kn_m, kt_m, cluster_m,
+        all_issues, all_trends, credibility_warnings, zombie_files
+    )
+    if recs:
+        for r in recs:
+            L.append(f"- **{r['flywheel']}**: {r['desc']}")
+    else:
+        L.append("✅ 当前无优先优化项，继续保持日常维护。")
+    L.append("")
+
     return "\n".join(L), p0
+
+
+def generate_recommendations(
+    router_m: dict, skill_m: dict, kn_m: dict,
+    kt_m: dict, cluster_m: dict,
+    issues: list[dict], trends: dict[str, str],
+    credibility_warnings: list[str], zombie_files: list[str],
+) -> list[dict]:
+    """Generate actionable optimization recommendations based on current metrics."""
+    recs: list[dict] = []
+
+    # --- Router ---
+    if router_m.get("status") != "no_data":
+        n = router_m.get("total_masks", 0)
+        if n > 0 and n < TH["min_sample_size"]:
+            recs.append({"flywheel": "Router", "desc": f"样本量不足（{n} 次 < {TH['min_sample_size']}），建议增加日常路由量或降低最小样本阈值"})
+        full_off = router_m.get("full_off_pct", 0)
+        if full_off > 15:
+            recs.append({"flywheel": "Router", "desc": f"全关率 {full_off}% 偏高，建议检查 Router prompt 是否过度保守或模型超时频发"})
+        empty = router_m.get("empty_rate", 0)
+        if empty > 10:
+            recs.append({"flywheel": "Router", "desc": f"空结果率 {empty}% 偏高，建议检查 Hindsight/知识树召回链路或降低 min_score 阈值"})
+        avg_lat = router_m.get("avg_latency_ms", 0)
+        if avg_lat > 8000:
+            recs.append({"flywheel": "Router", "desc": f"平均延迟 {avg_lat}ms 偏高，建议排查 Hindsight daemon 连接池或 Reranker 超时"})
+        avg_score = router_m.get("avg_score", 0)
+        if 0 < avg_score < 0.4:
+            recs.append({"flywheel": "Router", "desc": f"平均得分 {avg_score} 偏低，召回结果相关性不足，建议调整 embedding 或 reranker 模型"})
+
+    # --- Skill ---
+    if skill_m.get("status") != "no_data":
+        f1 = skill_m.get("avg_f1", 0)
+        if 0 < f1 < TH["skill_f1_low"]:
+            recs.append({"flywheel": "Skill", "desc": f"F1={f1} 低于阈值，建议检查 skillopt-nightly-run 训练数据质量或调整评估基准"})
+        elif 0 < f1 < 0.6:
+            recs.append({"flywheel": "Skill", "desc": f"F1={f1} 有提升空间，建议关注 Precision/Recall 差异，优化 skill_matcher 关键词扩展"})
+        precision = skill_m.get("avg_precision", 0)
+        recall = skill_m.get("avg_recall", 0)
+        if precision > 0 and recall > 0:
+            if recall < precision * 0.7:
+                recs.append({"flywheel": "Skill", "desc": f"Recall ({recall}) 远低于 Precision ({precision})，建议扩充同义词库或增加中英文双向匹配"})
+            elif precision < recall * 0.7:
+                recs.append({"flywheel": "Skill", "desc": f"Precision ({precision}) 远低于 Recall ({recall})，建议收紧匹配规则或增加负样本"})
+
+    # --- KN Baseline ---
+    if kn_m.get("status") != "no_data":
+        unknown_pct = kn_m.get("unknown_dim_pct", 0)
+        if unknown_pct > 20:
+            recs.append({"flywheel": "KN", "desc": f"unknown 维度占比 {unknown_pct}%，建议优化维度分类器或扩充基线查询覆盖"})
+        dim_summary = kn_m.get("dim_summary", {})
+        for dim, s in dim_summary.items():
+            if dim == "unknown" or s.get("count", 0) < 3:
+                continue
+            if s.get("avg_score", 1) < TH["kn_avg_score_low"]:
+                recs.append({"flywheel": "KN", "desc": f"dimension={dim} 均分 {s['avg_score']} 偏低，建议针对性增加该维度召回源或调整权重"})
+
+    # --- 知识树 ---
+    if kt_m.get("status") != "no_data":
+        orphan = kt_m.get("orphan_pct", 0)
+        if orphan > 50:
+            recs.append({"flywheel": "知识树", "desc": f"孤立知识点 {orphan}%，建议运行 consolidate 补齐 knowledge_tree_edges 或检查 k_vector 兜底"})
+        frag = kt_m.get("fragment_domains", 0)
+        if frag > 10:
+            recs.append({"flywheel": "知识树", "desc": f"碎片域 {frag} 个，建议合并相似域或调整 HDBSCAN min_cluster_size"})
+        conf = kt_m.get("avg_confidence", 0)
+        if 0 < conf < 0.8:
+            recs.append({"flywheel": "知识树", "desc": f"平均置信度 {conf} 偏低，建议检查知识点提取 prompt 或增加准入校验"})
+
+    # --- 聚类 ---
+    if cluster_m.get("status") != "no_data":
+        noise = cluster_m.get("noise_rate", 0)
+        if noise > 30:
+            recs.append({"flywheel": "聚类", "desc": f"噪声率 {noise}% 偏高，建议调整 HDBSCAN min_cluster_size 或增加 min_llm_size"})
+        n_clusters = cluster_m.get("cluster_count", 0)
+        if n_clusters > 0 and n_clusters < 3:
+            recs.append({"flywheel": "聚类", "desc": f"聚类数仅 {n_clusters}，可能过粗，建议降低 min_cluster_size 或增加样本量"})
+        links = cluster_m.get("memory_links", 0)
+        if 0 < links < 50:
+            recs.append({"flywheel": "聚类", "desc": f"Memory Links 仅 {links}，聚类间关联稀疏，建议检查 memory_links 写入逻辑"})
+
+    # --- 趋势恶化 ---
+    for key, val in trends.items():
+        if "→" in val and "(" in val:
+            try:
+                m = re.search(r"\(([+-]?\d+\.?\d*)", val)
+                if not m:
+                    continue
+                delta = float(m.group(1))
+                if delta > 0 and any(k in key for k in ["全关率", "空结果率", "噪声率", "孤立率", "unknown"]):
+                    recs.append({"flywheel": "趋势", "desc": f"{key} 恶化 ({val})，建议关注并排查根因"})
+                elif delta < 0 and any(k in key for k in ["F1", "得分", "成功率"]):
+                    recs.append({"flywheel": "趋势", "desc": f"{key} 下降 ({val})，建议关注并排查根因"})
+            except (ValueError, IndexError):
+                pass
+
+    # --- 僵尸文件 ---
+    if zombie_files:
+        recs.append({"flywheel": "维护", "desc": f"发现 {len(zombie_files)} 个非飞轮 state 文件 ({', '.join(zombie_files[:3])})，建议清理以减少噪音"})
+
+    return recs
 
 
 def main():

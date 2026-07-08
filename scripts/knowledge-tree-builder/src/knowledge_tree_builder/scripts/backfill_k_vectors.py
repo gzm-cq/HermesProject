@@ -131,28 +131,31 @@ def backfill_k_vectors(
         logger.info("[dry-run] 预览: %d 个节点待回填", stats["total"])
         return stats
 
-    # 3. 回填 knowledge_point — embedding API
+    # 3. 回填 knowledge_point — embedding API（按 batch_size 分批）
     if kp_rows:
         texts = [r[1] for r in kp_rows]
         node_ids = [r[0] for r in kp_rows]
         try:
-            embeddings = batch_embed(texts, base_url=embed_base_url,
-                                     model=embed_model, api_key=embed_api_key,
-                                     batch_size=batch_size)
-            if not embeddings:
-                logger.warning("knowledge_point embedding 全部失败")
-                stats["errors"] += len(kp_rows)
-            elif len(embeddings) != len(texts):
-                logger.warning("knowledge_point embedding 数量不匹配: 期望 %d, 实际 %d",
-                               len(texts), len(embeddings))
-                stats["errors"] += len(kp_rows)
-            else:
-                for i, node_id in enumerate(node_ids):
-                    if embeddings[i] is not None:
-                        adapter.update_k_vector(node_id=node_id, k_vector=embeddings[i], placement_count=0)
-                        stats["filled"] += 1
-                    else:
-                        stats["errors"] += 1
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i + batch_size]
+                batch_node_ids = node_ids[i:i + batch_size]
+                embeddings = batch_embed(batch_texts, base_url=embed_base_url,
+                                         model=embed_model, api_key=embed_api_key,
+                                         batch_size=batch_size)
+                if not embeddings:
+                    logger.warning("knowledge_point embedding 批次 %d~%d 全部失败", i, min(i + batch_size, len(texts)))
+                    stats["errors"] += len(batch_texts)
+                elif len(embeddings) != len(batch_texts):
+                    logger.warning("knowledge_point embedding 数量不匹配: 期望 %d, 实际 %d",
+                                   len(batch_texts), len(embeddings))
+                    stats["errors"] += len(batch_texts)
+                else:
+                    for j, node_id in enumerate(batch_node_ids):
+                        if embeddings[j] is not None:
+                            adapter.update_k_vector(node_id=node_id, k_vector=embeddings[j], placement_count=0)
+                            stats["filled"] += 1
+                        else:
+                            stats["errors"] += 1
         except Exception as e:
             logger.warning("knowledge_point 处理失败: %s", e)
             stats["errors"] += len(kp_rows)

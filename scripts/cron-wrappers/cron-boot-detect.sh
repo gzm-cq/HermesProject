@@ -26,7 +26,12 @@ CRON_SKIP_FINISH_NOTIFY=true   # 脚本自发送恢复报告，不让 cron_finis
 # ===== 阶段 1：分析 =====
 cron_section "分析 cron job 状态"
 ANALYSIS_FILE=$(mktemp /tmp/cron-boot-analysis-XXXXXX.json)
-trap "rm -f '$ANALYSIS_FILE'" EXIT
+REPORT_FILE=""
+cleanup() {
+    [[ -n "$ANALYSIS_FILE" ]] && rm -f "$ANALYSIS_FILE"
+    [[ -n "$REPORT_FILE" ]] && rm -f "$REPORT_FILE"
+}
+trap cleanup EXIT
 
 python3 <<'PY' > "$ANALYSIS_FILE"
 import json, os
@@ -240,11 +245,11 @@ BODY=$(echo "$REPORT_TEXT" | head -n -1)
 # ===== 阶段 3：飞书推送 =====
 cron_section "推送恢复报告"
 if [[ "$STATUS" == "ALERT" ]]; then
-    cron_notify "⚠️ [Cron 自愈] 系统恢复 — 有 job 需人工介入" "$BODY"
+    cron_notify "⚠️ [Cron 自愈] 系统恢复 — 有 job 需人工介入" "$BODY" || true
     cron_finish
     exit 0  # 检测到异常是脚本正常工作，不应用 exit 1 让 systemd 误判为服务失败
 else
-    cron_notify "✅ [Cron 自愈] 系统恢复 — 无异常" "$BODY"
+    cron_notify "✅ [Cron 自愈] 系统恢复 — 无异常" "$BODY" || true
     cron_finish
     exit 0
 fi

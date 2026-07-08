@@ -75,7 +75,7 @@ if command -v lark-cli &>/dev/null; then
         BODY=$(printf '%b' "${BODY}\n\n· ${FAILED_NAME}")
     fi
 
-    cron_notify "飞轮健康报告 ${TODAY_CN}" "$BODY"
+    cron_notify "飞轮健康报告 ${TODAY_CN}" "$BODY" || true
 
     if [[ -f "$REPORT_FILE" ]]; then
         cd "$REPORT_DIR" && lark-cli im +messages-send \
@@ -85,4 +85,4 @@ if command -v lark-cli &>/dev/null; then
     fi
 fi
 
-cron_finish || true
+cron_finish

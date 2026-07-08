@@ -266,7 +266,12 @@ class DatabaseAdapter:
                 )
                 ue_written = cur.rowcount
             except Exception as ex:
-                print(f"     [WARN] unit_entities 批量写入失败: {ex}")
+                # 失败时整体回滚（与第 1 轮 entities 写入保持原子性）
+                self.conn.rollback()
+                raise RuntimeError(
+                    f"unit_entities 批量写入失败，apply 整体回滚。原因: {ex}\n"
+                    "  请修复根因后重试，避免 entities 写入但 unit_entities 漏写的脏数据。"
+                ) from ex
 
         print(f"   写入 unit_entities: {ue_written} 条")
 
@@ -325,7 +330,12 @@ class DatabaseAdapter:
                     )
                     text_updated = cur.rowcount
                 except Exception as ex:
-                    print(f"     [WARN] 批量回写文本失败: {ex}")
+                    # 失败时整体回滚（与第 1 轮 entities 写入保持原子性）
+                    self.conn.rollback()
+                    raise RuntimeError(
+                        f"批量回写文本失败，apply 整体回滚。原因: {ex}\n"
+                        "  请修复根因后重试，避免 entities/unit_entities 已写但文本未回写的不一致状态。"
+                    ) from ex
 
         print(f"   回写实体文本 + 富化文本: {text_updated} 条")
 
@@ -367,7 +377,12 @@ class DatabaseAdapter:
                 )
                 links_written = cur.rowcount
             except Exception as ex:
-                print(f"     [WARN] memory_links 批量写入失败: {ex}")
+                # 失败时整体回滚（与第 1 轮 entities 写入保持原子性）
+                self.conn.rollback()
+                raise RuntimeError(
+                    f"memory_links 批量写入失败，apply 整体回滚。原因: {ex}\n"
+                    "  请修复根因后重试，避免部分写入导致不一致状态。"
+                ) from ex
 
         print(f"   写入 memory_links: {links_written} 条")
 

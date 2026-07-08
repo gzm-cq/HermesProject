@@ -130,6 +130,8 @@ class PluginDatabaseAdapter:
         records: list[tuple[str, str]],
         parent_id: int | None = None,
         k_vectors: list[list[float]] | None = None,
+        *,
+        commit: bool = True,
     ) -> list[int]:
         """单事务批量插入知识点节点和原文，避免孤儿节点。
 
@@ -137,6 +139,7 @@ class PluginDatabaseAdapter:
             records: (name, text) 列表
             parent_id: 父节点 ID
             k_vectors: 与 records 同序的知识点向量；提供时写入节点自身 k_vector
+            commit: 是否自动提交事务（默认 True；调用方控制外层事务时置 False）
 
         Returns:
             插入的节点 ID 列表，顺序与 records 一致。
@@ -181,7 +184,8 @@ class PluginDatabaseAdapter:
                 f"INSERT INTO knowledge_point_texts (tree_node_id, text) VALUES {text_placeholders}",
                 text_params,
             )
-            self._inner.conn.commit()
+            if commit:
+                self._inner.conn.commit()
             return node_ids
         except Exception:
             self._inner.conn.rollback()
@@ -204,8 +208,10 @@ class PluginDatabaseAdapter:
         node_id: int,
         k_vector: list[float],
         placement_count: int,
+        *,
+        commit: bool = True,
     ) -> None:
-        self._inner.update_k_vector(node_id, k_vector, placement_count)
+        self._inner.update_k_vector(node_id, k_vector, placement_count, commit=commit)
 
     def insert_review(
         self,

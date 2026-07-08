@@ -103,8 +103,9 @@ class RecombinationConfig:
                         llm_model=cfg.get("llm_model") or common.get("llm_model", cls.llm_model),
                         llm_api_key=cfg.get("llm_api_key") or os.getenv("LITELLM_MASTER_KEY", ""),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                # 记录加载失败原因，使用默认配置
+                logger.warning("从 %s 加载 RecombinationConfig 失败，使用默认配置: %s", path, e)
         return cls()
 
     @classmethod

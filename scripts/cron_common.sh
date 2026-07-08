@@ -42,12 +42,20 @@ if [[ -f "$_HERMES_ENV_FILE" ]]; then
     set +a
 fi
 
-# ===== 颜色 =====
-_C_CYA='\033[36m'
-_C_GRN='\033[32m'
-_C_RED='\033[31m'
-_C_YLW='\033[33m'
-_C_RST='\033[0m'
+# ===== 颜色（非终端输出时禁用）=====
+if [[ -t 1 ]]; then
+    _C_CYA='\033[36m'
+    _C_GRN='\033[32m'
+    _C_RED='\033[31m'
+    _C_YLW='\033[33m'
+    _C_RST='\033[0m'
+else
+    _C_CYA=''
+    _C_GRN=''
+    _C_RED=''
+    _C_YLW=''
+    _C_RST=''
+fi
 
 # ===== 全局状态 =====
 CRON_JOB_NAME=""
@@ -67,7 +75,9 @@ _CRON_RETRIES_TOTAL=0                           # 本次执行总重试次数
 #   catchup — 追赶执行（日志带 ⚡、飞书通知带 ⚡ 标记）
 cron_init() {
     local job_name="$1"
-    local mode="${2:-normal}"
+    # mode 优先级：位置参数 > CRON_MODE 环境变量 > normal
+    # 支持 catchup-repair.sh 等外部脚本通过环境变量传递模式
+    local mode="${2:-${CRON_MODE:-normal}}"
     CRON_JOB_NAME="$job_name"
     CRON_MODE="$mode"
 
@@ -80,12 +90,13 @@ cron_init() {
     local state_dir="${CRON_STATE_DIR:-/root/.hermes/lib/cron-state}"
     mkdir -p "$state_dir"
 
-    # flock 防重入
+    # flock 防重入（动态分配文件描述符，避免硬编码冲突）
     local lock_dir="${CRON_LOCK_DIR:-/tmp/hermes-cron-locks}"
     mkdir -p "$lock_dir"
     local lock_file="${lock_dir}/${job_name}.lock"
-    exec 200>"$lock_file"
-    if ! flock -n 200; then
+    local lock_fd
+    exec {lock_fd}>"$lock_file"
+    if ! flock -n "$lock_fd"; then
         echo "[$(date '+%F %T')] ${job_name}: 已有实例在运行，退出" >> "$CRON_LOG_FILE"
         exit 0
     fi
@@ -103,6 +114,9 @@ cron_init() {
         echo ""
         cron_section "${job_name} 开始 — $(date '+%F %T')"
     fi
+
+    # 记录任务开始时间（在 cron_init 中设置更准确）
+    CRON_START_TIME=$(date +%s)
 }
 
 # ===== 输出函数 =====
@@ -111,17 +125,42 @@ cron_log() {
 }
 
 cron_ok() {
+    local step_name=""
+    # 如果第一个参数以 --step= 开头，提取步骤名并自动注册到 _STEP_RESULTS
+    if [[ "$1" == --step=* ]]; then
+        step_name="${1#--step=}"
+        shift
+    fi
     echo -e "${_C_GRN}[ ok  ]${_C_RST} $*"
+    if [[ -n "$step_name" ]]; then
+        _STEP_RESULTS+=("✅ $step_name")
+    fi
 }
 
 cron_err() {
+    local step_name=""
+    if [[ "$1" == --step=* ]]; then
+        step_name="${1#--step=}"
+        shift
+    fi
     echo -e "${_C_RED}[error]${_C_RST} $*"
     OVERALL_STATUS="fail"
+    if [[ -n "$step_name" ]]; then
+        _STEP_RESULTS+=("❌ $step_name")
+    fi
 }
 
 cron_warn() {
+    local step_name=""
+    if [[ "$1" == --step=* ]]; then
+        step_name="${1#--step=}"
+        shift
+    fi
     echo -e "${_C_YLW}[warn ]${_C_RST} $*"
     [[ "$OVERALL_STATUS" == "success" ]] && OVERALL_STATUS="partial"
+    if [[ -n "$step_name" ]]; then
+        _STEP_RESULTS+=("⚠️ $step_name")
+    fi
 }
 
 cron_section() {
@@ -253,7 +292,7 @@ PY
     else
         cron_warn "未配置 lark-cli 或 FEISHU_WEBHOOK_URL，跳过飞书通知"
     fi
-    return 0
+    return 1
 }
 
 # ===== 状态文件写入 =====
@@ -276,32 +315,33 @@ _write_state_file() {
         fi
     done
 
-    # 通过管道传递变量给 Python，避免引号转义问题
-    printf '%s\n' \
-        "$CRON_JOB_NAME" \
-        "$OVERALL_STATUS" \
-        "$CRON_MODE" \
-        "$(date -Iseconds)" \
-        "$elapsed_val" \
-        "${_CRON_RETRIES_TOTAL:-0}" \
-        "${_CRON_RETRIES_EXHAUSTED:-false}" \
-        "$last_error" |
+    # 通过环境变量传递文件路径，避免单引号注入风险
+    _CRON_STATE_FILE="$state_file" \
+    _CRON_JOB_NAME_ENV="$CRON_JOB_NAME" \
+    _CRON_OVERALL_STATUS="$OVERALL_STATUS" \
+    _CRON_MODE_ENV="$CRON_MODE" \
+    _CRON_RUN_AT="$(date -Iseconds)" \
+    _CRON_ELAPSED="$elapsed_val" \
+    _CRON_RETRIES_TOTAL_ENV="${_CRON_RETRIES_TOTAL:-0}" \
+    _CRON_RETRIES_EXHAUSTED_ENV="${_CRON_RETRIES_EXHAUSTED:-false}" \
+    _CRON_LAST_ERROR="$last_error" \
     python3 -c "
 import json, os, sys
 
-lines = [l.rstrip('\n') for l in sys.stdin]
 state = {
-    'job_name': lines[0],
-    'status': lines[1],
-    'cron_mode': lines[2],
-    'run_at': lines[3],
-    'elapsed_seconds': max(0, int(float(lines[4]))) if lines[4] else 0,
-    'retries_used': int(lines[5]) if lines[5] else 0,
-    'overall_retries_exhausted': lines[6].lower() == 'true',
+    'job_name': os.environ['_CRON_JOB_NAME_ENV'],
+    'status': os.environ['_CRON_OVERALL_STATUS'],
+    'cron_mode': os.environ['_CRON_MODE_ENV'],
+    'run_at': os.environ['_CRON_RUN_AT'],
+    'elapsed_seconds': max(0, int(float(os.environ['_CRON_ELAPSED']))) if os.environ['_CRON_ELAPSED'] else 0,
+    'retries_used': int(os.environ['_CRON_RETRIES_TOTAL_ENV']) if os.environ['_CRON_RETRIES_TOTAL_ENV'] else 0,
+    'overall_retries_exhausted': os.environ['_CRON_RETRIES_EXHAUSTED_ENV'].lower() == 'true',
 }
-if len(lines) > 7 and lines[7].strip():
-    state['last_error'] = lines[7].strip()
-path = '$state_file'
+last_error = os.environ['_CRON_LAST_ERROR'].strip()
+if last_error:
+    state['last_error'] = last_error
+
+path = os.environ['_CRON_STATE_FILE']
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
     json.dump(state, f, ensure_ascii=False, indent=2)
@@ -365,5 +405,4 @@ cron_finish() {
     esac
 }
 
-# 记录开始时间（在 source 时自动设置）
-CRON_START_TIME=$(date +%s)
+# CRON_START_TIME 已在 cron_init() 中设置（更准确，避免 source 与 cron_init 之间的耗时被计入）

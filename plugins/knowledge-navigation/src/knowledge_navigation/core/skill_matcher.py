@@ -76,6 +76,11 @@ _embedding_lock: threading.Lock = threading.Lock()  # 并发保护
 _EMBEDDING_CIRCUIT_BREAK_THRESHOLD = 3  # 连续失败阈值
 _EMBEDDING_CIRCUIT_COOLDOWN = 300  # 熔断冷却时间（秒），5 分钟
 
+# ── 全局缓存锁 ──
+_index_lock: threading.Lock = threading.Lock()  # _skill_index 并发保护
+_embedding_cache_lock: threading.Lock = threading.Lock()  # _embedding_cache 并发保护
+_query_embedding_cache_lock: threading.Lock = threading.Lock()  # _query_embedding_cache 并发保护
+
 
 def _embedding_circuit_breaker() -> bool:
     """检查 embedding 熔断是否触发。返回 True 表示应跳过 embedding 阶段。"""
@@ -140,31 +145,30 @@ def _get_query_embedding(query: str, model: str, url: str, api_key: str) -> np.n
     global _query_embedding_cache
 
     now = time.time()
-    if query in _query_embedding_cache:
-        ts, emb = _query_embedding_cache[query]
-        if now - ts < _QUERY_EMBEDDING_CACHE_TTL:
-            # LRU: 移到末尾标记为最近使用
-            _query_embedding_cache.move_to_end(query)
-            return emb
-        else:
-            # 过期，删除
-            del _query_embedding_cache[query]
+    with _query_embedding_cache_lock:
+        if query in _query_embedding_cache:
+            ts, emb = _query_embedding_cache[query]
+            if now - ts < _QUERY_EMBEDDING_CACHE_TTL:
+                _query_embedding_cache.move_to_end(query)
+                return emb
+            else:
+                del _query_embedding_cache[query]
 
     try:
         import httpx
         resp = httpx.post(
             f"{url.rstrip('/')}/embeddings",
-            json={"model": model, "input": query[:1000]},  # 截断长 query
+            json={"model": model, "input": query[:1000]},
             headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
             timeout=10,
         )
         resp.raise_for_status()
         data = resp.json()
         embedding = np.array(data["data"][0]["embedding"], dtype=np.float32)
-        _query_embedding_cache[query] = (now, embedding)
-        # LRU 淘汰：超过上限时删除最旧条目
-        while len(_query_embedding_cache) > _QUERY_EMBEDDING_CACHE_MAX:
-            _query_embedding_cache.popitem(last=False)
+        with _query_embedding_cache_lock:
+            _query_embedding_cache[query] = (now, embedding)
+            while len(_query_embedding_cache) > _QUERY_EMBEDDING_CACHE_MAX:
+                _query_embedding_cache.popitem(last=False)
         return embedding
     except Exception as e:
         logger.debug("Embedding API 调用失败: %s", e)
@@ -176,17 +180,17 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
     global _embedding_cache
 
     result = {}
-    texts_to_fetch: list[tuple[str, str]] = []  # (skill_path, text)
+    texts_to_fetch: list[tuple[str, str]] = []
 
-    for skill in skills:
-        path = skill.get("path", "")
-        if path in _embedding_cache:
-            result[path] = _embedding_cache[path]
-            # LRU: 移到末尾标记为最近使用
-            _embedding_cache.move_to_end(path)
-        else:
-            text = f"{skill.get('name', '')} {skill.get('description', '')}"
-            texts_to_fetch.append((path, text))
+    with _embedding_cache_lock:
+        for skill in skills:
+            path = skill.get("path", "")
+            if path in _embedding_cache:
+                result[path] = _embedding_cache[path]
+                _embedding_cache.move_to_end(path)
+            else:
+                text = f"{skill.get('name', '')} {skill.get('description', '')}"
+                texts_to_fetch.append((path, text))
 
     if not texts_to_fetch:
         return result
@@ -208,16 +212,16 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
             resp.raise_for_status()
             data = resp.json()
 
-            for item in data.get("data", []):
-                idx = item.get("index", 0)
-                if 0 <= idx < len(paths):
-                    path = paths[idx]
-                    emb = np.array(item["embedding"], dtype=np.float32)
-                    _embedding_cache[path] = emb
-                    result[path] = emb
-            # LRU 淘汰：超过上限时删除最旧条目
-            while len(_embedding_cache) > _EMBEDDING_CACHE_MAX:
-                _embedding_cache.popitem(last=False)
+            with _embedding_cache_lock:
+                for item in data.get("data", []):
+                    idx = item.get("index", 0)
+                    if 0 <= idx < len(paths):
+                        path = paths[idx]
+                        emb = np.array(item["embedding"], dtype=np.float32)
+                        _embedding_cache[path] = emb
+                        result[path] = emb
+                while len(_embedding_cache) > _EMBEDDING_CACHE_MAX:
+                    _embedding_cache.popitem(last=False)
         except Exception as e:
             logger.debug("Embedding 批量获取失败 (batch %d-%d): %s", i, i + len(batch), e)
 
@@ -289,11 +293,12 @@ def _embedding_prescreen(
 
 def _get_skill_list() -> list[dict[str, Any]]:
     """将 dict 格式的索引转换为 list，保持向后兼容。"""
-    if _skill_index is None:
-        return []
-    if isinstance(_skill_index, list):
-        return _skill_index
-    return list(_skill_index.values())
+    with _index_lock:
+        if _skill_index is None:
+            return []
+        if isinstance(_skill_index, list):
+            return _skill_index.copy()
+        return list(_skill_index.values())
 
 
 def _load_skill_file(fp: Path) -> dict[str, Any] | None:
@@ -344,24 +349,31 @@ def ensure_index() -> bool:
 
     incremental = CONFIG.skill_index_incremental
 
-    if _skill_index is not None and not incremental:
-        if isinstance(_skill_index, list):
+    with _index_lock:
+        if _skill_index is not None and not incremental:
+            if isinstance(_skill_index, list):
+                return len(_skill_index) > 0
             return len(_skill_index) > 0
-        return len(_skill_index) > 0
 
-    if not SKILLS_HOME.exists():
-        logger.warning("Skill index: skills dir not found: %s", SKILLS_HOME)
-        _skill_index = {}
-        return False
+        if not SKILLS_HOME.exists():
+            logger.warning("Skill index: skills dir not found: %s", SKILLS_HOME)
+            _skill_index = {}
+            return False
 
-    if _skill_index is None or isinstance(_skill_index, list):
-        return _build_full_index()
+        if _skill_index is None or isinstance(_skill_index, list):
+            return _build_full_index_locked()
 
-    return _update_incremental()
+        return _update_incremental_locked()
 
 
 def _build_full_index() -> bool:
-    """全量扫描构建 skill 索引。"""
+    """全量扫描构建 skill 索引（外部调用，带锁）。"""
+    with _index_lock:
+        return _build_full_index_locked()
+
+
+def _build_full_index_locked() -> bool:
+    """全量扫描构建 skill 索引（内部调用，假设已持有锁）。"""
     global _skill_index, _embedding_cache
 
     t0 = time.time()
@@ -380,7 +392,8 @@ def _build_full_index() -> bool:
         index[str(fp)] = skill_data
 
     _skill_index = index
-    _embedding_cache.clear()
+    with _embedding_cache_lock:
+        _embedding_cache.clear()
 
     elapsed = (time.time() - t0) * 1000
     logger.info(
@@ -391,11 +404,17 @@ def _build_full_index() -> bool:
 
 
 def _update_incremental() -> bool:
-    """增量更新 skill 索引：检查 mtime，只处理有变化的文件。"""
+    """增量更新 skill 索引：检查 mtime，只处理有变化的文件（外部调用，带锁）。"""
+    with _index_lock:
+        return _update_incremental_locked()
+
+
+def _update_incremental_locked() -> bool:
+    """增量更新 skill 索引：检查 mtime，只处理有变化的文件（内部调用，假设已持有锁）。"""
     global _skill_index, _embedding_cache
 
     if _skill_index is None:
-        return _build_full_index()
+        return _build_full_index_locked()
 
     t0 = time.time()
     skill_files = list(SKILLS_HOME.rglob("SKILL.md"))
@@ -429,17 +448,20 @@ def _update_incremental() -> bool:
                 skill_data = _load_skill_file(fp)
                 if skill_data is None:
                     del _skill_index[path_str]
-                    _embedding_cache.pop(path_str, None)
+                    with _embedding_cache_lock:
+                        _embedding_cache.pop(path_str, None)
                     removed += 1
                     n_skipped += 1
                     continue
                 _skill_index[path_str] = skill_data
-                _embedding_cache.pop(path_str, None)
+                with _embedding_cache_lock:
+                    _embedding_cache.pop(path_str, None)
                 updated += 1
 
     for path_str in indexed_paths - current_paths:
         del _skill_index[path_str]
-        _embedding_cache.pop(path_str, None)
+        with _embedding_cache_lock:
+            _embedding_cache.pop(path_str, None)
         removed += 1
 
     elapsed = (time.time() - t0) * 1000
@@ -460,7 +482,8 @@ def rebuild_skill_index() -> bool:
     用于手动刷新索引，清除增量缓存。
     """
     global _skill_index
-    _skill_index = None
+    with _index_lock:
+        _skill_index = None
     return ensure_index()
 
 def _parse_frontmatter(text: str) -> dict[str, str]:

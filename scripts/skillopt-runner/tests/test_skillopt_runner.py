@@ -750,15 +750,12 @@ class TestPatchSkillHermes:
         result = sr.patch_skill_hermes("nonexistent", "new content", state)
         assert result is False
 
-    @patch("tools.skill_manager_tool.skill_manage")
-    def test_successful_patch(self, mock_skill_manage, tmp_hermes):
-        """Successful patch: backup created, skill_manage called with frontmatter+edit, neg feedback cleared."""
+    def test_successful_patch(self, tmp_hermes):
+        """Successful patch: backup created, file written correctly, neg feedback cleared."""
         skill_dir = tmp_hermes / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(self.SKILL_WITH_FM, encoding="utf-8")
-
-        mock_skill_manage.return_value = {"success": True, "message": "OK"}
 
         state = {
             "skill_neg_feedback": {"test-skill": 5},
@@ -767,25 +764,23 @@ class TestPatchSkillHermes:
         result = sr.patch_skill_hermes("test-skill", "# Updated", state)
         assert result is True
         assert state["skill_neg_feedback"]["test-skill"] == 0
-        # merged = frontmatter + body + edit content
-        mock_skill_manage.assert_called_once_with(
-            action='edit', name='test-skill', content=self.SKILL_WITH_FM_UPDATED)
+        assert skill_md.read_text(encoding="utf-8") == self.SKILL_WITH_FM_UPDATED
+        backups = list((tmp_hermes / "skillopt" / "backups").glob("test-skill_*.md.bak"))
+        assert len(backups) == 1
 
-    @patch("tools.skill_manager_tool.skill_manage")
-    def test_failed_patch_reverts(self, mock_skill_manage, tmp_hermes):
+    def test_failed_patch_reverts(self, tmp_hermes):
         """Failed patch: original file restored from backup."""
         skill_dir = tmp_hermes / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(self.SKILL_WITH_FM_BODY, encoding="utf-8")
 
-        mock_skill_manage.return_value = {"success": False, "error": "validation failed"}
-
-        state = {"skill_neg_feedback": {}, "skill_total_mentions": {}}
-        result = sr.patch_skill_hermes("test-skill", "# Bad Update", state)
-        assert result is False
-        # Original content restored
-        assert skill_md.read_text(encoding="utf-8") == self.SKILL_WITH_FM_BODY
+        with patch("skillopt_runner.pathlib.Path.write_text") as mock_write:
+            mock_write.side_effect = IOError("disk full")
+            state = {"skill_neg_feedback": {}, "skill_total_mentions": {}}
+            result = sr.patch_skill_hermes("test-skill", "# Bad Update", state)
+            assert result is False
+            assert skill_md.read_text(encoding="utf-8") == self.SKILL_WITH_FM_BODY
 
     def test_no_frontmatter_returns_false(self, tmp_hermes):
         """SKILL.md without YAML frontmatter => returns False."""
@@ -796,21 +791,16 @@ class TestPatchSkillHermes:
         result = sr.patch_skill_hermes("no-fm", "some edit", state)
         assert result is False
 
-    def test_patch_import_failure_returns_false(self, tmp_hermes):
-        """If skill_manage import fails (no hermes-agent path), returns False."""
+    def test_backup_created_before_write(self, tmp_hermes):
+        """Backup is created before writing to SKILL.md."""
         skill_dir = tmp_hermes / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(self.SKILL_WITH_FM_BODY, encoding="utf-8")
-        state = {"skill_neg_feedback": {}, "skill_total_mentions": {}}
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(self.SKILL_WITH_FM_BODY, encoding="utf-8")
 
-        import sys as _sys
-        saved = _sys.modules.pop("tools.skill_manager_tool", None)
-        saved_tools = _sys.modules.pop("tools", None)
-        try:
-            result = sr.patch_skill_hermes("test-skill", "# Updated", state)
-        finally:
-            if saved_tools is not None:
-                _sys.modules["tools"] = saved_tools
-            if saved is not None:
-                _sys.modules["tools.skill_manager_tool"] = saved
-        assert result is False
+        state = {"skill_neg_feedback": {}, "skill_total_mentions": {}}
+        sr.patch_skill_hermes("test-skill", "# Updated", state)
+
+        backups = list((tmp_hermes / "skillopt" / "backups").glob("test-skill_*.md.bak"))
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == self.SKILL_WITH_FM_BODY

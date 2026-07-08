@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import contextmanager
 try:
     from pgvector.psycopg2 import register_vector
     PGVECTOR_AVAILABLE = True
@@ -51,9 +53,19 @@ def _parse_k_vector(raw: object) -> list[float] | None:
 
 
 class DatabaseAdapter:
-    """知识树数据库适配器"""
+    """知识树数据库适配器
+
+    线程安全说明：
+        - psycopg2 connection/cursor 不是线程安全的，并发使用可能导致协议错乱。
+        - 本类提供 RLock 和 atomic() 上下文管理器，多线程场景下应使用：
+            with adapter.atomic():
+                adapter.insert_node(...)
+                adapter.update_k_vector(..., commit=False)
+        - 单线程顺序调用（CLI 主流程）可忽略此约束。
+    """
 
     def __init__(self, db_url: str) -> None:
+        self._lock = threading.RLock()  # 保护 self.cursor / self.conn 的并发访问
         self.conn = psycopg2.connect(db_url)
         # 先确保 autocommit=True，再注册 pgvector 类型。
         # register_vector 内部调用 set_session，在活跃事务中会触发
@@ -67,20 +79,55 @@ class DatabaseAdapter:
                 logger.error("pgvector register_vector 失败（k_vector 将被读为字符串而非 list）: %s", e)
         self.conn.autocommit = False
         self.cursor = self.conn.cursor()
+        self._atomic_depth = 0  # 嵌套 atomic() 深度计数器
         self._ensure_indexes()
         self._ensure_last_text_hash_column()
 
+    @contextmanager
+    def atomic(self):
+        """事务上下文管理器：多步写入要么全部成功要么全部回滚。
+
+        用法：
+            with adapter.atomic():
+                adapter.insert_node(..., commit=False)
+                adapter.update_k_vector(..., commit=False)
+            # 退出 with 块时自动 commit；如果异常则 rollback
+
+        Note:
+            - 进入时会获取 self._lock，确保同一 adapter 串行执行
+            - 支持嵌套调用：内层 atomic() 只增加深度计数，不执行 commit/rollback，
+              由最外层统一控制事务边界
+            - 调用方传入的方法必须支持 commit=False
+        """
+        with self._lock:
+            self._atomic_depth += 1
+            try:
+                yield
+                if self._atomic_depth == 1:
+                    self.conn.commit()
+            except Exception:
+                if self._atomic_depth == 1:
+                    self.conn.rollback()
+                raise
+            finally:
+                self._atomic_depth -= 1
+
     # ========== Source Articles ==========
 
-    def insert_article(self, wiki_path: str, title: str, source_type: str = "wiki_note") -> int:
+    def insert_article(
+        self, wiki_path: str, title: str, source_type: str = "wiki_note",
+        *, commit: bool = True,
+    ) -> int:
         """登记一篇输入文章，返回 ID"""
         self.cursor.execute(
             "INSERT INTO source_articles (wiki_path, title, source_type, extracted_at) "
             "VALUES (%s, %s, %s, NOW()) RETURNING id",
             (wiki_path, title, source_type),
         )
-        self.conn.commit()
-        return int(self.cursor.fetchone()[0])
+        row = self.cursor.fetchone()
+        if commit:
+            self.conn.commit()
+        return int(row[0])
 
     # ========== Knowledge Tree Nodes ==========
 
@@ -91,6 +138,8 @@ class DatabaseAdapter:
         parent_id: int | None = None,
         display_order: int = 0,
         source_ids: list[int] | None = None,
+        *,
+        commit: bool = True,
     ) -> int:
         """插入一个树节点，返回 ID"""
         self.cursor.execute(
@@ -98,8 +147,10 @@ class DatabaseAdapter:
             "VALUES (%s, %s, %s, %s, %s) RETURNING id",
             (name, node_type, parent_id, display_order, source_ids or None),
         )
-        self.conn.commit()
-        return int(self.cursor.fetchone()[0])
+        row = self.cursor.fetchone()
+        if commit:
+            self.conn.commit()
+        return int(row[0])
 
     def _ensure_indexes(self) -> None:
         """确保关键索引存在（幂等执行）。"""
@@ -616,6 +667,7 @@ class DatabaseAdapter:
     def update_k_vector(
         self, node_id: int, k_vector: list[float],
         placement_count: int | None = None,
+        *, commit: bool = True,
     ) -> None:
         """更新节点的 k_vector 和（可选）placement_count。
 
@@ -624,6 +676,7 @@ class DatabaseAdapter:
 
         Note:
             保留自 explain 的 k_updated_at = NOW() 更新和时间戳提交。
+            当 commit=False 时不自动提交，调用方需自行控制事务边界。
         """
         # 转为 PostgreSQL vector 字面量字符串：'[1.0, 2.0, ...]'
         import numpy as np
@@ -644,7 +697,8 @@ class DatabaseAdapter:
                 "k_updated_at = NOW() WHERE id = %s",
                 (vec_str, node_id),
             )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     # ========== Consolidation ==========
 

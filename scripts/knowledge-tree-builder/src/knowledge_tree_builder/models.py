@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
+
+try:
+    from typing import NotRequired
+except ImportError:
+    from typing_extensions import NotRequired
 
 
 # ========== 1. 知识点类型枚举 ==========

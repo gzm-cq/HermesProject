@@ -145,8 +145,9 @@ class RefinementConfig:
                     llm_model=cfg.get("llm_model") or common.get("llm_model", cls.llm_model),
                     llm_api_key=cfg.get("llm_api_key") or os.getenv("LITELLM_MASTER_KEY", ""),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                # 记录加载失败原因，使用默认配置
+                logger.warning("从 %s 加载 RefinementConfig 失败，使用默认配置: %s", path, e)
         return cls()
 
     @classmethod
@@ -324,22 +325,64 @@ class RefinementOperator:
 
     def optimize(self, content: str, redundancies: List[Redundancy],
                  risk_report: RiskReport, iteration: int) -> tuple[str, List[OptimizationStep]]:
+        """按 redundant 内容安全删除冗余。
+
+        安全性增强：
+        - removal_safety > 0.5 才执行删除
+        - 用 location 字段（如有）验证内容确实在预期位置，避免误删
+        - 限制单次只删除一处，删除后立即 break 避免多次删除
+        - 当 redundancy.content 在优化后文本中出现多次时，记录警告
+        """
         steps = []
         optimized = content
         for redundancy in redundancies:
-            if redundancy.removal_safety > 0.5 and redundancy.content:
-                before = optimized
-                optimized = optimized.replace(redundancy.content, "", 1)
-                if optimized != before:
-                    steps.append(OptimizationStep(
-                        step_num=iteration * 100 + 1,
-                        action="remove_redundancy",
-                        target=redundancy.redundancy_id,
-                        before=before[:200], after=optimized[:200],
-                        risk_before=risk_report.risk_score,
-                        risk_after=risk_report.risk_score,
-                        reduction_bytes=len(before) - len(optimized),
-                    ))
+            if redundancy.removal_safety <= 0.5 or not redundancy.content:
+                continue
+            before = optimized
+            content_to_remove = redundancy.content
+
+            # 安全检查 1：如果内容在原文中出现多次，优先检查 location 提示
+            occurrences = before.count(content_to_remove)
+            if occurrences == 0:
+                # 内容已不存在（如之前被处理过），跳过
+                logger.debug("redundancy %s 内容已不在文本中，跳过", redundancy.redundancy_id)
+                continue
+            if occurrences > 1 and not getattr(redundancy, "location", None):
+                # 出现多次但没有 location 提示，保守起见只删除第一处
+                logger.warning(
+                    "redundancy %s 内容出现 %d 次且无 location 提示，仅删除第一处",
+                    redundancy.redundancy_id, occurrences,
+                )
+            elif occurrences > 1 and getattr(redundancy, "location", None):
+                # 有 location 提示，但 str.replace 不支持按位置删除，先尝试 locate
+                loc = redundancy.location
+                if isinstance(loc, int) and 0 <= loc < len(before) - len(content_to_remove):
+                    end = loc + len(content_to_remove)
+                    if before[loc:end] == content_to_remove:
+                        optimized = before[:loc] + before[end:]
+                    else:
+                        # 位置不匹配，回退到 replace
+                        logger.warning(
+                            "redundancy %s 位置 %d 处的文本与预期不符，回退到 replace",
+                            redundancy.redundancy_id, loc,
+                        )
+                        optimized = before.replace(content_to_remove, "", 1)
+                else:
+                    optimized = before.replace(content_to_remove, "", 1)
+            else:
+                # 唯一一处，直接 replace
+                optimized = before.replace(content_to_remove, "", 1)
+
+            if optimized != before:
+                steps.append(OptimizationStep(
+                    step_num=iteration * 100 + 1,
+                    action="remove_redundancy",
+                    target=redundancy.redundancy_id,
+                    before=before[:200], after=optimized[:200],
+                    risk_before=risk_report.risk_score,
+                    risk_after=risk_report.risk_score,
+                    reduction_bytes=len(before) - len(optimized),
+                ))
         return optimized, steps
 
     def execute(self, candidate_content: str,

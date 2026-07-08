@@ -20,7 +20,7 @@ def batch_embed(
     model: str = "BAAI/bge-m3",
     api_key: str = "",
     batch_size: int = 20,
-) -> list[list[float]] | None:
+) -> list[list[float] | None] | None:
     """批量获取文本的 embedding 向量。
 
     API 格式兼容 SiliconFlow / OpenAI 的 embeddings 接口。
@@ -33,13 +33,13 @@ def batch_embed(
         batch_size: 每批最大文本数
 
     Returns:
-        list[list[float]]: 每个文本对应的 embedding 向量列表
-        None: 全部失败时返回 None
+        list[list[float] | None]: 每个文本对应的 embedding；部分失败时失败位置用 None 占位
+        None: 全部失败时（如 requests 未安装）返回 None
     """
     if requests is None:
         return None
 
-    all_embeddings: list[list[float]] = []
+    all_embeddings: list[list[float] | None] = []
     url = f"{base_url.rstrip('/')}/embeddings"
 
     for i in range(0, len(texts), batch_size):
@@ -81,11 +81,15 @@ def batch_embed(
                 if attempt < 2:
                     time.sleep(2**attempt)
                 # else: fallthrough — 3 次全部失败，下方补 None 占位
-        # 批次全部失败 → 整体返回 None（调用方单层判断即可）
+        # 批次全部失败 → 该批次所有位置填充 None（部分失败可恢复，调用方可区分）
         if len(all_embeddings) == batch_start:
-            return None
+            all_embeddings.extend([None] * len(batch))
+            logger.warning(
+                "embedding 批次 %d~%d 全部失败，该批次结果填充为 None",
+                i, min(i + batch_size, len(texts)),
+            )
 
-    return all_embeddings if all_embeddings else None
+    return all_embeddings
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

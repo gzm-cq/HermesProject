@@ -179,45 +179,55 @@ def place_new_knowledge_points(
             )
             inserted_parent_embeddings.append(point_embedding)
 
-    # === 批量写入 PG ===
-    if pending_records and context.parent_node is not None:
+    # === 批量写入 PG（节点插入 + k_vector 更新 + 实体链接放在同一事务，保证原子性）===
+    parent_node_id = context.parent_node["id"] if context.parent_node is not None else None
+    if pending_records and parent_node_id is not None:
         t = time.perf_counter()
         try:
-            parent_id = context.parent_node["id"]
-            node_ids = adapter.batch_insert_knowledge_points(
-                pending_records,
-                parent_id=parent_id,
-                k_vectors=pending_embeddings,
-            )
-            for node, node_id in zip(pending_cache_nodes, node_ids):
-                node["id"] = node_id
-            result["new_nodes"] = len(node_ids)
-            # 写入成功后失效 leaf cache，确保后续 recall 能看到新知识点
-            _reset_leaf_cache()
-            # 写入实体关系到 kt_entity_links
-            try:
+            # 使用 atomic() 上下文管理器：节点插入 + 实体链接 + k_vector 更新要么全部成功，要么全部回滚
+            with adapter.atomic():
+                # commit=False：节点插入不立即提交，等待同事务内其他写入完成后一起提交
+                node_ids = adapter.batch_insert_knowledge_points(
+                    pending_records,
+                    parent_id=parent_node_id,
+                    k_vectors=pending_embeddings,
+                    commit=False,
+                )
+                for node, node_id in zip(pending_cache_nodes, node_ids):
+                    node["id"] = node_id
+                result["new_nodes"] = len(node_ids)
+                # 同一事务内写入实体关系（失败回滚整体操作）
                 for node_id, (name, text) in zip(node_ids, pending_records):
                     entities = _extract_entities(text or name)
                     if entities:
                         adapter.insert_entity_links(node_id, entities)
-            except Exception as _e_ent:
-                logger.debug("实体链接写入失败（非致命）: %s", _e_ent)
+                # 同一事务内更新父节点 k_vector（commit=False 在最后统一提交）
+                if inserted_parent_embeddings and parent_k is not None:
+                    adapter.update_k_vector(
+                        node_id=parent_node_id,
+                        k_vector=parent_k,
+                        placement_count=placement_count,
+                        commit=False,
+                    )
         except Exception as e:
-            logger.warning("batch insert failed: %s", e)
+            logger.warning("batch insert/update failed (transaction rolled back): %s", e)
             result["errors"] += len(pending_records)
+        else:
+            # 写入成功后失效 leaf cache，确保后续 recall 能看到新知识点
+            _reset_leaf_cache()
         db_write_ms += (time.perf_counter() - t) * 1000
-
-    if context.parent_node is not None and inserted_parent_embeddings and parent_k is not None:
+    elif context.parent_node is not None and inserted_parent_embeddings and parent_k is not None:
+        # 兜底：无 pending_records 但有 parent 更新（如 dedup 合并场景）
         try:
             t = time.perf_counter()
             adapter.update_k_vector(
-                node_id=context.parent_node["id"],
+                node_id=parent_node_id,
                 k_vector=parent_k,
                 placement_count=placement_count,
             )
             db_write_ms += (time.perf_counter() - t) * 1000
         except Exception as e:
-            logger.warning("parent k_vector batch update failed: %s", e)
+            logger.warning("parent k_vector update failed: %s", e)
             result["errors"] += 1
 
     logger.info(
