@@ -200,27 +200,39 @@ def welch_ttest(a: list[float], b: list[float]) -> dict[str, Any]:
 # ========== 维度关键词分类器 ==========
 
 _DIMENSION_KEYWORDS: dict[str, list[str]] = {
-    "semantic": ["是什么意思", "概念", "定义", "什么是", "介绍一下", "概述", "理解", "功能", "特性", "什么功能"],
+    "semantic": ["是什么意思", "概念", "定义", "什么是", "介绍一下", "概述", "理解", "功能", "特性", "什么功能", "感受", "直观", "起来没", "回答", "简单", "感觉", "体验", "上次", "提到", "之前", "说过", "说到", "那你", "意思", "含义"],
     "entity": ["谁", "哪个团队", "哪些人", "公司", "项目", "产品", "位置"],
     "causal": ["为什么", "原因", "导致", "影响", "关联", "引起", "因果关系"],
     "temporal": ["什么时候", "多久", "频率", "历史", "最近", "这周", "昨天", "趋势"],
-    "conflict": ["区别", "差异", "对比", "不同", "矛盾", "冲突", "vs"],
-    "tool": ["怎么操作", "如何设置", "命令", "配置", "部署", "安装", "启动", "cli"],
+    "conflict": ["区别", "差异", "对比", "比较", "不同", "矛盾", "冲突", "vs"],
+    "tool": ["怎么操作", "如何设置", "命令", "配置", "部署", "安装", "启动", "cli", "修", "router", "cron", "serv00", "pm2", "action", "状态", "检查", "跑", "修复", "日志", "log", "链接", "link", "终端", "设置"],
     "debug": ["报错", "失败", "错误", "异常", "卡死", "超时", "bug"],
     "api": ["接口", "endpoint", "http", "调接口", "请求", "返回"],
-    "complex": ["架构", "方案", "设计", "怎么实现", "体系", "框架", "整体"],
+    "complex": ["架构", "方案", "设计", "怎么实现", "体系", "框架", "整体", "国产", "国外", "深度", "建设"],
     "numeric": ["多少", "数量", "比例", "百分", "size", "count", "几天"],
-    "workflow": ["流程", "步骤", "怎么做", "顺序", "整个流程", "管线", "pipeline", "审核", "审查", "review", "审计"],
+    "workflow": ["流程", "步骤", "怎么做", "顺序", "整个流程", "管线", "pipeline", "审核", "审查", "review", "审计", "优先", "优先级", "只改", "类别", "分类"],
 }
 
 
 def _classify_dimension_by_keywords(qid: str) -> str:
-    """用关键词推断查询维度，作为 trace.log 未存 dimension 时的兜底。"""
+    """用关键词推断查询维度，作为 trace.log 未存 dimension 时的兜底。
+
+    大小写不敏感匹配；多维度命中时按优先级返回。
+    """
+    qid_lower = qid.lower()
+    CLASSIFIER_PRIORITY = {
+        "complex": 5, "tool": 4, "workflow": 3,
+        "semantic": 2, "conflict": 1,
+    }
+    matched = {}
     for dim, keywords in _DIMENSION_KEYWORDS.items():
         for kw in keywords:
-            if kw in qid:
-                return dim
-    return "unknown"
+            if kw.lower() in qid_lower:
+                matched[dim] = matched.get(dim, 0) + 1
+                break
+    if not matched:
+        return "unknown"
+    return max(matched, key=lambda d: (matched[d], CLASSIFIER_PRIORITY.get(d, 0)))
 
 
 # ========== 基线采集 ==========
@@ -283,6 +295,7 @@ def collect_baseline(log_file: str = "") -> dict:
                     qid = data.get("query_trunc", "")[:50] or "unknown"
 
                 records_by_qid[qid].append({
+                    "source": "recall_success",
                     "timestamp": data.get("timestamp", ""),
                     "total_results": data.get("total_results", 0),
                     "kept_results": data.get("kept_results", 0),
@@ -300,7 +313,7 @@ def collect_baseline(log_file: str = "") -> dict:
                     "query_trunc": data.get("query_trunc", ""),
                 })
 
-            # ── 分支 2: eval_match 事件（匹配质量数据）──
+            # ── 分支 2: eval_match 事件（仅用于匹配统计，不参与 score/kept/latency 聚合）──
             elif event == "eval_match":
                 qid = data.get("matched_query_id") or data.get("query_id", "")
                 if not qid:
@@ -308,10 +321,11 @@ def collect_baseline(log_file: str = "") -> dict:
 
                 accepted = data.get("accepted", False)
                 records_by_qid[qid].append({
+                    "source": "eval_match",
                     "timestamp": data.get("timestamp", ""),
-                    "total_results": 1,  # 1 次匹配
-                    "kept_results": 1 if accepted else 0,
-                    "avg_score": data.get("score", 0.0),
+                    "total_results": 0,
+                    "kept_results": 0,
+                    "avg_score": 0.0,
                     "excluded_marked": 0,
                     "latency_ms": 0,
                     "total_chars": 0,

@@ -41,7 +41,3 @@ fi
 
 # ===== 完成 =====
 cron_finish
-
-# 写入 state 文件供飞轮验证
-mkdir -p /root/.hermes/lib/cron-state
-echo "'{"job_name":"clustering-analysis","status":"success","cron_mode":"normal","run_at":"'$(date -Iseconds)'"}"' > /root/.hermes/lib/cron-state/clustering-analysis.json

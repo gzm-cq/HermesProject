@@ -88,19 +88,6 @@ _CRON_TO_FLYWHEEL = {
 
 _FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识路"]
 
-# === Required output files for integrity check ===
-REQUIRED_OUTPUTS = {
-    "Skill": Path("data") / "flywheel" / "skill_eval_prev.json",
-    "知识树": Path("data") / "flywheel" / "kt-baseline-latest.json",
-    "聚类": Path("data") / "flywheel" / "clustering_baseline_prev.json",
-    "Router": Path("plugins") / "knowledge-navigation" / "baselines" / "baseline_latest.json",
-}
-
-# === Flywheel dependency chain (downstream -> upstream) ===
-FLYWHEEL_DEPENDENCIES = {
-    "skillopt-nightly-run": ["run-skill-eval"],
-}
-
 
 def _is_test_query(key: str) -> bool:
     return bool(_TEST_QUERY_RE.match(key))
@@ -113,12 +100,6 @@ def _load_json(path: Path):
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
-
-
-def _save_json(path: Path, data: dict) -> None:
-    """Write JSON to file, creating parent dirs if needed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -135,32 +116,6 @@ def _load_jsonl(path: Path) -> list[dict]:
     except (FileNotFoundError, OSError):
         pass
     return results
-
-
-def _rotate_jsonl(path: Path, keep: int = 30) -> None:
-    """Trim JSONL file to last N records."""
-    records = _load_jsonl(path)
-    if len(records) <= keep:
-        return
-    records = records[-keep:]
-    with open(path, "w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
-
-def append_daily_summary(data_flywheel: Path, summary: dict) -> None:
-    """Append daily summary to history JSONL, keeping last 30 days."""
-    path = data_flywheel / "daily-summary-history.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(summary, ensure_ascii=False) + "\n")
-    _rotate_jsonl(path, keep=30)
-
-
-def load_daily_summary(data_flywheel: Path) -> list[dict]:
-    """Load daily summary history."""
-    path = data_flywheel / "daily-summary-history.jsonl"
-    return _load_jsonl(path)
 
 
 def parse_cron_states(cron_state_dir: Path) -> dict[str, dict]:
@@ -409,38 +364,16 @@ def analyze_router(trace: dict[str, list[dict]],
         "multi_hop_count": len(trace["multi_hop_expand"]),
     }
 
-    # === Trend: compare with router_prev.json ===
+    # Trend: compare with previous snapshot (baseline_latest.json is current,
+    # baseline_prev.json is yesterday's — but we don't have per-period router snapshots.
+    # Use prev skill_eval as an approximation? No, skip — trend for router is a V2 item.)
     trend = {}
-    prev_router = _load_json(data_flywheel / "router_prev.json")
-    if prev_router and isinstance(prev_router, dict):
-        prev_full_off = prev_router.get("full_off_pct")
-        prev_empty = prev_router.get("empty_pct")
-        prev_latency = prev_router.get("avg_latency_ms")
-        if prev_full_off is not None:
-            delta = full_off_pct - prev_full_off
-            trend["Router 全关率"] = f"{prev_full_off:.1f}% → {full_off_pct:.1f}% ({delta:+.1f}%)"
-        if prev_empty is not None:
-            delta = empty_rate - prev_empty
-            trend["Router 空结果率"] = f"{prev_empty:.1f}% → {empty_rate:.1f}% ({delta:+.1f}%)"
-        if prev_latency is not None:
-            delta = avg_lat - prev_latency
-            trend["Router 平均延迟"] = f"{prev_latency:.0f}ms → {avg_lat:.0f}ms ({delta:+.0f}ms)"
-
-    # Save current snapshot for next comparison
-    _save_json(data_flywheel / "router_prev.json", {
-        "full_off_pct": round(full_off_pct, 1),
-        "empty_pct": round(empty_rate, 1),
-        "avg_latency_ms": round(avg_lat),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
 
     return issues, metrics, trend
 
 
 def analyze_skill_eval(data_flywheel: Path, kn_baseline_dir: Path) -> tuple[list[dict], dict, dict]:
-    # NOTE: upstream naming is counterintuitive:
-    #   skill_eval_prev.json  = most recent run (latest)
-    #   skill_eval_latest.json = previous run (older)
+    # latest eval result: skill_eval_prev.json is the most recent run
     latest_data = _load_json(data_flywheel / "skill_eval_prev.json")
     if not latest_data:
         return [], {"status": "no_data"}, {}
@@ -720,143 +653,6 @@ def analyze_data_credibility(kt_result: dict, router_metrics: dict,
     return warnings, notes
 
 
-# === Integrity & Dependency Checks ===
-
-def check_output_integrity(home: Path) -> list[dict]:
-    """Check that critical output files exist and are valid JSON or JSONL."""
-    # Files that are JSONL (one JSON object per line), not single JSON
-    JSONL_FILES = {"clustering_baseline_prev.json"}
-    issues = []
-    for fw, subpath in REQUIRED_OUTPUTS.items():
-        fpath = home / subpath
-        if not fpath.exists() or fpath.stat().st_size == 0:
-            issues.append({
-                "severity": "P1",
-                "flywheel": fw,
-                "desc": f"产出文件 {fpath.name} 缺失或为空",
-                "detail": f"路径: {fpath}",
-            })
-            continue
-        try:
-            raw = fpath.read_text(encoding="utf-8").strip()
-            if fpath.name in JSONL_FILES:
-                # Validate JSONL: each non-empty line must be valid JSON
-                lines = [l for l in raw.splitlines() if l.strip()]
-                if not lines:
-                    issues.append({
-                        "severity": "P1",
-                        "flywheel": fw,
-                        "desc": f"产出文件 {fpath.name} 为空",
-                        "detail": f"路径: {fpath}",
-                    })
-                else:
-                    for i, line in enumerate(lines):
-                        json.loads(line)  # raises if invalid
-            else:
-                data = json.loads(raw)
-                if not data:
-                    issues.append({
-                        "severity": "P1",
-                        "flywheel": fw,
-                        "desc": f"产出文件 {fpath.name} 解析为空",
-                        "detail": f"路径: {fpath}",
-                    })
-        except json.JSONDecodeError as e:
-            issues.append({
-                "severity": "P1",
-                "flywheel": fw,
-                "desc": f"产出文件 {fpath.name} JSON 损坏",
-                "detail": str(e)[:200],
-            })
-    return issues
-
-
-def check_dependency_chain(states: dict[str, dict], today: str) -> list[dict]:
-    """Check that upstream tasks ran successfully before downstream tasks."""
-    issues = []
-    for downstream, upstreams in FLYWHEEL_DEPENDENCIES.items():
-        down_state = states.get(downstream, {})
-        down_run = down_state.get("run_at", "")
-        down_status = down_state.get("status", "")
-        if not down_run or down_status != "success":
-            continue
-        try:
-            down_time = datetime.fromisoformat(down_run)
-        except (ValueError, TypeError):
-            continue
-        for up_name in upstreams:
-            up_state = states.get(up_name, {})
-            up_run = up_state.get("run_at", "")
-            up_status = up_state.get("status", "")
-            if up_status != "success":
-                issues.append({
-                    "severity": "P1",
-                    "flywheel": _CRON_TO_FLYWHEEL.get(downstream, downstream),
-                    "desc": f"依赖链路异常: {downstream} 依赖 {up_name} 未成功",
-                    "detail": f"{up_name} status={up_status}",
-                })
-                continue
-            try:
-                up_time = datetime.fromisoformat(up_run) if up_run else None
-            except (ValueError, TypeError):
-                up_time = None
-            if up_time and down_time and up_time > down_time:
-                issues.append({
-                    "severity": "P1",
-                    "flywheel": _CRON_TO_FLYWHEEL.get(downstream, downstream),
-                    "desc": f"依赖时序异常: {downstream} 运行早于上游 {up_name}",
-                    "detail": f"{downstream}: {down_run[:16]}, {up_name}: {up_run[:16]}",
-                })
-    return issues
-
-
-def detect_zombie_state_files(cron_state_dir: Path) -> list[str]:
-    """Find state files not belonging to active flywheel jobs."""
-    zombies = []
-    if not cron_state_dir.is_dir():
-        return zombies
-    for f in sorted(cron_state_dir.glob("*.json")):
-        if f.stem not in ACTIVE_CRON_JOBS:
-            zombies.append(f.stem)
-    return zombies
-
-
-def detect_report_type(cron_state_dir: Path, now_utc: datetime) -> str:
-    """Detect if this is a scheduled run or boot catch-up."""
-    boot_state = _load_json(cron_state_dir / "cron-boot-detect.json")
-    if boot_state:
-        boot_run = boot_state.get("run_at", "")
-        boot_status = boot_state.get("status", "")
-        if boot_status == "partial" and boot_run:
-            try:
-                boot_dt = datetime.fromisoformat(boot_run)
-                if boot_dt.tzinfo is None:
-                    boot_dt = boot_dt.replace(tzinfo=timezone(timedelta(hours=8)))
-                hours_ago = (now_utc - boot_dt.astimezone(timezone.utc)).total_seconds() / 3600
-                if 0 <= hours_ago <= 12:
-                    return "boot-catch-up"
-            except (ValueError, TypeError):
-                pass
-    return "scheduled"
-
-
-def format_7day_trend(data_flywheel: Path) -> list[str]:
-    """Format 7-day rolling trend table."""
-    records = load_daily_summary(data_flywheel)
-    if len(records) < 2:
-        return ["历史数据不足 2 天，7 天趋势待积累。"]
-    lines = ["| 日期 | Router全关% | 空结果% | Skill F1 | KN unknown% | 聚类噪声% | KT孤立% |"]
-    lines.append("|------|------------|--------|----------|-------------|-----------|---------|")
-    for r in records[-7:]:
-        lines.append(
-            f"| {r.get('date', '-')} | {r.get('router_full_off_pct', '-')} | "
-            f"{r.get('router_empty_pct', '-')} | {r.get('skill_f1', '-')} | "
-            f"{r.get('kn_unknown_pct', '-')} | {r.get('cluster_noise_rate', '-')} | "
-            f"{r.get('kt_orphan_pct', '-')} |"
-        )
-    return lines
-
-
 # === Report Generator ===
 
 def _resolve_trend_arrow(delta_val: float) -> str:
@@ -895,13 +691,8 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     )
 
     # Collect issues
-    # Integrity & dependency checks
-    integrity_issues = check_output_integrity(home)
-    dep_issues = check_dependency_chain(cron_states, today)
-    zombie_files = detect_zombie_state_files(cron_state_dir)
-
     all_issues = (cron_issues + router_issues + skill_issues + kt_issues +
-                  cluster_issues + kn_issues + integrity_issues + dep_issues)
+                  cluster_issues + kn_issues)
     p0 = [i for i in all_issues if i["severity"] == "P0"]
     p1 = [i for i in all_issues if i["severity"] == "P1"]
 
@@ -910,9 +701,6 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     L.append("")
     L.append(f"**Generated**: {now_str}")
     L.append(f"**Home**: `{home}`")
-    report_type = detect_report_type(cron_state_dir, now)
-    L.append(f"**Report type**: `{report_type}`")
-    L.append(f"**Data window**: `{today}` (UTC)")
     L.append(f"**Core cron tasks**: {len(cron_table)} 个（排除 3 个非飞轮）")
     if dry_run:
         L.append("**Mode**: dry-run (no file written)")
@@ -1063,12 +851,6 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         L.append("无趋势数据（基线历史数据不足，V2 自动积累）")
     L.append("")
 
-    # === 7 天滚动趋势 ===
-    L.append("## 📊 7 天滚动趋势")
-    L.append("")
-    L.extend(format_7day_trend(data_flywheel_dir))
-    L.append("")
-
     # === 类别四：数据可信度 ===
     L.append("## ⚠️ 数据可信度")
     L.append("")
@@ -1079,23 +861,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             L.append(f"- 📝 {n}")
     else:
         L.append("✅ 数据样本充足，基线新鲜，分析结果可靠")
-    if zombie_files:
-        L.append(f"- 📝 非 飞轮 state 文件: {', '.join(zombie_files)}")
     L.append("")
-
-    # Save daily summary for 7-day trend
-    append_daily_summary(data_flywheel_dir, {
-        "date": today,
-        "report_type": report_type,
-        "p0_count": len(p0),
-        "p1_count": len(p1),
-        "router_full_off_pct": router_m.get("full_off_pct", 0),
-        "router_empty_pct": router_m.get("empty_rate", 0),
-        "skill_f1": skill_m.get("avg_f1", 0),
-        "kn_unknown_pct": kn_m.get("unknown_dim_pct", 0),
-        "cluster_noise_rate": cluster_m.get("noise_rate", 0),
-        "kt_orphan_pct": kt_m.get("orphan_pct", 0),
-    })
 
     return "\n".join(L), p0
 

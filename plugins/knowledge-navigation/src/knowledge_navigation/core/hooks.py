@@ -1211,7 +1211,7 @@ def _post_process_recall(
         except Exception as _ul_err:
             logger.debug("use_log record failed silently: %s", _ul_err)
 
-    if not raw_results and not kt_raw_results:
+    if not raw_results and not kt_raw_results and not skill_context:
         if hs_active:
             circuit_record_success()
         logger.info(
