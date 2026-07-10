@@ -78,9 +78,9 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
                     else:
                         break
 
-    # After salvage, require all 3 mask keys present — partial mask is dangerous
+    # After salvage, require all 4 mask keys present — partial mask is dangerous
     # (missing key → False → route closed when it should be open)
-    if isinstance(data, dict) and not all(k in data for k in ('h', 'kt', 's')):
+    if isinstance(data, dict) and not all(k in data for k in ('h', 'kt', 's', 'sag')):
         return None
 
     if not isinstance(data, dict):
@@ -99,6 +99,7 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
         "h": bool(data.get("h", False)),
         "kt": bool(data.get("kt", False)),
         "s": bool(data.get("s", False)),
+        "sag": bool(data.get("sag", False)),
     }
 
 
