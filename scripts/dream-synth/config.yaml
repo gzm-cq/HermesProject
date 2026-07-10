@@ -1,0 +1,32 @@
+# dream-synth 每日流水线配置
+
+# Session 提取
+session:
+  min_messages: 10
+  min_tokens: 2000
+  db_path: "/root/.hermes/state.db"
+
+# LLM 模型
+llm:
+  cheap: "s-glm-5.2"
+  smart: "s-glm-5.2"
+  base_url: "http://127.0.0.1:4142"
+
+# SAG
+sag:
+  ingest_url: "http://127.0.0.1:4175/mcp"
+  search_url: "http://127.0.0.1:4175/mcp"
+
+# 飞书
+feishu:
+  chat_id: "oc_f04a9f65d4b780511cc3f402c7d54ac3"
+
+# Wiki
+wiki:
+  base_path: "/mnt/c/Users/1/Desktop/AI/my-knowledge/axiom/wiki/pages"
+
+# 缓存
+cache:
+  verdict_dir: "/tmp/dream-verdicts"
+  summary_file: "/tmp/dream-synth-summary.json"
+  promote_log: "/tmp/dream-promote-log.json"

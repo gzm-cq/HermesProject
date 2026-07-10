@@ -63,6 +63,7 @@ BASELINE_DIR = Path("~/.hermes/plugins/knowledge-navigation/baselines").expandus
 BASELINE_FILE = BASELINE_DIR / "baseline_latest.json"
 BASELINE_PREV_FILE = BASELINE_DIR / "baseline_prev.json"
 DELTA_THRESHOLD = float(os.environ.get("BASELINE_DELTA_THRESHOLD", "0.10"))
+MIN_DELTA_SAMPLES = 4      # 参与退化检测的最小请求数（防小样本假阳性）
 JUDGE_PARALLEL = int(os.environ.get("JUDGE_PARALLEL", "5"))
 
 DIMENSIONS = [
@@ -518,6 +519,11 @@ def detect_delta(current: dict, previous: dict) -> dict:
     for qid, cur in current.items():
         prev = previous.get(qid)
         if not prev:
+            continue
+        # 跳过小样本查询：任一期总请求数少于 MIN_DELTA_SAMPLES 不参与对比
+        if cur.get("total_requests", 0) < MIN_DELTA_SAMPLES:
+            continue
+        if prev.get("total_requests", 0) < MIN_DELTA_SAMPLES:
             continue
 
         cur_k = cur.get("avg_kept_results", 0)

@@ -1,0 +1,9 @@
+[project]
+name = "dream-synth"
+version = "0.1.0"
+description = "每日流水线：提炼 Hermes 对话记录 → 反思笔记 → 模式发现 → Wiki 精炼沉淀 → 飞书推送"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+    "pyyaml>=6.0",
+]

@@ -1,0 +1,17 @@
+# dream-synth 部署清单
+# 源:  scripts/dream-synth/
+# 标:  /root/.hermes/scripts/dream-synth/
+# 影响: 每日梦境流水线；无需重启服务
+
+# === Include ===
+scripts/**/*.py
+config.yaml
+prompts/**/*.txt
+README.md
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/.pytest_cache/**
+!**/*.egg-info/**
+!**/tests/**
