@@ -61,8 +61,8 @@ except ImportError as _kt_err:
         return []
 
 # 共享线程池：复用 ThreadPoolExecutor 避免每次 pre_llm_call 创建/销毁开销
-# 最多 3 路并行 recall（Hindsight + KnowledgeTree + SkillMatch）
-_recall_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="recall")
+# 最多 4 路并行 recall（Hindsight + KnowledgeTree + SkillMatch + SAG）
+_recall_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="recall")
 
 # PG 连接缓存：thread-local 存储，每个线程拥有独立连接
 # psycopg2 connection 不是线程安全的，多线程并发使用同一连接会导致竞态
@@ -677,6 +677,36 @@ def _do_skill_match(query: str) -> str:
         return ""
 
 
+def _do_sag_recall(query: str) -> list[dict]:
+    """执行 SAG 文档检索（4th route），通过 MCP 调 sag_search。"""
+    try:
+        import requests as _req
+        payload = {
+            "jsonrpc": "2.0", "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "sag_search",
+                "arguments": {"query": query, "topK": 3, "searchMode": "fast"},
+            },
+        }
+        resp = _req.post("http://127.0.0.1:4175/mcp", json=payload, timeout=10)
+        if resp.status_code != 200:
+            return []
+        raw = resp.text
+        for line in raw.split("\n"):
+            if line.startswith("data: "):
+                data = json.loads(line[6:])
+                if "result" in data:
+                    result = data["result"]
+                    if isinstance(result, str):
+                        result = json.loads(result)
+                    return result.get("sections", [])
+        return []
+    except Exception as e:
+        logger.debug("SAG recall 异常（跳过）: %s", e)
+        return []
+
+
 def _normalize_kt_score(raw_score: Any) -> tuple[float, str]:
     """把知识树 score 统一映射到可比较的 final_score。
 
@@ -793,10 +823,10 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
         )
     except Exception as e:
         logger.warning("Router 调用异常 (%s)，fallback 全开", e)
-        mask = {"h": True, "kt": True, "s": True}
+        mask = {"h": True, "kt": True, "s": True, "sag": True}
     logger.info(
-        "Router mask: h=%s kt=%s s=%s",
-        mask["h"], mask["kt"], mask["s"],
+        "Router mask: h=%s kt=%s s=%s sag=%s",
+        mask["h"], mask["kt"], mask["s"], mask["sag"],
         extra={"session_id": session_id, "event": "router_mask", "mask": mask},
     )
     return mask
@@ -808,24 +838,27 @@ def _execute_recall(
     hs_active: bool,
     kt_active: bool,
     s_active: bool,
+    sag_active: bool,
     active_count: int,
     t0: float,
     query_trunc: str,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
-    """执行三路 recall（Hindsight + 知识树 + Skill），并行或串行。
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str, list[dict[str, Any]]]:
+    """执行四路 recall（Hindsight + 知识树 + Skill + SAG），并行或串行。
 
     Returns:
-        (hindsight_result, kt_raw_results, skill_context)
+        (hindsight_result, kt_raw_results, skill_context, sag_raw_results)
     """
     result: dict[str, Any] | None = None
     kt_raw_results: list[dict[str, Any]] = []
     skill_context = ""
+    sag_raw_results: list[dict[str, Any]] = []
 
     if active_count >= 2:
         # 多路并行（使用共享线程池，避免创建/销毁开销）
         hs_future = _recall_executor.submit(_do_hindsight_recall, user_message) if hs_active else None
         kt_future = _recall_executor.submit(_do_kt_recall, session_id, user_message) if kt_active else None
         sk_future = _recall_executor.submit(_do_skill_match, user_message) if s_active else None
+        sag_future = _recall_executor.submit(_do_sag_recall, user_message) if sag_active else None
         try:
             if hs_future is not None:
                 try:
@@ -862,6 +895,12 @@ def _execute_recall(
                     skill_context = sk_future.result(timeout=5)
                 except Exception as e:
                     logger.debug("Skill match future error: %s", e)
+
+            if sag_future is not None:
+                try:
+                    sag_raw_results = sag_future.result(timeout=15)
+                except Exception as e:
+                    logger.debug("SAG recall future error: %s", e)
         finally:
             # 取消未完成的 future（共享线程池不 shutdown）
             if hs_future is not None and not hs_future.done():
@@ -870,6 +909,8 @@ def _execute_recall(
                 kt_future.cancel()
             if sk_future is not None and not sk_future.done():
                 sk_future.cancel()
+            if sag_future is not None and not sag_future.done():
+                sag_future.cancel()
     else:
         # 单路串行（节省线程开销，延迟无差别）
         if hs_active:
@@ -892,8 +933,10 @@ def _execute_recall(
                 kt_raw_results = []
         if s_active:
             skill_context = _do_skill_match(user_message)
+        if sag_active:
+            sag_raw_results = _do_sag_recall(user_message)
 
-    return result, kt_raw_results, skill_context
+    return result, kt_raw_results, skill_context, sag_raw_results
 
 
 def _dedup_and_budget(
@@ -1044,6 +1087,7 @@ def _assemble_xml_output(
     # 分离 Hindsight 和知识树结果
     hs_kept = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
     kt_kept = [r for r in kept if r.get("source") == "knowledge_tree"]
+    sag_kept = [r for r in kept if r.get("source") == "sag"]
 
     context_lines: list[str] = []
 
@@ -1362,11 +1406,12 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     _hs_active = mask["h"] and not _hs_circuit_open
     _kt_active = mask["kt"] and HAS_KNOWLEDGE_TREE
     _s_active = mask["s"]
-    _active_count = sum([_hs_active, _kt_active, _s_active])
+    _sag_active = mask.get("sag", False)
+    _active_count = sum([_hs_active, _kt_active, _s_active, _sag_active])
 
-    result, kt_raw_results, _skill_context = _execute_recall(
+    result, kt_raw_results, _skill_context, sag_raw_results = _execute_recall(
         session_id, user_message,
-        _hs_active, _kt_active, _s_active, _active_count,
+        _hs_active, _kt_active, _s_active, _sag_active, _active_count,
         t0, query_trunc,
     )
 
@@ -1391,6 +1436,27 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     summary = _pp_meta.get("summary")
     eval_match = _pp_meta.get("eval_match", _eval_match)
     kt_raw_results = _pp_meta.get("kt_raw_results", kt_raw_results)
+
+    # ===== SAG 结果合并（4th route）=====
+    if sag_raw_results and _sag_active:
+        sag_count = 0
+        for sec in sag_raw_results:
+            candidate = {
+                "id": sec.get("chunkId", f"sag_{sag_count}"),
+                "text": sec.get("content", ""),
+                "score": sec.get("score", 0.5),
+                "source": "sag",
+                "heading": sec.get("heading", ""),
+                "document_id": sec.get("documentId", ""),
+            }
+            if candidate.get("score", 0) >= CONFIG.min_score:
+                kept.append(candidate)
+                sag_count += 1
+        logger.info(
+            "SAG recall: %d sections merged",
+            sag_count,
+            extra={"session_id": session_id, "event": "sag_merge", "count": sag_count},
+        )
 
     kept, _skill_context = _dedup_and_budget(kept, session_id, _skill_context)
 
