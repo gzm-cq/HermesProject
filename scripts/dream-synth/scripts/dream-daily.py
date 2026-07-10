@@ -20,11 +20,11 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import requests
 import yaml
@@ -43,17 +43,16 @@ def load_config() -> dict:
 CFG = load_config()
 
 # ── LLM 调用 ─────────────────────────────────────────
-def call_llm(prompt: str, model: str, max_tokens: int = 4096) -> str:
+def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     """通过 LiteLLM 网关调用 LLM"""
     base_url = CFG["llm"]["base_url"]
-    # 从环境变量获取 API key
-    api_key = os.environ.get("LITELLM_MASTER_KEY", "sk-litellm-default")
+    api_key = os.environ.get("LITELLM_MASTER_KEY", "")
     url = f"{base_url}/v1/chat/completions"
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
-        "temperature": 0.3,
+        "temperature": temperature,
     }
     headers = {
         "Content-Type": "application/json",
@@ -65,17 +64,22 @@ def call_llm(prompt: str, model: str, max_tokens: int = 4096) -> str:
     return data["choices"][0]["message"]["content"]
 
 
-def call_llm_json(prompt: str, model: str) -> dict:
-    """调用 LLM 并解析 JSON 输出"""
-    raw = call_llm(prompt, model, max_tokens=1024)
-    # 提取 JSON
-    m = re.search(r"\{[\s\S]*\}", raw)
-    if not m:
-        return {}
-    try:
-        return json.loads(m.group())
-    except json.JSONDecodeError:
-        return {}
+def call_llm_json(prompt: str, model: str, max_retries: int = 2) -> dict:
+    """调用 LLM 并解析 JSON 输出（temperature=0，带重试）"""
+    for attempt in range(max_retries + 1):
+        raw = call_llm(prompt, model, max_tokens=1024, temperature=0.0)
+        m = re.search(r"\{[\s\S]*\}", raw)
+        if not m:
+            if attempt < max_retries:
+                continue
+            return {}
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            if attempt < max_retries:
+                continue
+            return {}
+    return {}
 
 
 def load_prompt(name: str) -> str:
@@ -152,34 +156,22 @@ def save_last_run_ts(ts: float):
     with open(ts_file, "w") as f:
         f.write(str(ts))
 
-# ── SAG 写入 ──────────────────────────────────────────
+# ── SAG ─────────────────────────────────────────────
 def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False) -> bool:
-    """通过 SAG MCP 写入文档"""
+    """通过 SAG REST API 写入文档（/api/documents/upload）"""
     if dry_run:
         print(f"  [DRY-RUN] SAG ingest: {title[:50]}")
         return True
 
-    url = CFG["sag"]["ingest_url"]
-    # SAG MCP 使用 SSE，需要先建立 session
-    # 直接用内部 API 更简单
+    base_url = CFG["sag"]["base_url"]
     payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "sag_ingest_document",
-            "arguments": {
-                "title": title,
-                "content": content,
-                "metadata": metadata,
-                "waitForCompletion": False,
-            },
-        },
+        "title": title,
+        "content": content,
+        "metadata": metadata,
     }
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
-        if resp.status_code == 200:
+        resp = requests.post(f"{base_url}/api/documents/upload", json=payload, timeout=60)
+        if resp.status_code in (200, 201):
             return True
         print(f"  SAG ingest failed: {resp.status_code} {resp.text[:100]}", file=sys.stderr)
         return False
@@ -188,50 +180,40 @@ def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False) 
         return False
 
 
-def sag_search(query: str, top_k: int = 50) -> list[dict]:
-    """从 SAG 搜索文档"""
-    url = CFG["sag"]["search_url"]
+def sag_search(query: str, top_k: int = 50, source_filter: str | None = None) -> list[dict]:
+    """从 SAG 搜索文档（REST API /search），可选按 metadata.source 过滤"""
+    base_url = CFG["sag"]["base_url"]
     payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "sag_search",
-            "arguments": {
-                "query": query,
-                "topK": top_k,
-                "searchMode": "fast",
-            },
-        },
+        "query": query,
+        "topK": top_k,
+        "searchMode": "fast",
     }
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        resp = requests.post(f"{base_url}/search", json=payload, timeout=15)
         if resp.status_code == 200:
-            # 解析 SSE 或 JSON
-            raw = resp.text
-            for line in raw.split("\n"):
-                if line.startswith("data: "):
-                    data = json.loads(line[6:])
-                    if "result" in data:
-                        result = data["result"]
-                        if isinstance(result, str):
-                            result = json.loads(result)
-                        return result.get("sections", [])
-            # 尝试直接 JSON
             data = resp.json()
-            if "result" in data:
-                result = data["result"]
-                if isinstance(result, str):
-                    result = json.loads(result)
-                return result.get("sections", [])
+            sections = data.get("sections", [])
+            if source_filter:
+                filtered = []
+                for s in sections:
+                    meta = s.get("metadata") or {}
+                    if meta.get("source") == source_filter or s.get("source") == source_filter:
+                        filtered.append(s)
+                sections = filtered
+            return sections
     except Exception as e:
         print(f"  SAG search error: {e}", file=sys.stderr)
     return []
 
 # ── Phase 1: synthesize ──────────────────────────────
+def _save_verdict(verdict_file: str, data: dict):
+    os.makedirs(os.path.dirname(verdict_file), exist_ok=True)
+    with open(verdict_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
-    """提炼 session → 反思笔记 → 写入 SAG"""
+    """提炼 session → 反思笔记 → 写入 SAG（带完整幂等）"""
     if not sessions:
         print("  synthesize: 无新 session，跳过")
         return []
@@ -250,14 +232,22 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
         title = s.get("title", "untitled")
         text = s["text"]
 
-        # 幂等：检查 verdict 缓存
         verdict_file = os.path.join(verdict_dir, f"{sid}.json")
+
+        # 1. 读取缓存（包含 verdict / synthesis / ingested 状态）
+        cache = None
         if os.path.exists(verdict_file):
-            with open(verdict_file) as f:
-                verdict = json.load(f)
-            print(f"  [{i+1}/{len(sessions)}] CACHE {title[:40]} → score={verdict.get('score','?')}")
+            try:
+                with open(verdict_file, encoding="utf-8") as f:
+                    cache = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                cache = None
+
+        # 2. significanceFilter
+        if cache and "score" in cache:
+            score = cache.get("score", 0)
+            print(f"  [{i+1}/{len(sessions)}] CACHE {title[:40]} → score={score}")
         else:
-            # significanceFilter — 截断到 4000 字避免超时
             prompt = sig_prompt + "\n\n对话：\n" + text[:4000]
             try:
                 verdict = call_llm_json(prompt, cheap_model)
@@ -265,28 +255,46 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
                 print(f"  [{i+1}/{len(sessions)}] FILTER FAIL {title[:40]}: {e}")
                 verdict = {"score": 0, "reason": str(e)}
             verdict["session_id"] = sid
-            with open(verdict_file, "w", encoding="utf-8") as f:
-                json.dump(verdict, f, ensure_ascii=False, indent=2)
+            cache = verdict
+            _save_verdict(verdict_file, cache)
             score = verdict.get("score", 0)
             print(f"  [{i+1}/{len(sessions)}] FILTER {title[:40]} → score={score}")
 
-        score = verdict.get("score", 0)
         if score < 3:
             continue
 
-        # synthesize
-        prompt = syn_prompt.replace("{session_text}", text[:8000])
-        try:
-            md_content = call_llm(prompt, smart_model)
-        except Exception as e:
-            print(f"  synthesize 失败: {e}", file=sys.stderr)
+        # 3. synthesize（有缓存且成功过则跳过）
+        if cache and cache.get("synthesized") and cache.get("reflection_content"):
+            md_content = cache["reflection_content"]
+            refl_title = cache.get("reflection_title", f"反思-{title[:30]}")
+            print(f"  [{i+1}/{len(sessions)}] SYNTH-CACHE → {refl_title[:40]}")
+        else:
+            prompt = syn_prompt.replace("{session_text}", text[:8000])
+            try:
+                md_content = call_llm(prompt, smart_model, temperature=0.3)
+            except Exception as e:
+                print(f"  synthesize 失败: {e}", file=sys.stderr)
+                continue
+
+            title_match = re.search(r"^#\s+(.+)$", md_content, re.MULTILINE)
+            refl_title = title_match.group(1).strip() if title_match else f"反思-{title[:30]}"
+
+            cache["synthesized"] = True
+            cache["reflection_title"] = refl_title
+            cache["reflection_content"] = md_content
+            _save_verdict(verdict_file, cache)
+
+        # 4. 写入 SAG（已成功写入过则跳过）
+        if cache.get("ingested"):
+            print(f"  [{i+1}/{len(sessions)}] INGEST-CACHE → {refl_title[:40]}")
+            reflections.append({
+                "title": refl_title,
+                "content": md_content,
+                "session_id": sid,
+                "score": score,
+            })
             continue
 
-        # 提取标题
-        title_match = re.search(r"^#\s+(.+)$", md_content, re.MULTILINE)
-        refl_title = title_match.group(1).strip() if title_match else f"反思-{title[:30]}"
-
-        # 写入 SAG
         metadata = {
             "source": "dream-synth",
             "session_id": sid,
@@ -295,6 +303,8 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
         }
         ok = sag_ingest(refl_title, md_content, metadata, dry_run=dry_run)
         if ok:
+            cache["ingested"] = True
+            _save_verdict(verdict_file, cache)
             reflections.append({
                 "title": refl_title,
                 "content": md_content,
@@ -303,7 +313,7 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
             })
             print(f"  [{i+1}/{len(sessions)}] SYNTH → {refl_title[:50]}")
 
-        time.sleep(0.5)  # 避免限流
+        time.sleep(0.5)
 
     return reflections
 
@@ -474,11 +484,18 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
     # 推送飞书
     chat_id = CFG["feishu"]["chat_id"]
     try:
-        result = os.system(f"lark-cli im +messages-send --chat-id {chat_id} --markdown '{msg}' --as bot 2>&1")
-        if result == 0:
+        proc = subprocess.run(
+            ["lark-cli", "im", "+messages-send",
+             "--chat-id", chat_id,
+             "--markdown", msg,
+             "--as", "bot"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode == 0:
             print("  feishu: 推送成功")
         else:
-            print(f"  feishu: 推送失败 (exit={result})", file=sys.stderr)
+            print(f"  feishu: 推送失败 (exit={proc.returncode}) {proc.stderr[:200]}",
+                  file=sys.stderr)
     except Exception as e:
         print(f"  feishu: 推送异常: {e}", file=sys.stderr)
 
@@ -509,13 +526,13 @@ def main():
     # Phase 2: patterns
     if not args.phase or args.phase == "patterns":
         print("\n── Phase 2: patterns ──")
-        # 如果只跑 patterns，从 SAG 查近期反思
+        # 如果只跑 patterns，从 SAG 查近期 dream-synth 文档
         if not reflections:
-            sections = sag_search("dream-synth", top_k=50)
+            sections = sag_search("知识 反思 决策", top_k=100, source_filter="dream-synth")
             reflections = [{"title": s.get("title", ""),
-                            "content": s.get("content", "")[:500],
-                            "session_id": s.get("documentId", ""),
-                            "score": 3} for s in sections]
+                            "content": s.get("content", ""),
+                            "session_id": (s.get("metadata") or {}).get("session_id", s.get("documentId", "")),
+                            "score": int((s.get("metadata") or {}).get("score", 3))} for s in sections]
         phase_patterns(reflections, dry_run=args.dry_run)
 
     # Phase 3: promote

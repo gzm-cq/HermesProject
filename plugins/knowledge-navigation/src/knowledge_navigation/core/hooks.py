@@ -678,30 +678,23 @@ def _do_skill_match(query: str) -> str:
 
 
 def _do_sag_recall(query: str) -> list[dict]:
-    """执行 SAG 文档检索（4th route），通过 MCP 调 sag_search。"""
+    """执行 SAG 文档检索（4th route），通过 REST API 调 /search。"""
     try:
         import requests as _req
         payload = {
-            "jsonrpc": "2.0", "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "sag_search",
-                "arguments": {"query": query, "topK": 3, "searchMode": "fast"},
-            },
+            "query": query,
+            "topK": CONFIG.sag_search_top_k,
+            "searchMode": "fast",
         }
-        resp = _req.post("http://127.0.0.1:4175/mcp", json=payload, timeout=10)
+        resp = _req.post(
+            f"{CONFIG.sag_api_url}/search",
+            json=payload,
+            timeout=CONFIG.sag_search_timeout,
+        )
         if resp.status_code != 200:
             return []
-        raw = resp.text
-        for line in raw.split("\n"):
-            if line.startswith("data: "):
-                data = json.loads(line[6:])
-                if "result" in data:
-                    result = data["result"]
-                    if isinstance(result, str):
-                        result = json.loads(result)
-                    return result.get("sections", [])
-        return []
+        data = resp.json()
+        return data.get("sections", [])
     except Exception as e:
         logger.debug("SAG recall 异常（跳过）: %s", e)
         return []
@@ -1115,9 +1108,22 @@ def _assemble_xml_output(
             f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</memory>'
             for r in kt_kept
         )
+    context_lines.append(
+        f"<knowledge source=\"knowledge_tree\" count=\"{len(kt_kept)}\">\n"
+        f"{kt_xml}\n"
+        f"</knowledge>"
+    )
+
+    # 3.5 SAG 文档结果
+    if sag_kept:
+        sag_xml = "\n".join(
+            f'  <memory source="sag" document_id="{html.escape(str(r.get("document_id", "")), quote=True)}">'
+            f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</memory>'
+            for r in sag_kept
+        )
         context_lines.append(
-            f"<knowledge source=\"knowledge_tree\" count=\"{len(kt_kept)}\">\n"
-            f"{kt_xml}\n"
+            f"<knowledge source=\"sag\" count=\"{len(sag_kept)}\"\n"
+            f"{sag_xml}\n"
             f"</knowledge>"
         )
 

@@ -12,10 +12,9 @@ llm:
   smart: "s-glm-5.2"
   base_url: "http://127.0.0.1:4142"
 
-# SAG
+# SAG REST API（Fastify, 端口 4173）
 sag:
-  ingest_url: "http://127.0.0.1:4175/mcp"
-  search_url: "http://127.0.0.1:4175/mcp"
+  base_url: "http://127.0.0.1:4173"
 
 # 飞书
 feishu:
@@ -28,5 +27,4 @@ wiki:
 # 缓存
 cache:
   verdict_dir: "/tmp/dream-verdicts"
-  summary_file: "/tmp/dream-synth-summary.json"
   promote_log: "/tmp/dream-promote-log.json"
