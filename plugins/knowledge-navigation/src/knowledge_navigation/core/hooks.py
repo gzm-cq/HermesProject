@@ -857,13 +857,15 @@ def _pass_gates(session_id: str, user_message: str, platform: str, is_first_turn
 def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
     """调用 Router 决策四路 mask，异常时 fallback 全开。"""
     try:
+        # 运行时读 env 覆盖 CONFIG 单例的缓存值
+        timeout = int(os.getenv("KN_ROUTER_TIMEOUT", str(CONFIG.router_timeout)))
         mask = _router_route(
             session_id,
             user_message,
             CONFIG.router_model,
             CONFIG.router_api_url,
             CONFIG.router_api_key,
-            CONFIG.router_timeout,
+            timeout,
         )
         mask.setdefault("h", True)
         mask.setdefault("kt", True)

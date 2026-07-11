@@ -152,7 +152,8 @@ def route(
                 json={
                     "model": model,
                     "temperature": 0.1,
-                    "max_tokens": 512,
+                    "max_tokens": 256,
+                    "thinking": {"type": "disabled"},
                     "messages": [
                         {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
                         {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
