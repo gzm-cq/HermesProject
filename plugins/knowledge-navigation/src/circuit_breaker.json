@@ -3,16 +3,16 @@
     "state": "closed",
     "consecutive_failures": 0,
     "open_until": 0.0,
-    "total_failures": 46,
+    "total_failures": 58,
     "failure_types": {},
-    "last_updated": 1783728046.5215461
+    "last_updated": 1783731578.2362535
   },
   "sag": {
     "state": "closed",
     "consecutive_failures": 0,
     "open_until": 0.0,
-    "total_failures": 25,
+    "total_failures": 33,
     "failure_types": {},
-    "last_updated": 1783728046.449757
+    "last_updated": 1783731578.1183355
   }
 }

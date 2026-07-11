@@ -666,14 +666,11 @@ def _do_kt_recall(session_id: str, query: str) -> list[dict]:
 
 
 def _do_skill_match(query: str) -> str:
-    """执行 skill 匹配（关键词预筛选 + LLM 精排 + 读盘注入全文），返回注入文本或空字符串。"""
+    """执行 skill 匹配（LLM 全量匹配 + 读盘注入全文），返回注入文本或空字符串。"""
     from knowledge_navigation.core.skill_matcher import match_skills, strip_frontmatter  # type: ignore[import-untyped]
 
     try:
-        matched = match_skills(
-            query,
-            enable_keyword_prescreen=CONFIG.kn_skill_keyword_prescreen,
-        )
+        matched = match_skills(query)
         if not matched:
             return ""
         lines: list[str] = ["", "<auto_loaded_skills>"]

@@ -666,12 +666,12 @@ def _llm_match(
         "3. **技能匹配**：\n"
         "   - 优先按技能名称（name）直接匹配——name 是有意义的关键词标识符\n"
         "   - 如果 name 无直接匹配，再用扩展出的中英文词表逐一对照技能描述（description）中的核心术语\n"
-        "   - 只选明确能解决或显著辅助用户问题的技能\n"
-        "   - 宁可少选不可错选——没有足够相关的技能时返回 []\n\n"
+        "   - 选出所有明确能解决或显著辅助用户问题的技能\n"
+        "   - 尽量选满 top_k 个最相关的技能——宁可选全不可漏选，避免遗漏有用技能\n\n"
         "## 输出要求\n"
         "- 仅输出一个合法的 JSON 数组，元素为技能名称字符串，不要用 ``` 包裹或附带任何其他文字\n"
         "- 技能名称必须与可用技能列表中的名称完全一致（含大小写、连字符、符号）\n"
-        "- 数量控制在 1-3 个；如果无相关技能，返回 []\n"
+        "- 数量控制在 1-3 个；只有当确实无任何相关技能时才返回 []\n"
         "- 每次对同一问题返回一致的结果\n\n"
         "## 可用技能列表\n"
         + skill_text + "\n\n"
@@ -707,20 +707,24 @@ def _llm_match(
                 return []
 
             info_map = {s["name"]: {"description": s["description"], "path": s["path"]} for s in skill_list}
+            # 大小写不敏感的名称映射，处理 LLM 返回的大小写/连字符变体
+            info_map_lower = {s["name"].lower(): s["name"] for s in skill_list}
             results: list[dict[str, str]] = []
             for name in names[:top_k]:
-                if name in info_map:
+                # 优先精确匹配，否则尝试大小写不敏感匹配
+                matched_name = name if name in info_map else info_map_lower.get(name.lower())
+                if matched_name:
                     prescreen_score = 0.0
                     if candidates:
                         for c in candidates:
-                            if c["name"] == name:
+                            if c["name"] == matched_name:
                                 prescreen_score = c.get("_score", 0.0)
                                 break
                     final_score = 0.5 + prescreen_score * 0.01
                     results.append({
-                        "name": name,
-                        "description": info_map[name]["description"],
-                        "path": info_map[name]["path"],
+                        "name": matched_name,
+                        "description": info_map[matched_name]["description"],
+                        "path": info_map[matched_name]["path"],
                         "score": f"{final_score:.3f}",
                     })
             return results

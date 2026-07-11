@@ -110,17 +110,6 @@ def _sanitize_filename(name: str, max_len: int = 60) -> str:
     return name[:max_len] if name else "untitled"
 
 
-def _safe_int(val, default: int = 0) -> int:
-    """安全转 int，失败返回 default。"""
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        try:
-            return int(float(val))
-        except (TypeError, ValueError):
-            return default
-
-
 def read_sessions(since_ts: float, dry_run: bool = False) -> list[dict]:
     """从 state.db 读当天新增的 session"""
     db_path = CFG["session"]["db_path"]
@@ -192,53 +181,84 @@ def save_last_run_ts(ts: float):
         f.write(str(ts))
 
 # ── SAG ─────────────────────────────────────────────
-def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False) -> bool:
-    """通过 SAG REST API 写入文档（/api/documents/upload）"""
+# SAG sourceId（与 knowledge-navigation 插件共用同一个源）
+SAG_SOURCE_ID = "00000000-0000-0000-0000-0000000000ff"
+
+
+def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False) -> str | None:
+    """写入 SAG，返回 documentId（成功）或 None（失败）"""
     if dry_run:
         print(f"  [DRY-RUN] SAG ingest: {title[:50]}")
-        return True
+        return None
 
     base_url = CFG["sag"]["base_url"]
     payload = {
         "title": title,
         "content": content,
+        "sourceId": SAG_SOURCE_ID,
         "metadata": metadata,
+        "extract": True,
+        "waitForCompletion": False,
     }
     try:
-        resp = requests.post(f"{base_url}/api/documents/upload", json=payload, timeout=60)
+        resp = requests.post(f"{base_url}/ingest", json=payload, timeout=60)
         if resp.status_code in (200, 201):
-            return True
+            doc_id = resp.json().get("documentId", "")
+            return doc_id if doc_id else None
         print(f"  SAG ingest failed: {resp.status_code} {resp.text[:100]}", file=sys.stderr)
-        return False
+        return None
     except Exception as e:
         print(f"  SAG ingest error: {e}", file=sys.stderr)
-        return False
+        return None
 
 
-def sag_search(query: str, top_k: int = 50, source_filter: str | None = None) -> list[dict]:
-    """从 SAG 搜索文档（REST API /search），可选按 metadata.source 过滤"""
+def sag_search(query: str, top_k: int = 50) -> list[dict]:
+    """从 SAG 搜索文档（REST API /search），返回 sections 列表。"""
     base_url = CFG["sag"]["base_url"]
     payload = {
         "query": query,
         "topK": top_k,
         "searchMode": "fast",
+        "sourceIds": [SAG_SOURCE_ID],
     }
     try:
         resp = requests.post(f"{base_url}/search", json=payload, timeout=15)
         if resp.status_code == 200:
-            data = resp.json()
-            sections = data.get("sections", [])
-            if source_filter:
-                filtered = []
-                for s in sections:
-                    meta = s.get("metadata") or {}
-                    if meta.get("source") == source_filter or s.get("source") == source_filter:
-                        filtered.append(s)
-                sections = filtered
-            return sections
+            return resp.json().get("sections", [])
     except Exception as e:
         print(f"  SAG search error: {e}", file=sys.stderr)
     return []
+
+
+def _load_cached_reflections() -> list[dict]:
+    """从 verdict cache 读取所有已 ingested 的反思笔记。
+
+    供独立阶段（--phase patterns/promote/feishu）使用，
+    不必依赖 SAG 搜索。verdict cache 包含完整的 reflection_content。
+    """
+    verdict_dir = CFG["cache"]["verdict_dir"]
+    if not os.path.isdir(verdict_dir):
+        return []
+    reflections = []
+    for fname in os.listdir(verdict_dir):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(verdict_dir, fname)
+        try:
+            with open(path, encoding="utf-8") as f:
+                cache = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            continue
+        if not cache.get("ingested") or not cache.get("reflection_content"):
+            continue
+        reflections.append({
+            "title": cache.get("reflection_title", ""),
+            "content": cache["reflection_content"],
+            "session_id": cache.get("session_id", fname.replace(".json", "")),
+            "score": cache.get("score", 0),
+            "document_id": cache.get("document_id", ""),
+        })
+    return reflections
 
 # ── Phase 1: synthesize ──────────────────────────────
 def _save_verdict(verdict_file: str, data: dict):
@@ -327,6 +347,7 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
                 "content": md_content,
                 "session_id": sid,
                 "score": score,
+                "document_id": cache.get("document_id", ""),
             })
             continue
 
@@ -336,15 +357,17 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
             "date": datetime.now().strftime("%Y-%m-%d"),
             "score": score,
         }
-        ok = sag_ingest(refl_title, md_content, metadata, dry_run=dry_run)
-        if ok:
+        doc_id = sag_ingest(refl_title, md_content, metadata, dry_run=dry_run)
+        if doc_id:
             cache["ingested"] = True
+            cache["document_id"] = doc_id
             _save_verdict(verdict_file, cache)
             reflections.append({
                 "title": refl_title,
                 "content": md_content,
                 "session_id": sid,
                 "score": score,
+                "document_id": doc_id,
             })
             print(f"  [{i+1}/{len(sessions)}] SYNTH → {refl_title[:50]}")
 
@@ -640,39 +663,30 @@ def _run_pipeline(args):
     # Phase 2: patterns
     if not args.phase or args.phase == "patterns":
         print("\n── Phase 2: patterns ──")
-        # 如果只跑 patterns，从 SAG 查近期 dream-synth 文档
+        # 独立运行时从 verdict cache 恢复反思笔记（不依赖 SAG 搜索）
         if not reflections:
-            sections = sag_search("知识 反思 决策", top_k=100, source_filter="dream-synth")
-            reflections = [{"title": s.get("title", ""),
-                            "content": s.get("content", ""),
-                            "session_id": (s.get("metadata") or {}).get("session_id", s.get("documentId", "")),
-                            "score": _safe_int((s.get("metadata") or {}).get("score", 3), 3)} for s in sections]
+            reflections = _load_cached_reflections()
+            print(f"  从 cache 加载 {len(reflections)} 篇反思笔记")
         phase_patterns(reflections, dry_run=args.dry_run)
 
     # Phase 3: promote
     promoted = []
     if not args.phase or args.phase == "promote":
         print("\n── Phase 3: promote ──")
-        # 如果只跑 promote，从 SAG 查近期 dream-synth 反思
+        # 独立运行时从 verdict cache 恢复反思笔记
         if not reflections:
-            sections = sag_search("反思 笔记", top_k=50, source_filter="dream-synth")
-            reflections = [{"title": s.get("title", ""),
-                            "content": s.get("content", ""),
-                            "session_id": (s.get("metadata") or {}).get("session_id", s.get("documentId", "")),
-                            "score": _safe_int((s.get("metadata") or {}).get("score", 3), 3)} for s in sections]
+            reflections = _load_cached_reflections()
+            print(f"  从 cache 加载 {len(reflections)} 篇反思笔记")
         promoted = phase_promote(reflections, dry_run=args.dry_run)
         print(f"  归档 {len(promoted)} 篇到 Wiki")
 
     # Phase 4: feishu
     if not args.phase or args.phase == "feishu":
         print("\n── Phase 4: feishu push ──")
-        # 如果只跑 feishu 且无 reflections，从 SAG 查
+        # 独立运行时从 verdict cache 恢复反思笔记
         if not reflections:
-            sections = sag_search("反思 笔记", top_k=50, source_filter="dream-synth")
-            reflections = [{"title": s.get("title", ""),
-                            "content": s.get("content", ""),
-                            "session_id": (s.get("metadata") or {}).get("session_id", s.get("documentId", "")),
-                            "score": _safe_int((s.get("metadata") or {}).get("score", 3), 3)} for s in sections]
+            reflections = _load_cached_reflections()
+            print(f"  从 cache 加载 {len(reflections)} 篇反思笔记")
         phase_feishu(reflections, promoted, dry_run=args.dry_run)
 
     # 更新时间戳：仅在完整流水线或 synthesize 阶段运行后更新

@@ -201,18 +201,34 @@ def welch_ttest(a: list[float], b: list[float]) -> dict[str, Any]:
 # ========== 维度关键词分类器 ==========
 
 _DIMENSION_KEYWORDS: dict[str, list[str]] = {
-    "semantic": ["是什么意思", "概念", "定义", "什么是", "介绍一下", "概述", "理解", "功能", "特性", "什么功能", "感受", "直观", "起来没", "回答", "简单", "感觉", "体验", "上次", "提到", "之前", "说过", "说到", "那你", "意思", "含义"],
-    "entity": ["谁", "哪个团队", "哪些人", "公司", "项目", "产品", "位置"],
-    "causal": ["为什么", "原因", "导致", "影响", "关联", "引起", "因果关系"],
+    "semantic": ["是什么意思", "概念", "定义", "什么是", "介绍一下", "概述", "理解", "功能", "特性", "什么功能", "感受", "直观", "起来没", "回答", "简单", "感觉", "体验", "上次", "提到", "之前", "说过", "说到", "那你", "意思", "含义", "价值", "是不是", "是不是报告"],
+    "entity": ["谁", "哪个团队", "哪些人", "公司", "项目", "产品", "位置", "哪个"],
+    "causal": ["为什么", "原因", "导致", "影响", "关联", "引起", "因果关系", "为什么"],
     "temporal": ["什么时候", "多久", "频率", "历史", "最近", "这周", "昨天", "趋势"],
-    "conflict": ["区别", "差异", "对比", "比较", "不同", "矛盾", "冲突", "vs"],
-    "tool": ["怎么操作", "如何设置", "命令", "配置", "部署", "安装", "启动", "cli", "修", "router", "cron", "serv00", "pm2", "action", "状态", "检查", "跑", "修复", "日志", "log", "链接", "link", "终端", "设置"],
-    "debug": ["报错", "失败", "错误", "异常", "卡死", "超时", "bug"],
-    "api": ["接口", "endpoint", "http", "调接口", "请求", "返回"],
-    "complex": ["架构", "方案", "设计", "怎么实现", "体系", "框架", "整体", "国产", "国外", "深度", "建设"],
-    "numeric": ["多少", "数量", "比例", "百分", "size", "count", "几天"],
-    "workflow": ["流程", "步骤", "怎么做", "顺序", "整个流程", "管线", "pipeline", "审核", "审查", "review", "审计", "优先", "优先级", "只改", "类别", "分类"],
+    "conflict": ["区别", "差异", "对比", "比较", "不同", "矛盾", "冲突", "vs", "替换", "还是"],
+    "tool": ["怎么操作", "如何设置", "命令", "配置", "部署", "安装", "启动", "cli", "修", "router", "cron", "serv00", "pm2", "action", "状态", "检查", "跑", "修复", "日志", "log", "链接", "link", "终端", "设置", "导出", "注册", "重启", "初始化", "删除", "清理", "测试", "停了", "停下来"],
+    "debug": ["报错", "失败", "错误", "异常", "卡死", "超时", "bug", "删了", "错了", "没有", "暴露"],
+    "api": ["接口", "endpoint", "http", "调接口", "请求", "返回", "bearer", "authorization", "token"],
+    "complex": ["架构", "方案", "设计", "怎么实现", "体系", "框架", "整体", "国产", "国外", "深度", "建设", "调研", "替换", "体系"],
+    "numeric": ["多少", "数量", "比例", "百分", "size", "count", "几天", "翻", "倍"],
+    "workflow": ["流程", "步骤", "怎么做", "顺序", "整个流程", "管线", "pipeline", "审核", "审查", "review", "审计", "优先", "优先级", "只改", "类别", "分类", "继续", "先", "帮我把"],
 }
+
+
+# 系统消息前缀过滤 — 这些不是真实用户查询，不应进入基线
+_SYSTEM_MSG_PREFIXES = (
+    "[note:", "[system", "[info:", "[debug:", "[error:",
+    "note: model was just switched",
+)
+
+
+def _is_system_message(query: str) -> bool:
+    """判断是否为系统消息而非真实用户查询。"""
+    q_lower = query.strip().lower()
+    for prefix in _SYSTEM_MSG_PREFIXES:
+        if q_lower.startswith(prefix):
+            return True
+    return False
 
 
 def _classify_dimension_by_keywords(qid: str) -> str:
@@ -294,6 +310,11 @@ def collect_baseline(log_file: str = "") -> dict:
                     qid = data.get("eval_candidate_id")
                 if not qid:
                     qid = data.get("query_trunc", "")[:50] or "unknown"
+
+                # 过滤系统消息（如 [Note: model was just switched...]）
+                # 这些不是真实用户查询，会严重污染基线质量
+                if _is_system_message(qid):
+                    continue
 
                 records_by_qid[qid].append({
                     "source": "recall_success",

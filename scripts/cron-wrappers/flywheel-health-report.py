@@ -54,13 +54,15 @@ TH = {
 # === Test query filter ===
 _TEST_QUERY_RE = re.compile(
     r"^(gen_|eval-|test_|test-|exact_kw_|semantic_|entity_|causal_|"
-    r"temporal_|conflict_|tool_|debug_|api_|compare_|workflow_)",
+    r"temporal_|conflict_|tool_|debug_|api_|compare_|workflow_|complex_|numeric_)",
     re.IGNORECASE,
 )
 
 # === Active cron jobs — only core flywheel tasks ===
 # Excluded: system-health-check (环境巡检),
-#           cron-boot-detect / cron-periodic-detect (自愈框架)
+#           cron-boot-detect / cron-periodic-detect (自愈框架),
+#           flywheel-health-report (报告自身),
+#           cron-periodic-dedup (去重字典，非 state 文件)
 ACTIVE_CRON_JOBS = frozenset({
     "memory-cleanup",
     "knowledge-navigation-baseline",
@@ -71,6 +73,16 @@ ACTIVE_CRON_JOBS = frozenset({
     "clustering-analysis",
     "knowledge-tree-consolidate",
     "knowledge-tree-kvector",
+})
+
+# 已知的非飞轮 state 文件白名单（自愈框架/巡检/报告自身/去重字典）
+# 这些文件每天会重新生成，删除无意义，在报告中显式排除以避免噪音
+EXCLUDED_STATE_FILES = frozenset({
+    "system-health-check",
+    "cron-boot-detect",
+    "cron-periodic-detect",
+    "cron-periodic-dedup",
+    "flywheel-health-report",
 })
 
 # === Flywheel mapping ===
@@ -149,12 +161,18 @@ def _rotate_jsonl(path: Path, keep: int = 30) -> None:
 
 
 def append_daily_summary(data_flywheel: Path, summary: dict) -> None:
-    """Append daily summary to history JSONL, keeping last 30 days."""
+    """Append daily summary to history JSONL, dedup by date, keep last 30 days."""
     path = data_flywheel / "daily-summary-history.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(summary, ensure_ascii=False) + "\n")
-    _rotate_jsonl(path, keep=30)
+    # 同日替换而非追加，避免趋势表重复
+    records = _load_jsonl(path)
+    date = summary.get("date")
+    records = [r for r in records if r.get("date") != date]
+    records.append(summary)
+    records = records[-30:]
+    with open(path, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 def load_daily_summary(data_flywheel: Path) -> list[dict]:
@@ -866,13 +884,20 @@ def check_dependency_chain(states: dict[str, dict], today: str) -> list[dict]:
 
 
 def detect_zombie_state_files(cron_state_dir: Path) -> list[str]:
-    """Find state files not belonging to active flywheel jobs."""
+    """Find state files not belonging to active flywheel jobs.
+
+    已知的非飞轮 state 文件（自愈框架/巡检/报告自身/去重字典）通过
+    EXCLUDED_STATE_FILES 白名单排除，不再报告为 zombie。
+    """
     zombies = []
     if not cron_state_dir.is_dir():
         return zombies
     for f in sorted(cron_state_dir.glob("*.json")):
-        if f.stem not in ACTIVE_CRON_JOBS:
-            zombies.append(f.stem)
+        if f.stem in ACTIVE_CRON_JOBS:
+            continue
+        if f.stem in EXCLUDED_STATE_FILES:
+            continue
+        zombies.append(f.stem)
     return zombies
 
 
@@ -927,6 +952,10 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     now_str = now.strftime("%Y-%m-%d %H:%M UTC")
+    # 报告在 UTC 09:00 生成，当天 UTC 日只过了 9 小时，数据不完整。
+    # 改为统计前一天的完整 UTC 日（24 小时数据完整）。
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    data_window = yesterday
 
     cron_state_dir = home / CRON_STATE_SUBPATH
     cron_log_dir = home / CRON_LOG_SUBPATH
@@ -936,7 +965,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
 
     # Parse all data
     cron_states = parse_cron_states(cron_state_dir)
-    trace = parse_trace_log(trace_path, filter_date=today)
+    trace = parse_trace_log(trace_path, filter_date=data_window)
 
     # Analyze
     cron_issues, cron_table, elapsed_ann = analyze_cron_jobs(cron_states, cron_log_dir, now)
@@ -953,7 +982,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     # Collect issues
     # Integrity & dependency checks
     integrity_issues = check_output_integrity(home)
-    dep_issues = check_dependency_chain(cron_states, today)
+    dep_issues = check_dependency_chain(cron_states, data_window)
     zombie_files = detect_zombie_state_files(cron_state_dir)
 
     all_issues = (cron_issues + router_issues + skill_issues + kt_issues +
@@ -968,8 +997,9 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     L.append(f"**Home**: `{home}`")
     report_type = detect_report_type(cron_state_dir, now)
     L.append(f"**Report type**: `{report_type}`")
-    L.append(f"**Data window**: `{today}` (UTC)")
-    L.append(f"**Core cron tasks**: {len(cron_table)} 个（排除 3 个非飞轮）")
+    L.append(f"**Data window**: `{data_window}` (UTC, 完整 24h)")
+    zombie_total = len(list(cron_state_dir.glob("*.json"))) - len(cron_table) if cron_state_dir.is_dir() else 0
+    L.append(f"**Core cron tasks**: {len(cron_table)} 个（排除 {zombie_total} 个非飞轮）")
     if dry_run:
         L.append("**Mode**: dry-run (no file written)")
     L.append("")
@@ -1144,9 +1174,9 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         L.append(f"- 📝 非 飞轮 state 文件: {', '.join(zombie_files)}")
     L.append("")
 
-    # Save daily summary for 7-day trend
+    # Save daily summary for 7-day trend (date = 数据窗口日期)
     append_daily_summary(data_flywheel_dir, {
-        "date": today,
+        "date": data_window,
         "report_type": report_type,
         "p0_count": len(p0),
         "p1_count": len(p1),
