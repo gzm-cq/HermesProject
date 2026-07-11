@@ -159,30 +159,117 @@ class TestPhasePromote:
         assert result == []
 
 
-class TestSagIngest:
-    def test_dry_run_returns_true(self, module, tmp_config):
-        result = module.sag_ingest("测试标题", "内容", {"key": "val"}, dry_run=True)
-        assert result is True
+def _make_mock_session(post_return=None, post_side_effect=None):
+    mock_session = MagicMock()
+    if post_side_effect is not None:
+        mock_session.post.side_effect = post_side_effect
+    else:
+        mock_session.post.return_value = post_return
+    return mock_session
 
-    def test_successful_ingest_returns_true(self, module, tmp_config):
+
+class TestSagIngest:
+    def test_dry_run_returns_doc_id(self, module, tmp_config):
+        result = module.sag_ingest("测试标题", "内容", {"key": "val"}, dry_run=True)
+        assert result is not None
+        assert isinstance(result, str)
+
+    def test_successful_ingest_returns_doc_id(self, module, tmp_config):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        with patch.object(module.requests, "post", return_value=mock_resp):
+        mock_resp.json.return_value = {"documentId": "doc-123"}
+        mock_session = _make_mock_session(post_return=mock_resp)
+        with patch.object(module, "_get_sag_session", return_value=mock_session):
             result = module.sag_ingest("标题", "内容", {"source": "test"})
-        assert result is True
+        assert result == "doc-123"
 
-    def test_failed_ingest_returns_false(self, module, tmp_config):
+    def test_5xx_retry_then_success(self, module, tmp_config):
+        """首次 502，重试后 201 成功。"""
+        mock_resp_502 = MagicMock()
+        mock_resp_502.status_code = 502
+        mock_resp_502.text = "Bad Gateway"
+
+        mock_resp_ok = MagicMock()
+        mock_resp_ok.status_code = 201
+        mock_resp_ok.json.return_value = {"documentId": "doc-retry"}
+
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [mock_resp_502, mock_resp_ok]
+
+        with patch.object(module, "_get_sag_session", return_value=mock_session), \
+             patch.object(module.time, "sleep"):  # 跳过重试等待
+            result = module.sag_ingest("标题", "内容", {}, max_retries=3, base_delay=0.1)
+
+        assert result == "doc-retry"
+        assert mock_session.post.call_count == 2
+
+    def test_5xx_all_retries_fail(self, module, tmp_config):
+        """3 次 500 全失败 → 返回 None。"""
+        mock_resp_500 = MagicMock()
+        mock_resp_500.status_code = 500
+        mock_resp_500.text = "Internal Server Error"
+
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [mock_resp_500, mock_resp_500, mock_resp_500]
+
+        with patch.object(module, "_get_sag_session", return_value=mock_session), \
+             patch.object(module.time, "sleep"):
+            result = module.sag_ingest("标题", "内容", {}, max_retries=3, base_delay=0.1)
+
+        assert result is None
+        assert mock_session.post.call_count == 3
+
+    def test_timeout_retry_then_success(self, module, tmp_config):
+        """首次超时，重试后成功。"""
+        import requests as req_lib
+
+        mock_resp_ok = MagicMock()
+        mock_resp_ok.status_code = 201
+        mock_resp_ok.json.return_value = {"documentId": "doc-timeout-retry"}
+
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [
+            req_lib.exceptions.Timeout("Read timed out"),
+            mock_resp_ok,
+        ]
+
+        with patch.object(module, "_get_sag_session", return_value=mock_session), \
+             patch.object(module.time, "sleep"):
+            result = module.sag_ingest("标题", "内容", {}, max_retries=3, base_delay=0.1)
+
+        assert result == "doc-timeout-retry"
+        assert mock_session.post.call_count == 2
+
+    def test_4xx_no_retry(self, module, tmp_config):
+        """4xx 错误不重试，直接返回 None。"""
+        mock_resp_400 = MagicMock()
+        mock_resp_400.status_code = 400
+        mock_resp_400.text = "Bad Request"
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = mock_resp_400
+
+        with patch.object(module, "_get_sag_session", return_value=mock_session):
+            result = module.sag_ingest("标题", "内容", {}, max_retries=3, base_delay=0.1)
+
+        assert result is None
+        assert mock_session.post.call_count == 1  # 没重试
+
+    def test_failed_ingest_returns_none(self, module, tmp_config):
         mock_resp = MagicMock()
         mock_resp.status_code = 500
         mock_resp.text = "Internal Server Error"
-        with patch.object(module.requests, "post", return_value=mock_resp):
-            result = module.sag_ingest("标题", "内容", {})
-        assert result is False
+        mock_session = _make_mock_session(post_return=mock_resp)
+        with patch.object(module, "_get_sag_session", return_value=mock_session), \
+             patch.object(module.time, "sleep"):
+            result = module.sag_ingest("标题", "内容", {}, max_retries=1, base_delay=0.1)
+        assert result is None
 
-    def test_network_error_returns_false(self, module, tmp_config):
-        with patch.object(module.requests, "post", side_effect=Exception("Connection refused")):
+    def test_network_error_returns_none(self, module, tmp_config):
+        mock_session = _make_mock_session(post_side_effect=Exception("Connection refused"))
+        with patch.object(module, "_get_sag_session", return_value=mock_session):
             result = module.sag_ingest("标题", "内容", {})
-        assert result is False
+        assert result is None
 
 
 class TestSagSearch:
@@ -196,7 +283,8 @@ class TestSagSearch:
                 {"title": "C", "metadata": {"source": "dream-synth"}, "content": "内容C"},
             ]
         }
-        with patch.object(module.requests, "post", return_value=mock_resp):
+        mock_session = _make_mock_session(post_return=mock_resp)
+        with patch.object(module, "_get_sag_session", return_value=mock_session):
             result = module.sag_search("测试", top_k=10, source_filter="dream-synth")
         assert len(result) == 2
         assert {s["title"] for s in result} == {"A", "C"}
@@ -210,18 +298,21 @@ class TestSagSearch:
                 {"title": "B", "metadata": {"source": "y"}},
             ]
         }
-        with patch.object(module.requests, "post", return_value=mock_resp):
+        mock_session = _make_mock_session(post_return=mock_resp)
+        with patch.object(module, "_get_sag_session", return_value=mock_session):
             result = module.sag_search("测试", top_k=10)
         assert len(result) == 2
 
     def test_network_error_returns_empty(self, module, tmp_config):
-        with patch.object(module.requests, "post", side_effect=Exception("timeout")):
+        mock_session = _make_mock_session(post_side_effect=Exception("timeout"))
+        with patch.object(module, "_get_sag_session", return_value=mock_session):
             result = module.sag_search("测试")
         assert result == []
 
     def test_non_200_returns_empty(self, module, tmp_config):
         mock_resp = MagicMock()
         mock_resp.status_code = 404
-        with patch.object(module.requests, "post", return_value=mock_resp):
+        mock_session = _make_mock_session(post_return=mock_resp)
+        with patch.object(module, "_get_sag_session", return_value=mock_session):
             result = module.sag_search("测试")
         assert result == []

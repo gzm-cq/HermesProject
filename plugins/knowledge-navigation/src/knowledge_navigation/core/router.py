@@ -89,11 +89,11 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
     try:
         confidence = float(data.get("confidence", 0.5))
     except (TypeError, ValueError):
-        logger.debug("Router confidence invalid, applying conservative fallback")
-        return {"h": True, "kt": True, "s": True, "sag": False}
+        logger.debug("Router confidence invalid, applying fallback 四路全开")
+        return {"h": True, "kt": True, "s": True, "sag": True}
     if confidence < 0.5:
-        logger.debug("Router confidence=%.2f < 0.5, applying conservative fallback", confidence)
-        return {"h": True, "kt": True, "s": True, "sag": False}
+        logger.debug("Router confidence=%.2f < 0.5, applying fallback 四路全开", confidence)
+        return {"h": True, "kt": True, "s": True, "sag": True}
 
     return {
         "h": bool(data.get("h", False)),
@@ -175,8 +175,8 @@ def route(
             if mask is None:
                 fallback_reason = "json_parse"
                 _FALLBACK_COUNTER["json_parse"] += 1
-                logger.warning("Router JSON 解析失败, fallback 三路全开（SAG 保守关闭）, raw: %s", raw[:200])
-                mask = {"h": True, "kt": True, "s": True, "sag": False}
+                logger.warning("Router JSON 解析失败, fallback 四路全开, raw: %s", raw[:200])
+                mask = {"h": True, "kt": True, "s": True, "sag": True}
             else:
                 fallback_reason = "success"
 
@@ -200,29 +200,29 @@ def route(
                     logger.warning("Router 401 Unauthorized, 尝试刷新 API key 并重试")
                     continue
                 fallback_reason = "api_401"
-                logger.warning("Router 401 Unauthorized 重试失败, fallback 三路全开（SAG 保守关闭）")
+                logger.warning("Router 401 Unauthorized 重试失败, fallback 四路全开")
             else:
                 _FALLBACK_COUNTER["api_other"] += 1
                 fallback_reason = f"api_{e.response.status_code}"
-                logger.warning("Router HTTP 错误 (%s), fallback 三路全开（SAG 保守关闭）", e)
+                logger.warning("Router HTTP 错误 (%s), fallback 四路全开", e)
             break
 
         except httpx.TimeoutException:
             _FALLBACK_COUNTER["api_timeout"] += 1
             fallback_reason = "api_timeout"
-            logger.warning("Router 调用超时, fallback 三路全开（SAG 保守关闭）")
+            logger.warning("Router 调用超时, fallback 四路全开")
             break
 
         except Exception as e:
             _FALLBACK_COUNTER["api_error"] += 1
             fallback_reason = "api_error"
-            logger.warning("Router 调用失败 (%s), fallback 三路全开（SAG 保守关闭）", e)
+            logger.warning("Router 调用失败 (%s), fallback 四路全开", e)
             break
 
     duration = time.time() - start_time
-    logger.info("Router fallback 三路全开（SAG 保守关闭）, reason=%s, duration=%.2fs", fallback_reason, duration)
+    logger.info("Router fallback 四路全开, reason=%s, duration=%.2fs", fallback_reason, duration)
 
-    mask = {"h": True, "kt": True, "s": True, "sag": False}
+    mask = {"h": True, "kt": True, "s": True, "sag": True}
     _router_cache[cache_key] = mask
     _router_cache_timestamps[cache_key] = time.time()
     return mask

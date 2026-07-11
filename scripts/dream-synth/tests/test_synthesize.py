@@ -1,7 +1,7 @@
 """phase_synthesize 幂等性测试 — 缓存、重试逻辑。"""
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 def _make_session(sid="s1", title="测试对话"):
@@ -14,6 +14,11 @@ def _make_session(sid="s1", title="测试对话"):
     }
 
 
+def _mock_sag_ok():
+    """Mock SAG health check to return True."""
+    return patch.object(__import__("sys").modules["dream_daily"], "sag_health_check", return_value=True)
+
+
 class TestPhaseSynthesize:
     def test_empty_sessions_returns_empty(self, module, tmp_config):
         result = module.phase_synthesize([], dry_run=True)
@@ -22,9 +27,10 @@ class TestPhaseSynthesize:
     def test_score_below_threshold_skipped(self, module, tmp_config):
         sessions = [_make_session("s1")]
         with patch.object(module, "call_llm_json", return_value={"score": 1, "reason": "不相关"}):
-            result = module.phase_synthesize(sessions, dry_run=True)
+            result = module.phase_synthesize(sessions, dry_run=False)
 
         assert result == []
+        # dry_run=False → cache 应该写入
         verdict_file = os.path.join(tmp_config["cache"]["verdict_dir"], "s1.json")
         assert os.path.exists(verdict_file)
         with open(verdict_file, encoding="utf-8") as f:
@@ -46,21 +52,55 @@ class TestPhaseSynthesize:
 
         def fake_ingest(title, content, metadata, dry_run=False):
             ingest_calls.append({"title": title, "content": content, "metadata": metadata})
-            return True
+            return "doc-id-123"
 
         with patch.object(module, "call_llm_json", side_effect=fake_json), \
              patch.object(module, "call_llm", side_effect=fake_llm), \
-             patch.object(module, "sag_ingest", side_effect=fake_ingest):
-            result = module.phase_synthesize(sessions, dry_run=True)
+             patch.object(module, "sag_ingest", side_effect=fake_ingest), \
+             patch.object(module, "sag_health_check", return_value=True):
+            result = module.phase_synthesize(sessions, dry_run=False)
 
         assert len(result) == 1
         assert result[0]["title"] == "反思标题"
         assert result[0]["session_id"] == "s1"
         assert result[0]["score"] == 5
+        assert result[0]["document_id"] == "doc-id-123"
         assert len(llm_calls) == 1
         assert len(ingest_calls) == 1
         assert ingest_calls[0]["metadata"]["source"] == "dream-synth"
         assert ingest_calls[0]["metadata"]["session_id"] == "s1"
+
+    def test_dry_run_does_not_call_sag_ingest(self, module, tmp_config):
+        """dry_run 模式下不应调用 sag_ingest，不写 ingested=True 到 cache。"""
+        sessions = [_make_session("s1")]
+        ingest_calls = []
+
+        def fake_ingest(*args, **kw):
+            ingest_calls.append(True)
+            return "doc-id"
+
+        with patch.object(module, "call_llm_json", return_value={"score": 5}), \
+             patch.object(module, "call_llm", return_value="# 标题\n内容"), \
+             patch.object(module, "sag_ingest", side_effect=fake_ingest):
+            result = module.phase_synthesize(sessions, dry_run=True)
+
+        assert len(result) == 1
+        assert len(ingest_calls) == 0
+        # dry_run 不写 cache
+        verdict_file = os.path.join(tmp_config["cache"]["verdict_dir"], "s1.json")
+        assert not os.path.exists(verdict_file)
+
+    def test_dry_run_does_not_write_cache(self, module, tmp_config):
+        """dry_run 模式下不写 verdict cache 到磁盘。"""
+        sessions = [_make_session("s1")]
+
+        with patch.object(module, "call_llm_json", return_value={"score": 5}), \
+             patch.object(module, "call_llm", return_value="# 标题\n内容"):
+            result = module.phase_synthesize(sessions, dry_run=True)
+
+        assert len(result) == 1
+        verdict_file = os.path.join(tmp_config["cache"]["verdict_dir"], "s1.json")
+        assert not os.path.exists(verdict_file)
 
     def test_verdict_cache_hit_skips_filter(self, module, tmp_config):
         sessions = [_make_session("s1")]
@@ -80,12 +120,13 @@ class TestPhaseSynthesize:
             return "# 标题\n\n内容"
 
         def fake_ingest(*args, **kw):
-            return True
+            return "doc-id"
 
         with patch.object(module, "call_llm_json", side_effect=fake_json), \
              patch.object(module, "call_llm", side_effect=fake_llm), \
-             patch.object(module, "sag_ingest", side_effect=fake_ingest):
-            result = module.phase_synthesize(sessions, dry_run=True)
+             patch.object(module, "sag_ingest", side_effect=fake_ingest), \
+             patch.object(module, "sag_health_check", return_value=True):
+            result = module.phase_synthesize(sessions, dry_run=False)
 
         assert len(result) == 1
         assert len(llm_json_calls) == 0
@@ -113,11 +154,12 @@ class TestPhaseSynthesize:
             return "# 新标题\n\n内容"
 
         def fake_ingest(*args, **kw):
-            return True
+            return "doc-id"
 
         with patch.object(module, "call_llm", side_effect=fake_llm), \
-             patch.object(module, "sag_ingest", side_effect=fake_ingest):
-            result = module.phase_synthesize(sessions, dry_run=True)
+             patch.object(module, "sag_ingest", side_effect=fake_ingest), \
+             patch.object(module, "sag_health_check", return_value=True):
+            result = module.phase_synthesize(sessions, dry_run=False)
 
         assert len(result) == 1
         assert result[0]["title"] == "缓存标题"
@@ -135,6 +177,7 @@ class TestPhaseSynthesize:
             "reflection_title": "标题",
             "reflection_content": "# 标题\n内容",
             "ingested": True,
+            "document_id": "existing-doc-id",
         }
         with open(os.path.join(verdict_dir, "s1.json"), "w", encoding="utf-8") as f:
             json.dump(cache_data, f, ensure_ascii=False)
@@ -143,10 +186,10 @@ class TestPhaseSynthesize:
 
         def fake_ingest(*args, **kw):
             ingest_calls.append(True)
-            return True
+            return "doc-id"
 
         with patch.object(module, "sag_ingest", side_effect=fake_ingest):
-            result = module.phase_synthesize(sessions, dry_run=True)
+            result = module.phase_synthesize(sessions, dry_run=False)
 
         assert len(result) == 1
         assert len(ingest_calls) == 0
@@ -156,8 +199,9 @@ class TestPhaseSynthesize:
 
         with patch.object(module, "call_llm_json", return_value={"score": 5}), \
              patch.object(module, "call_llm", return_value="# 标题\n内容"), \
-             patch.object(module, "sag_ingest", return_value=False):
-            result = module.phase_synthesize(sessions, dry_run=True)
+             patch.object(module, "sag_ingest", return_value=None), \
+             patch.object(module, "sag_health_check", return_value=True):
+            result = module.phase_synthesize(sessions, dry_run=False)
 
         assert result == []
         verdict_file = os.path.join(tmp_config["cache"]["verdict_dir"], "s1.json")
@@ -165,6 +209,7 @@ class TestPhaseSynthesize:
             data = json.load(f)
         assert data.get("ingested") is not True
         assert data.get("synthesized") is True
+        assert data.get("ingest_attempts", 0) >= 1
 
     def test_multiple_sessions_mixed_scores(self, module, tmp_config):
         sessions = [
@@ -185,8 +230,9 @@ class TestPhaseSynthesize:
 
         with patch.object(module, "call_llm_json", side_effect=fake_json), \
              patch.object(module, "call_llm", side_effect=fake_llm), \
-             patch.object(module, "sag_ingest", return_value=True):
-            result = module.phase_synthesize(sessions, dry_run=True)
+             patch.object(module, "sag_ingest", return_value="doc-id"), \
+             patch.object(module, "sag_health_check", return_value=True):
+            result = module.phase_synthesize(sessions, dry_run=False)
 
         assert len(result) == 2
         sids = {r["session_id"] for r in result}
@@ -194,17 +240,21 @@ class TestPhaseSynthesize:
         assert "s3" in sids
         assert "s2" not in sids
 
-    def test_dry_run_still_calls_sag_ingest_with_dry_flag(self, module, tmp_config):
+    def test_sag_unavailable_skips_ingest(self, module, tmp_config):
+        """SAG 不可达时跳过 ingest，但保留 LLM 合成结果到 cache。"""
         sessions = [_make_session("s1")]
-        ingest_kwargs = {}
-
-        def fake_ingest(*args, **kw):
-            ingest_kwargs.update(kw)
-            return True
 
         with patch.object(module, "call_llm_json", return_value={"score": 5}), \
              patch.object(module, "call_llm", return_value="# 标题\n内容"), \
-             patch.object(module, "sag_ingest", side_effect=fake_ingest):
-            module.phase_synthesize(sessions, dry_run=True)
+             patch.object(module, "sag_health_check", return_value=False):
+            result = module.phase_synthesize(sessions, dry_run=False)
 
-        assert ingest_kwargs.get("dry_run") is True
+        # SAG 不可达 → 不投 ingest → 不在 reflections 里
+        assert result == []
+        # 但 LLM 合成结果应该写入 cache
+        verdict_file = os.path.join(tmp_config["cache"]["verdict_dir"], "s1.json")
+        assert os.path.exists(verdict_file)
+        with open(verdict_file, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data.get("synthesized") is True
+        assert data.get("ingested") is not True

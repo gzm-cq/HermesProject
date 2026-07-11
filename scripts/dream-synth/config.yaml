@@ -11,10 +11,13 @@ llm:
   cheap: "s-glm-5.2"
   smart: "s-glm-5.2"
   base_url: "http://127.0.0.1:4142"
+  throttle_seconds: 0.0    # LLM 调用间隔限流，默认 0（不限流）
+  promote_workers: 1       # promote 阶段 LLM 判断并发数，默认 1（串行）
 
 # SAG REST API（Fastify, 端口 4173）
 sag:
   base_url: "http://127.0.0.1:4173"
+  ingest_workers: 3        # SAG ingest 并发数，默认 3
 
 # 飞书
 feishu:

@@ -19,15 +19,51 @@ from __future__ import annotations
 import json
 import os
 import re
+import random
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import requests
 import yaml
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda iterable, desc=None, total=None: iterable
+
+_shutdown_event = threading.Event()
+
+def _handle_shutdown(signum, frame):
+    _shutdown_event.set()
+    print("\n⚠️ 收到中断信号，停止提交新任务，等待已提交任务完成...", file=sys.stderr)
+
+signal.signal(signal.SIGTERM, _handle_shutdown)
+signal.signal(signal.SIGINT, _handle_shutdown)
+
+_sag_session: requests.Session | None = None
+
+def _get_sag_session() -> requests.Session:
+    """获取全局 SAG requests Session（连接池复用）"""
+    global _sag_session
+    if _sag_session is None:
+        _sag_session = requests.Session()
+    return _sag_session
+
+@dataclass
+class IngestStats:
+    """SAG ingest 运行指标统计"""
+    total: int = 0
+    success: int = 0
+    failed: int = 0
+    skipped: int = 0
 
 # ── 路径 ──────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -58,6 +94,7 @@ def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
+    payload["extra_body"] = {"thinking": {"type": "disabled"}}
     resp = requests.post(url, json=payload, headers=headers, timeout=120)
     resp.raise_for_status()
     data = resp.json()
@@ -110,6 +147,20 @@ def _sanitize_filename(name: str, max_len: int = 60) -> str:
     return name[:max_len] if name else "untitled"
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """安全转换为整数，失败返回默认值。"""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        pass
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return default
+
+
 def read_sessions(since_ts: float, dry_run: bool = False) -> list[dict]:
     """从 state.db 读当天新增的 session"""
     db_path = CFG["session"]["db_path"]
@@ -132,6 +183,9 @@ def read_sessions(since_ts: float, dry_run: bool = False) -> list[dict]:
         sessions = [dict(r) for r in cur.fetchall()]
 
         for s in sessions:
+            if s.get("title") is None:
+                s["title"] = "untitled"
+            s["title"] = s["title"][:80]  # safe truncate
             cur.execute(
                 """SELECT role, content, timestamp
                    FROM messages WHERE session_id = ? ORDER BY id""",
@@ -185,11 +239,16 @@ def save_last_run_ts(ts: float):
 SAG_SOURCE_ID = "00000000-0000-0000-0000-0000000000ff"
 
 
-def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False) -> str | None:
-    """写入 SAG，返回 documentId（成功）或 None（失败）"""
+def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False,
+               max_retries: int = 3, base_delay: float = 5.0) -> str | None:
+    """写入 SAG，返回 documentId（成功）或 None（失败）。
+
+    Args:
+        max_retries: 5xx 错误和超时的重试次数
+        base_delay: 重试基础延迟（指数退避，单位秒）
+    """
     if dry_run:
-        print(f"  [DRY-RUN] SAG ingest: {title[:50]}")
-        return None
+        return "dry-run-doc-id"
 
     base_url = CFG["sag"]["base_url"]
     payload = {
@@ -199,21 +258,74 @@ def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False) 
         "metadata": metadata,
         "extract": True,
         "waitForCompletion": False,
+        "chunking": {
+            "maxTokens": 4096,
+        },
     }
+
+    session = _get_sag_session()
+    last_error = ""
+
+    for attempt in range(max_retries):
+        t0 = time.time()
+        try:
+            resp = session.post(f"{base_url}/ingest", json=payload, timeout=180)
+            elapsed_ms = (time.time() - t0) * 1000
+            if resp.status_code in (200, 201):
+                doc_id = resp.json().get("documentId", "")
+                return doc_id if doc_id else None
+            if 500 <= resp.status_code < 600:
+                last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"  SAG ingest 5xx ({resp.status_code}), {elapsed_ms:.0f}ms, 重试 {attempt+1}/{max_retries} ({delay:.1f}s)...", file=sys.stderr)
+                    time.sleep(delay)
+                    continue
+                print(f"  SAG ingest 最终失败: {last_error}", file=sys.stderr)
+                return None
+            last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
+            print(f"  SAG ingest failed: {last_error}", file=sys.stderr)
+            return None
+        except requests.exceptions.Timeout as e:
+            last_error = f"Timeout: {e}"
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                print(f"  SAG ingest 超时, 重试 {attempt+1}/{max_retries} ({delay:.1f}s)...", file=sys.stderr)
+                time.sleep(delay)
+                continue
+            print(f"  SAG ingest 最终超时", file=sys.stderr)
+            return None
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            print(f"  SAG ingest error: {last_error}", file=sys.stderr)
+            return None
+    return None
+
+
+def sag_health_check(timeout: float = 5.0) -> bool:
+    """SAG 服务健康检查（预热）。"""
+    base_url = CFG.get("sag", {}).get("base_url", "")
+    if not base_url:
+        return False
+    session = _get_sag_session()
     try:
-        resp = requests.post(f"{base_url}/ingest", json=payload, timeout=60)
-        if resp.status_code in (200, 201):
-            doc_id = resp.json().get("documentId", "")
-            return doc_id if doc_id else None
-        print(f"  SAG ingest failed: {resp.status_code} {resp.text[:100]}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"  SAG ingest error: {e}", file=sys.stderr)
-        return None
+        resp = session.get(f"{base_url}/health", timeout=timeout)
+        return resp.status_code == 200
+    except Exception:
+        pass
+    try:
+        resp = session.get(f"{base_url}/", timeout=timeout)
+        return resp.status_code < 500
+    except Exception:
+        return False
 
 
-def sag_search(query: str, top_k: int = 50) -> list[dict]:
-    """从 SAG 搜索文档（REST API /search），返回 sections 列表。"""
+def sag_search(query: str, top_k: int = 50, source_filter: str | None = None) -> list[dict]:
+    """从 SAG 搜索文档（REST API /search），返回 sections 列表。
+
+    Args:
+        source_filter: 按 metadata.source 过滤，None 返回全部
+    """
     base_url = CFG["sag"]["base_url"]
     payload = {
         "query": query,
@@ -222,42 +334,57 @@ def sag_search(query: str, top_k: int = 50) -> list[dict]:
         "sourceIds": [SAG_SOURCE_ID],
     }
     try:
-        resp = requests.post(f"{base_url}/search", json=payload, timeout=15)
+        session = _get_sag_session()
+        resp = session.post(f"{base_url}/search", json=payload, timeout=15)
         if resp.status_code == 200:
-            return resp.json().get("sections", [])
+            sections = resp.json().get("sections", [])
+            if source_filter:
+                return [s for s in sections if s.get("metadata", {}).get("source") == source_filter]
+            return sections
     except Exception as e:
         print(f"  SAG search error: {e}", file=sys.stderr)
     return []
 
 
 def _load_cached_reflections() -> list[dict]:
-    """从 verdict cache 读取所有已 ingested 的反思笔记。
+    """从 verdict cache 和 SAG 读取反思笔记。
 
-    供独立阶段（--phase patterns/promote/feishu）使用，
-    不必依赖 SAG 搜索。verdict cache 包含完整的 reflection_content。
+    供独立阶段（--phase patterns/promote/feishu）使用。
+    优先从 verdict cache 读取，如无则从 SAG 搜索。
     """
     verdict_dir = CFG["cache"]["verdict_dir"]
-    if not os.path.isdir(verdict_dir):
-        return []
     reflections = []
-    for fname in os.listdir(verdict_dir):
-        if not fname.endswith(".json"):
-            continue
-        path = os.path.join(verdict_dir, fname)
-        try:
-            with open(path, encoding="utf-8") as f:
-                cache = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            continue
-        if not cache.get("ingested") or not cache.get("reflection_content"):
-            continue
-        reflections.append({
-            "title": cache.get("reflection_title", ""),
-            "content": cache["reflection_content"],
-            "session_id": cache.get("session_id", fname.replace(".json", "")),
-            "score": cache.get("score", 0),
-            "document_id": cache.get("document_id", ""),
-        })
+
+    if os.path.isdir(verdict_dir):
+        for fname in os.listdir(verdict_dir):
+            if not fname.endswith(".json"):
+                continue
+            path = os.path.join(verdict_dir, fname)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    cache = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                continue
+            if not cache.get("ingested") or not cache.get("reflection_content"):
+                continue
+            reflections.append({
+                "title": cache.get("reflection_title", ""),
+                "content": cache["reflection_content"],
+                "session_id": cache.get("session_id", fname.replace(".json", "")),
+                "score": cache.get("score", 0),
+                "document_id": cache.get("document_id", ""),
+            })
+
+    if not reflections:
+        sag_sections = sag_search("dream-synth", top_k=100, source_filter="dream-synth")
+        for s in sag_sections:
+            reflections.append({
+                "title": s.get("title", ""),
+                "content": s.get("content", ""),
+                "session_id": s.get("metadata", {}).get("session_id", ""),
+                "score": s.get("metadata", {}).get("score", 0),
+            })
+
     return reflections
 
 # ── Phase 1: synthesize ──────────────────────────────
@@ -267,112 +394,231 @@ def _save_verdict(verdict_file: str, data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def _should_skip_ingest(cache: dict) -> bool:
+    """判断是否应该跳过 ingest 尝试。
+
+    返回 True 如果：
+    - 已成功 ingest（ingested=True）
+    - 失败次数已达上限（ingest_attempts >= 3）
+    """
+    if cache.get("ingested"):
+        return True
+    if cache.get("ingest_attempts", 0) >= 3:
+        return True
+    return False
+
+
 def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
-    """提炼 session → 反思笔记 → 写入 SAG（带完整幂等）"""
+    """提炼 session → 反思笔记 → 写入 SAG（带完整幂等，Producer-Consumer 并发）
+
+    特性：
+    - SAG 健康检查预热
+    - LLM 合成（producer）+ SAG ingest（consumer）并发
+    - 可配置并发数（sag.ingest_workers，默认 3）
+    - 指数退避 + 抖动重试
+    - 连接池复用（requests.Session）
+    - 失败次数上限（默认 3 次后跳过）
+    - 保持输入顺序输出
+    - 完整指标统计
+    """
     if not sessions:
         print("  synthesize: 无新 session，跳过")
         return []
+
+    _sag_available = False if dry_run else sag_health_check()
+    if not _sag_available and not dry_run:
+        print("  ⚠️ SAG 服务不可达，跳过 ingest 阶段（保留 LLM 合成结果到 cache）", file=sys.stderr)
 
     cheap_model = CFG["llm"]["cheap"]
     smart_model = CFG["llm"]["smart"]
     sig_prompt = load_prompt("significance-filter")
     syn_prompt = load_prompt("synthesis")
+    llm_throttle_s = CFG.get("llm", {}).get("throttle_seconds", 0.0)
 
     verdict_dir = CFG["cache"]["verdict_dir"]
     os.makedirs(verdict_dir, exist_ok=True)
 
-    reflections = []
-    for i, s in enumerate(sessions):
-        sid = s["id"]
-        title = s.get("title", "untitled")
-        text = s["text"]
+    result_map: dict[str, dict] = {}
+    order: list[str] = []
+    future_to_sid: dict[object, str] = {}
+    skipped_ingest_count = 0
+    stats = IngestStats()
 
-        verdict_file = os.path.join(verdict_dir, f"{sid}.json")
+    max_workers = CFG.get("sag", {}).get("ingest_workers", 3)
 
-        # 1. 读取缓存（包含 verdict / synthesis / ingested 状态）
-        cache = None
-        if os.path.exists(verdict_file):
-            try:
-                with open(verdict_file, encoding="utf-8") as f:
-                    cache = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                cache = None
+    t0_total = time.time()
 
-        # 2. significanceFilter
-        if cache and "score" in cache:
-            score = cache.get("score", 0)
-            print(f"  [{i+1}/{len(sessions)}] CACHE {title[:40]} → score={score}")
-        else:
-            prompt = sig_prompt + "\n\n对话：\n" + text[:4000]
-            try:
-                verdict = call_llm_json(prompt, cheap_model)
-            except Exception as e:
-                print(f"  [{i+1}/{len(sessions)}] FILTER FAIL {title[:40]}: {e}（不缓存，下次重试）")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for i, s in enumerate(tqdm(sessions, desc="  LLM 合成", total=len(sessions))):
+            if _shutdown_event.is_set():
+                print(f"\n⚠️ 已停止提交新任务，当前进度: {i}/{len(sessions)}", file=sys.stderr)
+                break
+
+            sid = s["id"]
+            title = s.get("title", "untitled")
+            text = s["text"]
+
+            verdict_file = os.path.join(verdict_dir, f"{sid}.json")
+
+            cache = None
+            if os.path.exists(verdict_file):
+                try:
+                    with open(verdict_file, encoding="utf-8") as f:
+                        cache = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    cache = None
+
+            if cache and "score" in cache:
+                score = cache.get("score", 0)
+            else:
+                prompt = sig_prompt + "\n\n对话：\n" + text[:4000]
+                try:
+                    verdict = call_llm_json(prompt, cheap_model)
+                except Exception as e:
+                    print(f"  FILTER FAIL {title[:40]}: {e}（不缓存，下次重试）")
+                    if llm_throttle_s > 0:
+                        time.sleep(llm_throttle_s)
+                    continue
+                verdict["session_id"] = sid
+                cache = verdict
+                if not dry_run:
+                    _save_verdict(verdict_file, cache)
+                score = verdict.get("score", 0)
+
+            if score < 3:
+                if llm_throttle_s > 0:
+                    time.sleep(llm_throttle_s)
                 continue
-            verdict["session_id"] = sid
-            cache = verdict
-            _save_verdict(verdict_file, cache)
-            score = verdict.get("score", 0)
-            print(f"  [{i+1}/{len(sessions)}] FILTER {title[:40]} → score={score}")
 
-        if score < 3:
-            continue
+            if cache and cache.get("synthesized") and cache.get("reflection_content"):
+                md_content = cache["reflection_content"]
+                refl_title = cache.get("reflection_title", f"反思-{title[:30]}")
+            else:
+                prompt = syn_prompt.replace("{session_text}", text[:8000])
+                try:
+                    md_content = call_llm(prompt, smart_model, temperature=0.3)
+                except Exception as e:
+                    print(f"  SYNTH FAIL {title[:40]}: {e}", file=sys.stderr)
+                    if llm_throttle_s > 0:
+                        time.sleep(llm_throttle_s)
+                    continue
 
-        # 3. synthesize（有缓存且成功过则跳过）
-        if cache and cache.get("synthesized") and cache.get("reflection_content"):
-            md_content = cache["reflection_content"]
-            refl_title = cache.get("reflection_title", f"反思-{title[:30]}")
-            print(f"  [{i+1}/{len(sessions)}] SYNTH-CACHE → {refl_title[:40]}")
-        else:
-            prompt = syn_prompt.replace("{session_text}", text[:8000])
-            try:
-                md_content = call_llm(prompt, smart_model, temperature=0.3)
-            except Exception as e:
-                print(f"  synthesize 失败: {e}", file=sys.stderr)
+                title_match = re.search(r"^#\s+(.+)$", md_content, re.MULTILINE)
+                refl_title = title_match.group(1).strip() if title_match else f"反思-{title[:30]}"
+
+                cache["synthesized"] = True
+                cache["reflection_title"] = refl_title
+                cache["reflection_content"] = md_content
+                if not dry_run:
+                    _save_verdict(verdict_file, cache)
+
+            order.append(sid)
+
+            if _should_skip_ingest(cache):
+                if cache.get("ingested"):
+                    result_map[sid] = {
+                        "title": refl_title,
+                        "content": md_content,
+                        "session_id": sid,
+                        "score": score,
+                        "document_id": cache.get("document_id", ""),
+                    }
+                    stats.skipped += 1
+                    stats.success += 1
+                else:
+                    stats.skipped += 1
+                    stats.failed += 1
+                skipped_ingest_count += 1
+                if llm_throttle_s > 0:
+                    time.sleep(llm_throttle_s)
                 continue
 
-            title_match = re.search(r"^#\s+(.+)$", md_content, re.MULTILINE)
-            refl_title = title_match.group(1).strip() if title_match else f"反思-{title[:30]}"
-
-            cache["synthesized"] = True
-            cache["reflection_title"] = refl_title
-            cache["reflection_content"] = md_content
-            _save_verdict(verdict_file, cache)
-
-        # 4. 写入 SAG（已成功写入过则跳过）
-        if cache.get("ingested"):
-            print(f"  [{i+1}/{len(sessions)}] INGEST-CACHE → {refl_title[:40]}")
-            reflections.append({
-                "title": refl_title,
-                "content": md_content,
+            metadata = {
+                "source": "dream-synth",
                 "session_id": sid,
+                "date": datetime.now().strftime("%Y-%m-%d"),
                 "score": score,
-                "document_id": cache.get("document_id", ""),
-            })
-            continue
+            }
 
-        metadata = {
-            "source": "dream-synth",
-            "session_id": sid,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "score": score,
-        }
-        doc_id = sag_ingest(refl_title, md_content, metadata, dry_run=dry_run)
-        if doc_id:
-            cache["ingested"] = True
-            cache["document_id"] = doc_id
-            _save_verdict(verdict_file, cache)
-            reflections.append({
-                "title": refl_title,
-                "content": md_content,
-                "session_id": sid,
+            # dry_run 模式：不投 ingest，不写 ingested=True 到 cache
+            if dry_run:
+                result_map[sid] = {
+                    "title": refl_title,
+                    "content": md_content,
+                    "session_id": sid,
+                    "score": score,
+                    "document_id": "",
+                }
+                stats.skipped += 1
+                stats.success += 1
+                if llm_throttle_s > 0:
+                    time.sleep(llm_throttle_s)
+                continue
+
+            # SAG 不可达时：不投 ingest，保留 LLM 合成结果到 cache
+            if not _sag_available:
+                stats.skipped += 1
+                stats.failed += 1
+                if llm_throttle_s > 0:
+                    time.sleep(llm_throttle_s)
+                continue
+
+            future = executor.submit(
+                sag_ingest, refl_title, md_content, metadata, dry_run=dry_run
+            )
+            future_to_sid[future] = sid
+            stats.total += 1
+
+            result_map[sid] = {
+                "refl_title": refl_title,
+                "md_content": md_content,
                 "score": score,
-                "document_id": doc_id,
-            })
-            print(f"  [{i+1}/{len(sessions)}] SYNTH → {refl_title[:50]}")
+                "verdict_file": verdict_file,
+                "cache": cache,
+            }
 
-        time.sleep(0.5)
+            if llm_throttle_s > 0:
+                time.sleep(llm_throttle_s)
 
+        failed_sessions: list[str] = []
+        for future in tqdm(as_completed(future_to_sid.keys()),
+                         desc="  SAG ingest", total=len(future_to_sid)):
+            sid = future_to_sid[future]
+            info = result_map[sid]
+            doc_id = future.result()
+            if doc_id:
+                info["cache"]["ingested"] = True
+                info["cache"]["document_id"] = doc_id
+                info["cache"].pop("ingest_attempts", None)
+                info["cache"].pop("last_ingest_error", None)
+                _save_verdict(info["verdict_file"], info["cache"])
+                result_map[sid] = {
+                    "title": info["refl_title"],
+                    "content": info["md_content"],
+                    "session_id": sid,
+                    "score": info["score"],
+                    "document_id": doc_id,
+                }
+                stats.success += 1
+            else:
+                info["cache"]["ingested"] = False
+                info["cache"]["ingest_attempts"] = info["cache"].get("ingest_attempts", 0) + 1
+                info["cache"]["last_ingest_error"] = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (attempt {info['cache']['ingest_attempts']})"
+                _save_verdict(info["verdict_file"], info["cache"])
+                failed_sessions.append(info["refl_title"])
+                stats.failed += 1
+
+        total_ms = (time.time() - t0_total) * 1000
+        print(f"  📊 合成完成: 总 {stats.total + stats.skipped} 个 | 成功 {stats.success} | 失败 {stats.failed} | 跳过 {stats.skipped} | 耗时 {total_ms/1000:.1f}s")
+
+        if failed_sessions:
+            print(f"\n  ⚠️ {len(failed_sessions)} 个 session ingest 失败:", file=sys.stderr)
+            for t in failed_sessions[:5]:
+                print(f"    - {t[:50]}", file=sys.stderr)
+            if len(failed_sessions) > 5:
+                print(f"    ... 还有 {len(failed_sessions) - 5} 个", file=sys.stderr)
+
+    reflections = [result_map[sid] for sid in order if sid in result_map and "title" in result_map[sid]]
     return reflections
 
 # ── Phase 2: patterns ────────────────────────────────
@@ -453,7 +699,10 @@ def phase_patterns(reflections: list[dict], dry_run: bool = False) -> list[dict]
 
 # ── Phase 3: promote ──────────────────────────────────
 def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
-    """精选反思笔记 → axiom-wiki"""
+    """精选反思笔记 → axiom-wiki（支持 LLM 判断并发）
+
+    通过 llm.promote_workers 配置并发数（默认 1，即串行）。
+    """
     if not reflections:
         print("  promote: 无反思笔记，跳过")
         return []
@@ -461,8 +710,9 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
     smart_model = CFG["llm"]["smart"]
     prompt_tmpl = load_prompt("promote-judge")
     promote_log = CFG["cache"]["promote_log"]
+    max_workers = CFG.get("llm", {}).get("promote_workers", 1)
+    llm_throttle_s = CFG.get("llm", {}).get("throttle_seconds", 0.0)
 
-    # 读已归档清单
     promoted_ids = set()
     if os.path.exists(promote_log):
         with open(promote_log, encoding="utf-8") as f:
@@ -474,24 +724,57 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
                     pass
 
     wiki_base = CFG["wiki"]["base_path"]
+    candidates = [r for r in reflections if r["session_id"] not in promoted_ids]
+
+    if not candidates:
+        print("  promote: 全部已归档，跳过")
+        return []
+
+    t0 = time.time()
+
+    if max_workers <= 1:
+        verdicts = []
+        for r in tqdm(candidates, desc="  Promote 判断", total=len(candidates)):
+            prompt = prompt_tmpl + "\n\n反思笔记：\n" + r["content"][:3000]
+            try:
+                verdict = call_llm_json(prompt, smart_model)
+                verdicts.append((r, verdict))
+            except Exception as e:
+                print(f"  promote 判断失败: {e}", file=sys.stderr)
+                verdicts.append((r, None))
+            if llm_throttle_s > 0:
+                time.sleep(llm_throttle_s)
+    else:
+        def _judge_one(r):
+            prompt = prompt_tmpl + "\n\n反思笔记：\n" + r["content"][:3000]
+            try:
+                verdict = call_llm_json(prompt, smart_model)
+                return (r, verdict)
+            except Exception as e:
+                print(f"  promote 判断失败: {e}", file=sys.stderr)
+                return (r, None)
+
+        verdicts = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_r = {executor.submit(_judge_one, r): r for r in candidates}
+            for future in tqdm(as_completed(future_to_r.keys()),
+                             desc="  Promote 判断", total=len(candidates)):
+                verdicts.append(future.result())
+
+        sid_order = {r["session_id"]: i for i, r in enumerate(candidates)}
+        verdicts.sort(key=lambda x: sid_order.get(x[0]["session_id"], 0))
+
     promoted = []
-    for r in reflections:
-        sid = r["session_id"]
-        if sid in promoted_ids:
-            continue
+    promote_log_lines = []
 
-        # LLM 判断
-        prompt = prompt_tmpl + "\n\n反思笔记：\n" + r["content"][:3000]
-        try:
-            verdict = call_llm_json(prompt, smart_model)
-        except Exception as e:
-            print(f"  promote 判断失败: {e}", file=sys.stderr)
+    for r, verdict in verdicts:
+        if verdict is None:
             continue
-
         if not verdict.get("promote", False):
             print(f"  PROMOTE SKIP: {r['title'][:40]} → {verdict.get('reason','')}")
             continue
 
+        sid = r["session_id"]
         category = verdict.get("category", "concepts")
         safe_title = _sanitize_filename(r["title"], max_len=60)
         wiki_path = os.path.join(wiki_base, category, f"{safe_title}.md")
@@ -501,17 +784,15 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
             promoted.append(r)
             continue
 
-        # 幂等：如果 Wiki 文件已存在，只补日志
         if os.path.exists(wiki_path):
-            with open(promote_log, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"session_id": sid, "title": r["title"],
-                                     "category": category, "path": wiki_path},
-                                    ensure_ascii=False) + "\n")
+            line = json.dumps({"session_id": sid, "title": r["title"],
+                               "category": category, "path": wiki_path},
+                              ensure_ascii=False)
+            promote_log_lines.append(line)
             promoted.append(r)
             print(f"  PROMOTE EXISTS → {category}/{r['title'][:50]}")
             continue
 
-        # 写入 wiki
         os.makedirs(os.path.dirname(wiki_path), exist_ok=True)
         frontmatter = f"""---
 title: {r['title']}
@@ -530,14 +811,21 @@ date: {datetime.now().strftime('%Y-%m-%d')}
             print(f"  PROMOTE 写入失败: {e}", file=sys.stderr)
             continue
 
-        # 记入去重日志（文件写入成功后立即记录）
-        with open(promote_log, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"session_id": sid, "title": r["title"],
-                                 "category": category, "path": wiki_path},
-                                ensure_ascii=False) + "\n")
-
+        line = json.dumps({"session_id": sid, "title": r["title"],
+                           "category": category, "path": wiki_path},
+                          ensure_ascii=False)
+        promote_log_lines.append(line)
         promoted.append(r)
         print(f"  PROMOTE → {category}/{r['title'][:50]}")
+
+    if promote_log_lines and not dry_run:
+        os.makedirs(os.path.dirname(promote_log), exist_ok=True)
+        with open(promote_log, "a", encoding="utf-8") as f:
+            for line in promote_log_lines:
+                f.write(line + "\n")
+
+    elapsed = time.time() - t0
+    print(f"  📊 归档完成: {len(promoted)}/{len(candidates)} 晋升 | 耗时 {elapsed:.1f}s")
 
     return promoted
 

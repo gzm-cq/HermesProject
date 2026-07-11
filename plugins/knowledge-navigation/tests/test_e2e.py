@@ -94,11 +94,13 @@ class TestRouterGating:
         kt.assert_not_called()
         sk.assert_called_once()
 
+    @patch("knowledge_navigation.core.hooks._do_sag_recall")
     @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
     @patch("knowledge_navigation.core.hooks._do_kt_recall")
     @patch("knowledge_navigation.core.hooks._do_skill_match")
-    def test_router_only_skill_returns_only_skill(self, sk: MagicMock, kt: MagicMock, hs: MagicMock) -> None:
+    def test_router_only_skill_returns_only_skill(self, sk: MagicMock, kt: MagicMock, hs: MagicMock, sag: MagicMock) -> None:
         """Router {h:0, kt:0, s:1} + skill 匹配 → 返回 skill + system_state。"""
+        sag.return_value = []
         sk.return_value = "<auto_loaded_skills>\nskill-a\n</auto_loaded_skills>"
         with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": True}):
             result = pre_llm_call("s2", _TASK_MSG, platform="cli")
@@ -107,11 +109,13 @@ class TestRouterGating:
         assert "<recalled_memory>" not in result
         assert "<knowledge" not in result
 
+    @patch("knowledge_navigation.core.hooks._do_sag_recall")
     @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
     @patch("knowledge_navigation.core.hooks._do_kt_recall")
     @patch("knowledge_navigation.core.hooks._do_skill_match")
-    def test_router_all_off_returns_none(self, sk: MagicMock, kt: MagicMock, hs: MagicMock) -> None:
+    def test_router_all_off_returns_none(self, sk: MagicMock, kt: MagicMock, hs: MagicMock, sag: MagicMock) -> None:
         """Router 全关闭 + 无 skill → None。"""
+        sag.return_value = []
         sk.return_value = ""
         with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False}):
             assert pre_llm_call("s3", _TASK_MSG, platform="cli") is None
@@ -298,12 +302,14 @@ class TestEdgeCases:
     def test_router_mask_applied_correctly(self) -> None:
         """Router mask 正确应用到 recall 路径。"""
         with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False}):
-            with patch.object(nav_hooks, "_do_hindsight_recall") as mock_hs:
-                mock_hs.return_value = _mock_recall(
-                    results=[{"id": "hs-aaa", "text": "memory a"}],
-                )
-                with patch.object(nav_hooks, "_do_skill_match", return_value=""):
-                    result = pre_llm_call("s-router", _TASK_MSG, platform="cli")
+            with patch.object(nav_hooks, "_do_sag_recall") as mock_sag:
+                mock_sag.return_value = []
+                with patch.object(nav_hooks, "_do_hindsight_recall") as mock_hs:
+                    mock_hs.return_value = _mock_recall(
+                        results=[{"id": "hs-aaa", "text": "memory a"}],
+                    )
+                    with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+                        result = pre_llm_call("s-router", _TASK_MSG, platform="cli")
         assert result is not None
         assert "recalled_memory" in result
         assert "<knowledge" not in result

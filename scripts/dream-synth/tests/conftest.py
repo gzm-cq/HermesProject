@@ -61,5 +61,6 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(dream_daily, "CONFIG_PATH", config_file)
     monkeypatch.setattr(dream_daily, "CFG", cfg)
     monkeypatch.setattr(dream_daily, "PROMPTS_DIR", PROJECT_DIR / "prompts")
+    monkeypatch.setattr(dream_daily, "_sag_session", None)
 
     return cfg

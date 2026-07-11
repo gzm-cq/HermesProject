@@ -868,10 +868,10 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
         mask.setdefault("h", True)
         mask.setdefault("kt", True)
         mask.setdefault("s", True)
-        mask.setdefault("sag", False)
+        mask.setdefault("sag", True)
     except Exception as e:
-        logger.warning("Router 调用异常 (%s)，fallback 三路全开（SAG 保守关闭）", e)
-        mask = {"h": True, "kt": True, "s": True, "sag": False}
+        logger.warning("Router 调用异常 (%s)，fallback 四路全开", e)
+        mask = {"h": True, "kt": True, "s": True, "sag": True}
     logger.info(
         "Router mask: h=%s kt=%s s=%s sag=%s",
         mask["h"], mask["kt"], mask["s"], mask["sag"],
@@ -1653,26 +1653,42 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
                 raw_score = float(sec.get("score", 0.5))
             except (TypeError, ValueError):
                 raw_score = 0.5
+            content = sec.get("content", "")
+            heading = sec.get("heading", "")
+            # 超长内容改指针模式：不注入全文，注入精简指针
+            if len(content) > CONFIG.sag_pointer_threshold:
+                preview = content[:80].replace("\n", " ").strip()
+                text = (
+                    f"[SAG 指针] heading: {heading} | score: {raw_score:.2f} | "
+                    f"preview: {preview}... | "
+                    f"如需完整内容，使用 sag_search 工具查询: {heading}"
+                )
+            else:
+                text = content
             candidate = {
                 "id": sec.get("chunkId", f"sag_{sag_count}"),
-                "text": sec.get("content", ""),
+                "text": text,
                 "score": raw_score,
                 "base_score": raw_score,
                 "final_score": raw_score,
                 "rerank_score": raw_score,
                 "source": "sag",
-                "heading": sec.get("heading", ""),
+                "heading": heading,
                 "document_id": sec.get("documentId", ""),
             }
             if candidate["final_score"] >= CONFIG.min_score:
                 sag_candidates.append(candidate)
                 sag_count += 1
+        # 按分数排序取 top N，防止 multi-hop 20+ 条灌入
+        sag_candidates.sort(key=lambda x: x["final_score"], reverse=True)
+        sag_candidates = sag_candidates[: CONFIG.sag_max_inject]
         kept.extend(sag_candidates)
 
         logger.info(
-            "SAG recall: %d sections merged",
+            "SAG recall: %d sections merged (capped to %d)",
             sag_count,
-            extra={"session_id": session_id, "event": "sag_merge", "count": sag_count},
+            len(sag_candidates),
+            extra={"session_id": session_id, "event": "sag_merge", "count": len(sag_candidates)},
         )
 
     kept, _skill_context = _dedup_and_budget(kept, session_id, _skill_context)
