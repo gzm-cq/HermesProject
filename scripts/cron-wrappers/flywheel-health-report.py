@@ -192,6 +192,10 @@ def parse_trace_log(trace_path: Path,
         "skip_router_all_off": [],
         "multi_hop_expand": [],
         "recall_timeout": [],
+        "recall_hindsight": [],
+        "recall_knowledge_tree": [],
+        "recall_skill": [],
+        "recall_sag": [],
     }
     if not trace_path.is_file():
         return events
@@ -322,12 +326,26 @@ def analyze_cron_jobs(states: dict[str, dict],
 
 # === Analyzers — 类别二：产出质量 + 类别三：趋势 ===
 
+def _percentile(values: list[float], p: float) -> float:
+    """计算百分位数（线性插值）。"""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    k = (len(s) - 1) * p
+    f = int(k)
+    c = f + 1 if f + 1 < len(s) else f
+    if f == c:
+        return s[f]
+    return s[f] + (s[c] - s[f]) * (k - f)
+
+
 def analyze_router(trace: dict[str, list[dict]],
                    data_flywheel: Path) -> tuple[list[dict], dict, dict]:
     masks = trace["router_mask"]
     successes = trace["recall_success"]
     empties = trace["recall_empty_results"]
     timeouts = trace["recall_timeout"]
+    sag_recalls = trace["recall_sag"]
 
     total_masks = len(masks)
     if total_masks == 0:
@@ -338,12 +356,14 @@ def analyze_router(trace: dict[str, list[dict]],
         if not m.get("mask", {}).get("h")
         and not m.get("mask", {}).get("kt")
         and not m.get("mask", {}).get("s")
+        and not m.get("mask", {}).get("sag")
     )
     full_on = sum(
         1 for m in masks
         if m.get("mask", {}).get("h")
         and m.get("mask", {}).get("kt")
         and m.get("mask", {}).get("s")
+        and m.get("mask", {}).get("sag")
     )
 
     total_recall = len(successes) + len(empties) + len(timeouts)
@@ -353,6 +373,9 @@ def analyze_router(trace: dict[str, list[dict]],
     latencies = [s.get("latency_ms", 0) for s in successes if s.get("latency_ms")]
     avg_lat = sum(latencies) / len(latencies) if latencies else 0
     max_lat = max(latencies) if latencies else 0
+    p50_lat = _percentile(latencies, 0.50)
+    p95_lat = _percentile(latencies, 0.95)
+    p99_lat = _percentile(latencies, 0.99)
 
     scores = []
     for s in successes:
@@ -364,6 +387,16 @@ def analyze_router(trace: dict[str, list[dict]],
     h_on = sum(1 for m in masks if m.get("mask", {}).get("h"))
     kt_on = sum(1 for m in masks if m.get("mask", {}).get("kt"))
     s_on = sum(1 for m in masks if m.get("mask", {}).get("s"))
+    sag_on = sum(1 for m in masks if m.get("mask", {}).get("sag"))
+
+    # SAG 专项统计
+    sag_success_count = len(sag_recalls)
+    sag_non_empty = sum(1 for r in sag_recalls if r.get("count", 0) > 0)
+    sag_total_kept = sum(int(s.get("sag_kept", 0)) for s in successes)
+    sag_latencies = [r.get("latency_ms", 0) for r in sag_recalls if r.get("latency_ms") is not None]
+    sag_avg_lat = sum(sag_latencies) / len(sag_latencies) if sag_latencies else 0
+    sag_p50 = _percentile(sag_latencies, 0.50)
+    sag_p95 = _percentile(sag_latencies, 0.95)
 
     issues = []
     full_off_pct = full_off / total_masks * 100
@@ -398,6 +431,8 @@ def analyze_router(trace: dict[str, list[dict]],
         "h_on": h_on,
         "kt_on": kt_on,
         "s_on": s_on,
+        "sag_on": sag_on,
+        "sag_on_pct": round(sag_on / total_masks * 100, 1) if total_masks else 0,
         "success_count": len(successes),
         "empty_count": len(empties),
         "timeout_count": len(timeouts),
@@ -405,8 +440,17 @@ def analyze_router(trace: dict[str, list[dict]],
         "empty_rate": round(empty_rate, 1),
         "avg_latency_ms": round(avg_lat),
         "max_latency_ms": max_lat,
+        "p50_latency_ms": round(p50_lat),
+        "p95_latency_ms": round(p95_lat),
+        "p99_latency_ms": round(p99_lat),
         "avg_score": round(avg_score, 4),
         "multi_hop_count": len(trace["multi_hop_expand"]),
+        "sag_recall_count": sag_success_count,
+        "sag_non_empty_count": sag_non_empty,
+        "sag_total_kept": sag_total_kept,
+        "sag_avg_latency_ms": round(sag_avg_lat),
+        "sag_p50_latency_ms": round(sag_p50),
+        "sag_p95_latency_ms": round(sag_p95),
     }
 
     # === Trend: compare with router_prev.json ===
@@ -416,6 +460,8 @@ def analyze_router(trace: dict[str, list[dict]],
         prev_full_off = prev_router.get("full_off_pct")
         prev_empty = prev_router.get("empty_pct")
         prev_latency = prev_router.get("avg_latency_ms")
+        prev_sag_on = prev_router.get("sag_on_pct")
+        prev_sag_kept = prev_router.get("sag_total_kept")
         if prev_full_off is not None:
             delta = full_off_pct - prev_full_off
             trend["Router 全关率"] = f"{prev_full_off:.1f}% → {full_off_pct:.1f}% ({delta:+.1f}%)"
@@ -425,12 +471,21 @@ def analyze_router(trace: dict[str, list[dict]],
         if prev_latency is not None:
             delta = avg_lat - prev_latency
             trend["Router 平均延迟"] = f"{prev_latency:.0f}ms → {avg_lat:.0f}ms ({delta:+.0f}ms)"
+        if prev_sag_on is not None:
+            delta = metrics["sag_on_pct"] - prev_sag_on
+            trend["SAG 开启率"] = f"{prev_sag_on:.1f}% → {metrics['sag_on_pct']:.1f}% ({delta:+.1f}%)"
+        if prev_sag_kept is not None and prev_sag_kept > 0:
+            delta = sag_total_kept - prev_sag_kept
+            trend["SAG 召回量"] = f"{prev_sag_kept} → {sag_total_kept} ({delta:+d})"
 
     # Save current snapshot for next comparison
     _save_json(data_flywheel / "router_prev.json", {
         "full_off_pct": round(full_off_pct, 1),
         "empty_pct": round(empty_rate, 1),
         "avg_latency_ms": round(avg_lat),
+        "sag_on_pct": metrics["sag_on_pct"],
+        "sag_total_kept": sag_total_kept,
+        "sag_avg_latency_ms": round(sag_avg_lat),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -845,12 +900,13 @@ def format_7day_trend(data_flywheel: Path) -> list[str]:
     records = load_daily_summary(data_flywheel)
     if len(records) < 2:
         return ["历史数据不足 2 天，7 天趋势待积累。"]
-    lines = ["| 日期 | Router全关% | 空结果% | Skill F1 | KN unknown% | 聚类噪声% | KT孤立% |"]
-    lines.append("|------|------------|--------|----------|-------------|-----------|---------|")
+    lines = ["| 日期 | Router全关% | 空结果% | SAG开启% | SAG召回量 | Skill F1 | KN unknown% | 聚类噪声% | KT孤立% |"]
+    lines.append("|------|------------|--------|----------|-----------|----------|-------------|-----------|---------|")
     for r in records[-7:]:
         lines.append(
             f"| {r.get('date', '-')} | {r.get('router_full_off_pct', '-')} | "
-            f"{r.get('router_empty_pct', '-')} | {r.get('skill_f1', '-')} | "
+            f"{r.get('router_empty_pct', '-')} | {r.get('sag_on_pct', '-')} | "
+            f"{r.get('sag_total_kept', '-')} | {r.get('skill_f1', '-')} | "
             f"{r.get('kn_unknown_pct', '-')} | {r.get('cluster_noise_rate', '-')} | "
             f"{r.get('kt_orphan_pct', '-')} |"
         )
@@ -981,12 +1037,17 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
                  f"样本量: {'充足' if router_m['total_masks'] >= TH['min_sample_size'] else '⚠️ 偏少'}")
         L.append(f"- 全关率: {router_m['full_off_pct']}% ({router_m['full_off']}/{router_m['total_masks']}) | "
                  f"全开率: {router_m['full_on_pct']}% ({router_m['full_on']})")
-        L.append(f"- Hindsight 开启: {router_m['h_on']} | 知识树: {router_m['kt_on']} | Skill: {router_m['s_on']}")
+        L.append(f"- Hindsight 开启: {router_m['h_on']} | 知识树: {router_m['kt_on']} | Skill: {router_m['s_on']} | SAG: {router_m['sag_on']} ({router_m['sag_on_pct']}%)")
         L.append(f"- 召回成功: {router_m['success_count']} | 空结果: {router_m['empty_count']} | "
                  f"超时: {router_m['timeout_count']}")
         L.append(f"- 成功率: {router_m['success_rate']}% | 空结果率: {router_m['empty_rate']}%")
-        L.append(f"- 平均延迟: {router_m['avg_latency_ms']}ms | 最大: {router_m['max_latency_ms']}ms")
+        L.append(f"- 平均延迟: {router_m['avg_latency_ms']}ms | p50: {router_m['p50_latency_ms']}ms | "
+                 f"p95: {router_m['p95_latency_ms']}ms | p99: {router_m['p99_latency_ms']}ms | 最大: {router_m['max_latency_ms']}ms")
         L.append(f"- 平均得分: {router_m['avg_score']} | 多跳展开: {router_m['multi_hop_count']} 次")
+        L.append("")
+        L.append("**SAG 专项:**")
+        L.append(f"- 召回次数: {router_m['sag_recall_count']} | 非空: {router_m['sag_non_empty_count']} | 累计注入: {router_m['sag_total_kept']} 条")
+        L.append(f"- 平均延迟: {router_m['sag_avg_latency_ms']}ms | p50: {router_m['sag_p50_latency_ms']}ms | p95: {router_m['sag_p95_latency_ms']}ms")
     L.append("")
 
     # KN 基线
@@ -1091,6 +1152,9 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "p1_count": len(p1),
         "router_full_off_pct": router_m.get("full_off_pct", 0),
         "router_empty_pct": router_m.get("empty_rate", 0),
+        "sag_on_pct": router_m.get("sag_on_pct", 0),
+        "sag_total_kept": router_m.get("sag_total_kept", 0),
+        "sag_avg_latency_ms": router_m.get("sag_avg_latency_ms", 0),
         "skill_f1": skill_m.get("avg_f1", 0),
         "kn_unknown_pct": kn_m.get("unknown_dim_pct", 0),
         "cluster_noise_rate": cluster_m.get("noise_rate", 0),
@@ -1140,6 +1204,16 @@ def generate_recommendations(
         avg_score = router_m.get("avg_score", 0)
         if 0 < avg_score < 0.4:
             recs.append({"flywheel": "Router", "desc": f"平均得分 {avg_score} 偏低，召回结果相关性不足，建议调整 embedding 或 reranker 模型"})
+
+        sag_on = router_m.get("sag_on_pct", 0)
+        if sag_on < 10 and n > 0:
+            recs.append({"flywheel": "SAG", "desc": f"SAG 开启率仅 {sag_on}%，Router 极少触发 SAG 召回，建议检查 Router prompt 或 SAG 触发条件"})
+        sag_kept = router_m.get("sag_total_kept", 0)
+        if sag_on > 30 and sag_kept == 0:
+            recs.append({"flywheel": "SAG", "desc": f"SAG 开启率 {sag_on}% 但召回量为 0，可能 SAG 服务异常或索引为空，建议排查 SAG 健康状态"})
+        sag_lat = router_m.get("sag_avg_latency_ms", 0)
+        if sag_lat > 3000:
+            recs.append({"flywheel": "SAG", "desc": f"SAG 平均延迟 {sag_lat}ms 偏高，建议排查 SAG 服务性能或网络连接"})
 
     # --- Skill ---
     if skill_m.get("status") != "no_data":

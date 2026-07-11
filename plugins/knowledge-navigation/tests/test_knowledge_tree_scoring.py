@@ -17,8 +17,11 @@ def test_knowledge_tree_candidates_have_final_scores_in_score_stats(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """KT-only fallback 时 score_stats 不能再出现 count=0。"""
-    nav_hooks._circuit_failures = 0
-    nav_hooks._circuit_open_until = 0.0
+    from knowledge_navigation.core import circuit_breaker as cb
+    cb._hindsight_cb._failures = 0
+    cb._hindsight_cb._open_until = 0.0
+    cb._sag_cb._failures = 0
+    cb._sag_cb._open_until = 0.0
     nav_hooks._injected_ids.clear()
 
     mock_recall.return_value = {"results": [], "trace": {}}

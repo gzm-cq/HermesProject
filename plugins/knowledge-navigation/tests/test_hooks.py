@@ -19,9 +19,12 @@ from knowledge_navigation.core.hooks import _CJK_STOP_CHARS, _extract_keywords
 @pytest.fixture(autouse=True)
 def _reset_circuit_breaker() -> None:
     """每个测试前重置熔断器状态、飞书 token 缓存和 task_tracker，防止跨测试泄漏。"""
-    cb._circuit_failures = 0
-    cb._circuit_open_until = 0.0
-    cb._circuit_failure_types.clear()
+    cb._hindsight_cb._failures = 0
+    cb._hindsight_cb._open_until = 0.0
+    cb._hindsight_cb._failure_types.clear()
+    cb._sag_cb._failures = 0
+    cb._sag_cb._open_until = 0.0
+    cb._sag_cb._failure_types.clear()
     cb._LAST_NOTIFICATION_TIME = 0.0
     cb._FEISHU_TOKEN = ""
     cb._FEISHU_TOKEN_EXPIRES_AT = 0.0
@@ -31,6 +34,10 @@ def _reset_circuit_breaker() -> None:
     nav_hooks._compaction._rounds.clear()
     # 重置 turn-to-turn 去重缓存
     nav_hooks._injected_ids.clear()
+    # 重置 router 缓存
+    from knowledge_navigation.core import router as _rt
+    _rt._router_cache.clear()
+    _rt._router_cache_timestamps.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +100,7 @@ class TestPreLlmCall:
 
         with patch.object(nav_hooks._recall_executor, "submit", fake_submit), \
              patch.object(CONFIG, "timeout_seconds", 0.01), \
-             patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": True, "s": True}):
+             patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": True, "s": True, "sag": True}):
             result = pre_llm_call("session-123", "12345678901", platform="cli")
             assert result is None
 
@@ -333,15 +340,15 @@ class TestCircuitBreaker:
             for i in range(threshold - 1):
                 result = pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
                 assert result is None
-                assert cb._circuit_failures == i + 1
-                assert cb._circuit_open_until == 0.0
+                assert cb._hindsight_cb._failures == i + 1
+                assert cb._hindsight_cb._open_until == 0.0
 
             # 第 threshold 次失败触发熔断
             caplog.set_level(logging.WARNING)
             result = pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
             assert result is None
-            assert cb._circuit_failures == threshold
-            assert cb._circuit_open_until > 0.0
+            assert cb._hindsight_cb._failures == threshold
+            assert cb._hindsight_cb._open_until > 0.0
             assert any("熔断器开启" in rec.getMessage() for rec in caplog.records)
 
             # 下一次调用因熔断直接返回 None，不调用 recall
@@ -370,7 +377,7 @@ class TestCircuitBreaker:
             # threshold 次异常触发熔断
             for _ in range(threshold):
                 pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
-            assert cb._circuit_open_until == base_time + cooldown
+            assert cb._hindsight_cb._open_until == base_time + cooldown
             assert mock_recall.call_count == threshold
 
             # 冷却期内 — 熔断开启，recall 不被调用
@@ -388,8 +395,8 @@ class TestCircuitBreaker:
 
             result = pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
             assert result is not None
-            assert cb._circuit_failures == 0  # 已重置
-            assert cb._circuit_open_until == 0.0
+            assert cb._hindsight_cb._failures == 0  # 已重置
+            assert cb._hindsight_cb._open_until == 0.0
             assert mock_recall.call_count == threshold + 1  # 恢复调用
 
     @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
@@ -403,7 +410,7 @@ class TestCircuitBreaker:
             mock_recall.side_effect = [RuntimeError("down"), RuntimeError("down")]
             for _ in range(2):
                 assert pre_llm_call("session-123", "xyz xyz xyz", platform="cli") is None
-            assert cb._circuit_failures == 2
+            assert cb._hindsight_cb._failures == 2
 
             # 成功调用
             mock_recall.side_effect = None
@@ -412,12 +419,12 @@ class TestCircuitBreaker:
                 "trace": {"reranked": [{"node_id": "node1", "rerank_score": 0.9}]},
             }
             assert pre_llm_call("session-123", "xyz xyz xyz", platform="cli") is not None
-            assert cb._circuit_failures == 0  # 已重置
+            assert cb._hindsight_cb._failures == 0  # 已重置
 
             # 再失败 1 次，计数应从 0 重新开始
             mock_recall.side_effect = RuntimeError("down")
             assert pre_llm_call("session-123", "xyz xyz xyz", platform="cli") is None
-            assert cb._circuit_failures == 1
+            assert cb._hindsight_cb._failures == 1
 
     @patch("knowledge_navigation.core.hooks._do_kt_recall", return_value=[])
     @patch("knowledge_navigation.core.hooks.time.time")
@@ -434,8 +441,8 @@ class TestCircuitBreaker:
         mock_time.return_value = base_time
 
         # 直接设置熔断器为打开状态
-        cb._circuit_failures = CONFIG.circuit_breaker_threshold
-        cb._circuit_open_until = base_time + CONFIG.circuit_breaker_cooldown
+        cb._hindsight_cb._failures = CONFIG.circuit_breaker_threshold
+        cb._hindsight_cb._open_until = base_time + CONFIG.circuit_breaker_cooldown
 
         with patch.object(nav_hooks, "_do_skill_match", return_value=""):
             caplog.set_level(logging.INFO)
@@ -445,7 +452,7 @@ class TestCircuitBreaker:
             mock_recall.assert_not_called()  # Hindsight recall 未被调用
             assert any("熔断器跳过 Hindsight recall" in rec.getMessage() for rec in caplog.records)
             # 熔断期间不应追加失败计数（防止熔断死循环）
-            assert cb._circuit_failures == CONFIG.circuit_breaker_threshold
+            assert cb._hindsight_cb._failures == CONFIG.circuit_breaker_threshold
 
     @patch("knowledge_navigation.core.hooks._do_kt_recall", return_value=[{"id": 1, "text": "kt result"}])
     @patch("knowledge_navigation.core.hooks.time.time")
@@ -460,14 +467,14 @@ class TestCircuitBreaker:
         base_time = 1893456000.0
         mock_time.return_value = base_time
 
-        cb._circuit_failures = CONFIG.circuit_breaker_threshold
-        cb._circuit_open_until = base_time + CONFIG.circuit_breaker_cooldown
+        cb._hindsight_cb._failures = CONFIG.circuit_breaker_threshold
+        cb._hindsight_cb._open_until = base_time + CONFIG.circuit_breaker_cooldown
 
         result = pre_llm_call("session-123", "test query", platform="cli")
 
         mock_recall.assert_not_called()  # HS 未被调用
         # 熔断期间不应追加失败计数
-        assert cb._circuit_failures == CONFIG.circuit_breaker_threshold
+        assert cb._hindsight_cb._failures == CONFIG.circuit_breaker_threshold
 
 
 class TestKeywordExtraction:
@@ -690,8 +697,10 @@ class TestRouterMask:
     LONG_QUERY = "测试消息测试消息测试消息测试消息测试消息"
 
     def _patch_router(self, mask: dict[str, bool]) -> MagicMock:
-        """patch hooks 模块中的 _router_route 返回指定 mask。"""
-        return patch.object(nav_hooks, "_router_route", return_value=mask)
+        """patch hooks 模块中的 _router_route 返回指定 mask（自动补 sag=False）。"""
+        full_mask = {"h": False, "kt": False, "s": False, "sag": False}
+        full_mask.update(mask)
+        return patch.object(nav_hooks, "_router_route", return_value=full_mask)
 
     @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
     def test_router_all_off_returns_none(self, mock_hs: MagicMock) -> None:
@@ -773,3 +782,315 @@ class TestRouterMask:
         with patch.object(nav_hooks, "_router_route") as mock_route:
             pre_llm_call("sess6", "好的", platform="cli")
         mock_route.assert_not_called()
+
+
+class TestSagRecall:
+    """测试第 4 路 SAG 文档检索。"""
+
+    LONG_QUERY = "测试消息测试消息测试消息测试消息测试消息"
+
+    def _mock_sag_result(self, sections):
+        return {"sections": sections}
+
+    def test_do_sag_recall_success(self) -> None:
+        """_do_sag_recall 成功返回 sections。"""
+        sections = [
+            {"chunkId": "c1", "content": "内容1", "score": 0.9, "documentId": "doc1"},
+            {"chunkId": "c2", "content": "内容2", "score": 0.8, "documentId": "doc2"},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": sections}
+
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            from knowledge_navigation.core.hooks import _do_sag_recall
+            result = _do_sag_recall("测试查询")
+
+        assert len(result) == 2
+        assert result[0]["chunkId"] == "c1"
+        assert result[1]["content"] == "内容2"
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "/search" in call_args[0][0]
+        assert call_args[1]["json"]["query"] == "测试查询"
+        assert call_args[1]["json"]["searchMode"] == "fast"
+
+    def test_do_sag_recall_non_200_returns_empty(self) -> None:
+        """SAG 返回非 200 → 返回空列表。"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+
+        with patch("requests.post", return_value=mock_resp):
+            from knowledge_navigation.core.hooks import _do_sag_recall
+            result = _do_sag_recall("查询")
+        assert result == []
+
+    def test_do_sag_recall_exception_returns_empty(self) -> None:
+        """SAG 请求异常 → 返回空列表（不抛出）。"""
+        with patch("requests.post", side_effect=Exception("Connection refused")):
+            from knowledge_navigation.core.hooks import _do_sag_recall
+            result = _do_sag_recall("查询")
+        assert result == []
+
+    def test_do_sag_recall_empty_sections(self) -> None:
+        """SAG 返回空 sections → 返回空列表。"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": []}
+
+        with patch("requests.post", return_value=mock_resp):
+            from knowledge_navigation.core.hooks import _do_sag_recall
+            result = _do_sag_recall("查询")
+        assert result == []
+
+    def test_sag_results_merged_into_kept(self) -> None:
+        """SAG 结果被合并到 kept 候选列表。"""
+        sag_sections = [
+            {"chunkId": "c1", "content": "SAG 知识内容1", "score": 0.9, "documentId": "doc-1", "heading": "简介"},
+            {"chunkId": "c2", "content": "SAG 知识内容2", "score": 0.85, "documentId": "doc-2", "heading": "用法"},
+        ]
+
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {"sections": sag_sections}
+                mock_post.return_value = mock_resp
+
+                result = pre_llm_call("sess-sag", self.LONG_QUERY, platform="cli")
+
+        assert result is not None
+        assert 'source="sag"' in result
+        assert 'document_id="doc-1"' in result
+        assert 'document_id="doc-2"' in result
+        assert "SAG 知识内容1" in result
+        assert "SAG 知识内容2" in result
+        assert 'count="2"' in result
+
+    def test_sag_low_score_filtered_out(self) -> None:
+        """SAG 低分结果被 min_score 过滤。"""
+        sag_sections = [
+            {"chunkId": "c1", "content": "高分内容", "score": 0.9, "documentId": "doc-1"},
+            {"chunkId": "c2", "content": "低分内容", "score": 0.01, "documentId": "doc-2"},
+        ]
+
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {"sections": sag_sections}
+                mock_post.return_value = mock_resp
+
+                result = pre_llm_call("sess-sag", self.LONG_QUERY, platform="cli")
+
+        assert result is not None
+        assert "高分内容" in result
+        assert "低分内容" not in result
+
+    def test_sag_disabled_by_router(self) -> None:
+        """Router 关闭 sag → SAG 不被调用。"""
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": False}):
+            with patch("requests.post") as mock_post:
+                result = pre_llm_call("sess-sag-off", self.LONG_QUERY, platform="cli")
+
+        # 全关闭 → 返回 None
+        assert result is None
+        mock_post.assert_not_called()
+
+    def test_router_fallback_sag_closed(self) -> None:
+        """Router 异常 fallback → sag 保守关闭，不调用 SAG。"""
+        with patch.object(nav_hooks, "_router_route", side_effect=RuntimeError("API down")):
+            with patch.object(nav_hooks, "_do_hindsight_recall", return_value={
+                "results": [{"id": "n1", "text": "mem", "score": 0.9}],
+                "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
+            }):
+                with patch("requests.post") as mock_post:
+                    mock_resp = MagicMock()
+                    mock_resp.status_code = 200
+                    mock_resp.json.return_value = {"sections": [
+                        {"chunkId": "s1", "content": "sag内容", "score": 0.8, "documentId": "d1"}
+                    ]}
+                    mock_post.return_value = mock_resp
+
+                    with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+                        result = pre_llm_call("sess-fb", self.LONG_QUERY, platform="cli")
+
+        assert result is not None
+        assert "sag内容" not in result
+        mock_post.assert_not_called()
+
+    def test_sag_with_hindsight_both_in_output(self) -> None:
+        """Hindsight + SAG 同时开启 → 两侧结果都出现在输出中。"""
+        sag_sections = [
+            {"chunkId": "sag1", "content": "SAG 的知识", "score": 0.85, "documentId": "doc-a"},
+        ]
+        hs_result = {
+            "results": [{"id": "hs1", "text": "Hindsight 记忆"}],
+            "trace": {"reranked": [{"node_id": "hs1", "rerank_score": 0.9}]},
+        }
+
+        with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": True}):
+            with patch.object(nav_hooks, "_do_hindsight_recall", return_value=hs_result):
+                with patch("requests.post") as mock_post:
+                    mock_resp = MagicMock()
+                    mock_resp.status_code = 200
+                    mock_resp.json.return_value = {"sections": sag_sections}
+                    mock_post.return_value = mock_resp
+
+                    result = pre_llm_call("sess-both", self.LONG_QUERY, platform="cli")
+
+        assert result is not None
+        assert 'source="hindsight"' in result
+        assert "Hindsight 记忆" in result
+        assert 'source="sag"' in result
+        assert "SAG 的知识" in result
+
+    def test_sag_empty_result_not_in_output(self) -> None:
+        """SAG 返回空结果 → 输出中不应出现 SAG knowledge 块。"""
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {"sections": []}
+                mock_post.return_value = mock_resp
+
+                result = pre_llm_call("sess-empty", self.LONG_QUERY, platform="cli")
+
+        assert result is None
+
+    def test_sag_result_default_score(self) -> None:
+        """SAG 结果无 score 字段时使用默认值 0.5。"""
+        sag_sections = [
+            {"chunkId": "c1", "content": "无分数内容", "documentId": "doc-1"},
+        ]
+
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {"sections": sag_sections}
+                mock_post.return_value = mock_resp
+
+                result = pre_llm_call("sess-default", self.LONG_QUERY, platform="cli")
+
+        assert result is not None
+        assert "无分数内容" in result
+
+    def test_sag_chunk_id_fallback(self) -> None:
+        """SAG 结果无 chunkId 时使用 sag_N 作为 ID。"""
+        sag_sections = [
+            {"content": "无 chunkId 内容", "score": 0.8, "documentId": "doc-1"},
+        ]
+
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {"sections": sag_sections}
+                mock_post.return_value = mock_resp
+
+                result = pre_llm_call("sess-fallback", self.LONG_QUERY, platform="cli")
+
+        assert result is not None
+        assert "无 chunkId 内容" in result
+
+    def test_sag_request_timeout_config(self) -> None:
+        """SAG 请求使用配置的超时时间。"""
+        from knowledge_navigation.config import CONFIG
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": []}
+
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            from knowledge_navigation.core.hooks import _do_sag_recall
+            _do_sag_recall("查询")
+
+        call_kwargs = mock_post.call_args[1]
+        assert call_kwargs["timeout"] == CONFIG.sag_search_timeout
+
+    def test_sag_request_topk_config(self) -> None:
+        """SAG 请求使用配置的 topK。"""
+        from knowledge_navigation.config import CONFIG
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": []}
+
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            from knowledge_navigation.core.hooks import _do_sag_recall
+            _do_sag_recall("查询")
+
+        call_json = mock_post.call_args[1]["json"]
+        assert call_json["topK"] == CONFIG.sag_search_top_k
+
+    def test_sag_circuit_breaker_opens_after_failures(self) -> None:
+        """SAG 连续失败后熔断器打开，跳过 recall。"""
+        threshold = CONFIG.circuit_breaker_threshold
+        with patch("requests.post", side_effect=Exception("SAG down")):
+            with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+                with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+                    for i in range(threshold):
+                        pre_llm_call("sess-cb", self.LONG_QUERY, platform="cli")
+
+                    assert cb._sag_cb._failures == threshold
+                    assert cb._sag_cb._open_until > 0.0
+
+                    result = pre_llm_call("sess-cb", self.LONG_QUERY, platform="cli")
+                    assert result is None
+
+    def test_sag_circuit_breaker_success_resets(self) -> None:
+        """SAG 成功调用后熔断器计数重置。"""
+        with patch("requests.post", side_effect=Exception("SAG down")):
+            with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+                with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+                    for _ in range(2):
+                        pre_llm_call("sess-cb2", self.LONG_QUERY, platform="cli")
+                    assert cb._sag_cb._failures == 2
+
+        sag_sections = [{"chunkId": "c1", "content": "内容", "score": 0.9, "documentId": "d1"}]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": sag_sections}
+
+        with patch("requests.post", return_value=mock_resp):
+            with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+                pre_llm_call("sess-cb2", self.LONG_QUERY, platform="cli")
+                assert cb._sag_cb._failures == 0
+
+    def test_sag_turn_to_turn_dedup(self) -> None:
+        """SAG 结果参与 turn-to-turn 去重。"""
+        sag_sections = [
+            {"chunkId": "c-dedup", "content": "重复内容", "score": 0.9, "documentId": "doc-1"},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": sag_sections}
+
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch("requests.post", return_value=mock_resp):
+                result1 = pre_llm_call("sess-dedup", self.LONG_QUERY, platform="cli")
+                assert result1 is not None
+                assert "重复内容" in result1
+
+                result2 = pre_llm_call("sess-dedup", self.LONG_QUERY, platform="cli")
+                if CONFIG.turn_to_turn_dedup_mode == "remove":
+                    assert result2 is None or "重复内容" not in result2
+
+    def test_sag_candidates_have_standard_score_fields(self) -> None:
+        """SAG 候选对齐统一结构，包含 final_score/base_score/rerank_score。"""
+        sag_sections = [
+            {"chunkId": "c-std", "content": "标准分数字段", "score": 0.85, "documentId": "doc-std"},
+        ]
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": sag_sections}
+
+        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch("requests.post", return_value=mock_resp):
+                result = pre_llm_call("sess-std", self.LONG_QUERY, platform="cli")
+
+        assert result is not None
+        from knowledge_navigation.core.hooks import _candidate_score
+        candidate = {"source": "sag", "final_score": 0.85, "base_score": 0.85, "rerank_score": 0.85, "score": 0.85}
+        assert _candidate_score(candidate) == 0.85
+        candidate_no_final = {"source": "sag", "score": 0.7}
+        assert _candidate_score(candidate_no_final) == 0.7

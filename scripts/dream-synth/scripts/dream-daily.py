@@ -68,7 +68,13 @@ def call_llm_json(prompt: str, model: str, max_retries: int = 2) -> dict:
     """调用 LLM 并解析 JSON 输出（temperature=0，带重试）"""
     for attempt in range(max_retries + 1):
         raw = call_llm(prompt, model, max_tokens=1024, temperature=0.0)
-        m = re.search(r"\{[\s\S]*\}", raw)
+        # 先尝试直接解析
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+        # 再用正则提取第一个 JSON 对象（非贪婪）
+        m = re.search(r"\{[\s\S]*?\}", raw)
         if not m:
             if attempt < max_retries:
                 continue
@@ -76,6 +82,13 @@ def call_llm_json(prompt: str, model: str, max_retries: int = 2) -> dict:
         try:
             return json.loads(m.group())
         except json.JSONDecodeError:
+            # 尝试贪婪匹配（处理嵌套对象）
+            m = re.search(r"\{[\s\S]*\}", raw)
+            if m:
+                try:
+                    return json.loads(m.group())
+                except json.JSONDecodeError:
+                    pass
             if attempt < max_retries:
                 continue
             return {}
@@ -87,6 +100,27 @@ def load_prompt(name: str) -> str:
         return f.read().strip()
 
 # ── Session 提取 ─────────────────────────────────────
+
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\uFF1A\uFF0F\uFF1C\uFF1E\uFF1F\uFF0A]')
+
+
+def _sanitize_filename(name: str, max_len: int = 60) -> str:
+    """清洗文件名中的非法字符（Windows/Unix 兼容，含全角符号）。"""
+    name = _INVALID_FILENAME_CHARS.sub("_", name).strip().rstrip(".")
+    return name[:max_len] if name else "untitled"
+
+
+def _safe_int(val, default: int = 0) -> int:
+    """安全转 int，失败返回 default。"""
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        try:
+            return int(float(val))
+        except (TypeError, ValueError):
+            return default
+
+
 def read_sessions(since_ts: float, dry_run: bool = False) -> list[dict]:
     """从 state.db 读当天新增的 session"""
     db_path = CFG["session"]["db_path"]
@@ -94,41 +128,42 @@ def read_sessions(since_ts: float, dry_run: bool = False) -> list[dict]:
     min_tokens = CFG["session"]["min_tokens"]
 
     conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
 
-    cur.execute(
-        """SELECT id, title, message_count, input_tokens, started_at
-           FROM sessions
-           WHERE started_at >= ? AND message_count >= ? AND input_tokens >= ?
-             AND archived = 0
-           ORDER BY started_at""",
-        (since_ts, min_msgs, min_tokens),
-    )
-    sessions = [dict(r) for r in cur.fetchall()]
-
-    for s in sessions:
         cur.execute(
-            """SELECT role, content, timestamp
-               FROM messages WHERE session_id = ? ORDER BY id""",
-            (s["id"],),
+            """SELECT id, title, message_count, input_tokens, started_at
+               FROM sessions
+               WHERE started_at >= ? AND message_count >= ? AND input_tokens >= ?
+                 AND archived = 0
+               ORDER BY started_at""",
+            (since_ts, min_msgs, min_tokens),
         )
-        msgs = cur.fetchall()
-        text_parts = []
-        for m in msgs:
-            role = m["role"]
-            content = m["content"] or ""
-            if role == "user":
-                text_parts.append(f"[用户] {content[:2000]}")
-            elif role == "assistant":
-                text_parts.append(f"[助手] {content[:3000]}")
-            elif role == "tool":
-                # 只保留工具名，不保留结果
-                pass
-        s["text"] = "\n\n".join(text_parts)
-        s["text_len"] = len(s["text"])
+        sessions = [dict(r) for r in cur.fetchall()]
 
-    conn.close()
+        for s in sessions:
+            cur.execute(
+                """SELECT role, content, timestamp
+                   FROM messages WHERE session_id = ? ORDER BY id""",
+                (s["id"],),
+            )
+            msgs = cur.fetchall()
+            text_parts = []
+            for m in msgs:
+                role = m["role"]
+                content = m["content"] or ""
+                if role == "user":
+                    text_parts.append(f"[用户] {content[:2000]}")
+                elif role == "assistant":
+                    text_parts.append(f"[助手] {content[:3000]}")
+                elif role == "tool":
+                    # 只保留工具名，不保留结果
+                    pass
+            s["text"] = "\n\n".join(text_parts)
+            s["text_len"] = len(s["text"])
+    finally:
+        conn.close()
 
     # 过滤太短的
     sessions = [s for s in sessions if s["text_len"] >= 2000]
@@ -252,8 +287,8 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
             try:
                 verdict = call_llm_json(prompt, cheap_model)
             except Exception as e:
-                print(f"  [{i+1}/{len(sessions)}] FILTER FAIL {title[:40]}: {e}")
-                verdict = {"score": 0, "reason": str(e)}
+                print(f"  [{i+1}/{len(sessions)}] FILTER FAIL {title[:40]}: {e}（不缓存，下次重试）")
+                continue
             verdict["session_id"] = sid
             cache = verdict
             _save_verdict(verdict_file, cache)
@@ -326,6 +361,18 @@ def phase_patterns(reflections: list[dict], dry_run: bool = False) -> list[dict]
 
     smart_model = CFG["llm"]["smart"]
     prompt_tmpl = load_prompt("pattern-discovery")
+    pattern_log = CFG["cache"].get("pattern_log", os.path.join(os.path.dirname(CFG["cache"]["verdict_dir"]), "pattern-log.json"))
+
+    # 读已写入的 pattern topic 清单（幂等）
+    written_topics: set[str] = set()
+    if os.path.exists(pattern_log):
+        with open(pattern_log, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    written_topics.add(entry.get("topic", ""))
+                except json.JSONDecodeError:
+                    pass
 
     # 拼接反思摘要
     refl_parts = []
@@ -352,6 +399,11 @@ def phase_patterns(reflections: list[dict], dry_run: bool = False) -> list[dict]
         topic = p.get("topic", "")
         if not topic:
             continue
+        # 幂等：同 topic 已写入过则跳过
+        if topic in written_topics:
+            print(f"  PATTERN SKIP (已写入): {topic}")
+            continue
+
         content = f"## 模式：{topic}\n\n{p.get('summary','')}\n\n"
         content += f"**出现次数**: {p.get('evidence_count', 0)}\n\n"
         evidence = p.get("evidence_ids", [])
@@ -365,6 +417,13 @@ def phase_patterns(reflections: list[dict], dry_run: bool = False) -> list[dict]
         ok = sag_ingest(f"模式发现：{topic}", content, metadata, dry_run=dry_run)
         if ok:
             written.append(p)
+            written_topics.add(topic)
+            # 记入幂等日志
+            if not dry_run:
+                os.makedirs(os.path.dirname(pattern_log), exist_ok=True)
+                with open(pattern_log, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"topic": topic, "date": metadata["date"]},
+                                        ensure_ascii=False) + "\n")
             print(f"  PATTERN → {topic} ({p.get('evidence_count',0)} 次)")
 
     return written
@@ -411,11 +470,22 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
             continue
 
         category = verdict.get("category", "concepts")
-        wiki_path = os.path.join(wiki_base, category, f"{r['title'][:60]}.md")
+        safe_title = _sanitize_filename(r["title"], max_len=60)
+        wiki_path = os.path.join(wiki_base, category, f"{safe_title}.md")
 
         if dry_run:
             print(f"  [DRY-RUN] WIKI → {category}/{r['title'][:40]}")
             promoted.append(r)
+            continue
+
+        # 幂等：如果 Wiki 文件已存在，只补日志
+        if os.path.exists(wiki_path):
+            with open(promote_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"session_id": sid, "title": r["title"],
+                                     "category": category, "path": wiki_path},
+                                    ensure_ascii=False) + "\n")
+            promoted.append(r)
+            print(f"  PROMOTE EXISTS → {category}/{r['title'][:50]}")
             continue
 
         # 写入 wiki
@@ -430,10 +500,14 @@ date: {datetime.now().strftime('%Y-%m-%d')}
 ---
 
 """
-        with open(wiki_path, "w", encoding="utf-8") as f:
-            f.write(frontmatter + r["content"])
+        try:
+            with open(wiki_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter + r["content"])
+        except OSError as e:
+            print(f"  PROMOTE 写入失败: {e}", file=sys.stderr)
+            continue
 
-        # 记入去重日志
+        # 记入去重日志（文件写入成功后立即记录）
         with open(promote_log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"session_id": sid, "title": r["title"],
                                  "category": category, "path": wiki_path},
@@ -454,9 +528,24 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
         print("  feishu: 无未归档反思，跳过")
         return
 
+    # 幂等：检查当天是否已推送过
+    feishu_log = CFG["cache"].get("feishu_log", os.path.join(os.path.dirname(CFG["cache"]["verdict_dir"]), "feishu-log.json"))
+    today = datetime.now().strftime("%Y-%m-%d")
+    if os.path.exists(feishu_log):
+        with open(feishu_log, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if entry.get("date") == today:
+                        print(f"  feishu: 今天已推送过（{today}），跳过")
+                        return
+                except json.JSONDecodeError:
+                    pass
+
     # 按 score 排序取 top-5
+    feishu_top_n = CFG.get("feishu", {}).get("top_n", 5)
     unsorted.sort(key=lambda r: r.get("score", 0), reverse=True)
-    top5 = unsorted[:5]
+    top5 = unsorted[:feishu_top_n]
 
     # 格式化飞书消息
     lines = [f"# 🌙 梦境流水线 — {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
@@ -468,8 +557,15 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
         # 取摘要第一段
         content = r["content"]
         summary_match = re.search(r"## 摘要\s*\n(.+?)(?:\n##|\Z)", content, re.DOTALL)
-        summary = summary_match.group(1).strip()[:100] if summary_match else ""
+        summary = summary_match.group(1).strip()[:100] if summary_match else content[:100]
         lines.append(f"   {summary}")
+        # 未归档原因
+        score = r.get("score", 0)
+        if score < 4:
+            reason = "分数不够高"
+        else:
+            reason = "内容偏临时"
+        lines.append(f"   _未归档原因：{reason}_")
         lines.append("")
 
     lines.append("---")
@@ -493,6 +589,11 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
         )
         if proc.returncode == 0:
             print("  feishu: 推送成功")
+            # 记入幂等日志
+            os.makedirs(os.path.dirname(feishu_log), exist_ok=True)
+            with open(feishu_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"date": today, "time": datetime.now().strftime("%H:%M")},
+                                    ensure_ascii=False) + "\n")
         else:
             print(f"  feishu: 推送失败 (exit={proc.returncode}) {proc.stderr[:200]}",
                   file=sys.stderr)
@@ -511,6 +612,19 @@ def main():
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"🌙 梦境流水线启动 — {now_str}")
 
+    try:
+        _run_pipeline(args)
+    except Exception as e:
+        print(f"\n❌ 流水线异常中断: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+    print(f"\n✅ 梦境流水线完成 — {datetime.now().strftime('%H:%M:%S')}")
+
+
+def _run_pipeline(args):
+    """执行流水线各阶段。"""
     last_ts = get_last_run_ts()
     now_ts = datetime.now().timestamp()
 
@@ -532,26 +646,39 @@ def main():
             reflections = [{"title": s.get("title", ""),
                             "content": s.get("content", ""),
                             "session_id": (s.get("metadata") or {}).get("session_id", s.get("documentId", "")),
-                            "score": int((s.get("metadata") or {}).get("score", 3))} for s in sections]
+                            "score": _safe_int((s.get("metadata") or {}).get("score", 3), 3)} for s in sections]
         phase_patterns(reflections, dry_run=args.dry_run)
 
     # Phase 3: promote
     promoted = []
     if not args.phase or args.phase == "promote":
         print("\n── Phase 3: promote ──")
+        # 如果只跑 promote，从 SAG 查近期 dream-synth 反思
+        if not reflections:
+            sections = sag_search("反思 笔记", top_k=50, source_filter="dream-synth")
+            reflections = [{"title": s.get("title", ""),
+                            "content": s.get("content", ""),
+                            "session_id": (s.get("metadata") or {}).get("session_id", s.get("documentId", "")),
+                            "score": _safe_int((s.get("metadata") or {}).get("score", 3), 3)} for s in sections]
         promoted = phase_promote(reflections, dry_run=args.dry_run)
         print(f"  归档 {len(promoted)} 篇到 Wiki")
 
     # Phase 4: feishu
     if not args.phase or args.phase == "feishu":
         print("\n── Phase 4: feishu push ──")
+        # 如果只跑 feishu 且无 reflections，从 SAG 查
+        if not reflections:
+            sections = sag_search("反思 笔记", top_k=50, source_filter="dream-synth")
+            reflections = [{"title": s.get("title", ""),
+                            "content": s.get("content", ""),
+                            "session_id": (s.get("metadata") or {}).get("session_id", s.get("documentId", "")),
+                            "score": _safe_int((s.get("metadata") or {}).get("score", 3), 3)} for s in sections]
         phase_feishu(reflections, promoted, dry_run=args.dry_run)
 
-    # 更新时间戳
-    if not args.dry_run:
+    # 更新时间戳：仅在完整流水线或 synthesize 阶段运行后更新
+    # 单独运行 patterns/promote/feishu 时不更新，避免跳过未处理的 session
+    if not args.dry_run and (not args.phase or args.phase == "synthesize"):
         save_last_run_ts(now_ts)
-
-    print(f"\n✅ 梦境流水线完成 — {datetime.now().strftime('%H:%M:%S')}")
 
 
 if __name__ == "__main__":

@@ -32,9 +32,12 @@ def cleanup_hooks_globals() -> None:
     """自动清理 hooks 模块级全局状态，避免测试间污染。"""
     import knowledge_navigation.core.hooks as nav_hooks
     import knowledge_navigation.core.circuit_breaker as _cb
-    _cb._circuit_failures = 0
-    _cb._circuit_open_until = 0.0
-    _cb._circuit_failure_types.clear()
+    _cb._hindsight_cb._failures = 0
+    _cb._hindsight_cb._open_until = 0.0
+    _cb._hindsight_cb._failure_types.clear()
+    _cb._sag_cb._failures = 0
+    _cb._sag_cb._open_until = 0.0
+    _cb._sag_cb._failure_types.clear()
     nav_hooks._injected_ids.clear()
     nav_hooks._hit_counter = nav_hooks._HitCounter()
     nav_hooks._task_tracker = nav_hooks._TaskTracker()

@@ -182,6 +182,7 @@ class KnowledgeNavigationConfig:
     sag_api_url: str = field(default="http://127.0.0.1:4173")
     sag_search_top_k: int = field(default=3)
     sag_search_timeout: int = field(default=10)
+    sag_source_ids: str = field(default="00000000-0000-0000-0000-0000000000ff")
     enable_token_budget: bool = field(default=True)
     token_budget_total: int = field(default=4000)
     token_budget_hindsight_ratio: float = field(default=0.4)
@@ -298,6 +299,8 @@ class KnowledgeNavigationConfig:
             values["sag_search_top_k"] = int(env)
         if env := os.getenv("KN_SAG_SEARCH_TIMEOUT"):
             values["sag_search_timeout"] = int(env)
+        if env := os.getenv("KN_SAG_SOURCE_IDS"):
+            values["sag_source_ids"] = env
         if env := os.getenv("KN_ENABLE_USE_LOG"):
             values["enable_use_log"] = env.lower() in ("1", "true", "yes")
         if env := os.getenv("KN_USE_LOG_BATCH_SIZE"):

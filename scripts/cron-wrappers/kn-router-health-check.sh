@@ -60,7 +60,7 @@ import json, sys
 from datetime import datetime, timezone, timedelta
 
 cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-total = success = 0
+total = success = sag_count = 0
 with open('${PLUGIN_DIR}/trace.log', 'r') as f:
     for line in f:
         line = line.strip()
@@ -85,17 +85,19 @@ with open('${PLUGIN_DIR}/trace.log', 'r') as f:
         total += 1
         if event == 'recall_success':
             success += 1
-print(f'{success} {total}')
-" 2>/dev/null || echo "0 0")
+            sag_count += int(d.get('sag_kept', 0) or 0)
+print(f'{success} {total} {sag_count}')
+" 2>/dev/null || echo "0 0 0")
 
     SUCCESS_CALLS=$(echo "$_RECALL_STATS" | awk '{print $1}')
     TOTAL_CALLS=$(echo "$_RECALL_STATS" | awk '{print $2}')
+    SAG_KEPT_TOTAL=$(echo "$_RECALL_STATS" | awk '{print $3}')
     FAIL_CALLS=$((TOTAL_CALLS - SUCCESS_CALLS))
 
     if [[ "$TOTAL_CALLS" -gt 0 ]]; then
         RATE=$((SUCCESS_CALLS * 100 / TOTAL_CALLS))
-        cron_ok "Recall: ${SUCCESS_CALLS}/${TOTAL_CALLS} 成功 (${RATE}%) (24h)"
-        _STEP_RESULTS+=("✅ Recall 成功率: ${RATE}% (${SUCCESS_CALLS}/${TOTAL_CALLS}) (24h)")
+        cron_ok "Recall: ${SUCCESS_CALLS}/${TOTAL_CALLS} 成功 (${RATE}%) (24h); SAG 累计召回 ${SAG_KEPT_TOTAL} 条"
+        _STEP_RESULTS+=("✅ Recall 成功率: ${RATE}% (${SUCCESS_CALLS}/${TOTAL_CALLS}); SAG 召回: ${SAG_KEPT_TOTAL} 条 (24h)")
     else
         cron_ok "Recall: 无最近 24h 事件（可能刚部署）"
         _STEP_RESULTS+=("✅ Recall: 无最近 24h 事件")
@@ -124,7 +126,7 @@ resp = httpx.post(
         'temperature': 0.1,
         'max_tokens': 512,
         'messages': [
-            {'role': 'system', 'content': '你是一个注入路由判断器。输出 JSON: {\"h\": bool, \"kt\": bool, \"s\": bool}'},
+            {'role': 'system', 'content': '你是一个注入路由判断器。输出 JSON: {\"h\": bool, \"kt\": bool, \"s\": bool, \"sag\": bool}'},
             {'role': 'user', 'content': '消息：测试\n\nJSON 输出：'}
         ],
     },
@@ -135,7 +137,7 @@ data = resp.json()
 content = data['choices'][0]['message'].get('content', '') or ''
 if not content.strip():
     content = data['choices'][0]['message'].get('reasoning_content', '') or ''
-print('OK' if content and 'h' in content else 'FAIL')
+print('OK' if content and 'sag' in content else 'FAIL')
 " 2>/dev/null || echo "FAIL")
         if [[ "$RESP" == "OK" ]]; then
             STABILITY_PASS=$((STABILITY_PASS + 1))
@@ -156,10 +158,70 @@ else
     _STEP_RESULTS+=("✅ Router 稳定性: 100%")
 fi
 
-# ===== 4. 汇总 =====
+# ===== 4. SAG 服务与熔断器健康检查 =====
+cron_section "SAG 健康检查"
+
+SAG_OK=true
+SAG_DETAILS=()
+
+# 4.1 检查 SAG 熔断器状态（从 circuit_breaker.json 读取）
+SAG_CB_FILE="${PLUGIN_DIR}/circuit_breaker.json"
+if [[ -f "$SAG_CB_FILE" ]]; then
+    SAG_CB_STATE=$(python3 -c "
+import json
+try:
+    with open('$SAG_CB_FILE', 'r') as f:
+        d = json.load(f)
+    sag = d.get('sag', {})
+    state = sag.get('state', 'closed')
+    fail = sag.get('consecutive_failures', 0)
+    total = sag.get('total_failures', 0)
+    print(f'{state} {fail} {total}')
+except Exception:
+    print('unknown 0 0')
+" 2>/dev/null || echo "unknown 0 0")
+    SAG_CB_STATE_NAME=$(echo "$SAG_CB_STATE" | awk '{print $1}')
+    SAG_CB_FAILS=$(echo "$SAG_CB_STATE" | awk '{print $2}')
+    SAG_CB_TOTAL_FAILS=$(echo "$SAG_CB_STATE" | awk '{print $3}')
+
+    if [[ "$SAG_CB_STATE_NAME" == "closed" ]]; then
+        cron_ok "SAG 熔断器: closed (连续失败: ${SAG_CB_FAILS}, 累计: ${SAG_CB_TOTAL_FAILS})"
+        SAG_DETAILS+=("✅ SAG 熔断器: closed")
+    else
+        cron_warn "SAG 熔断器: ${SAG_CB_STATE_NAME} (连续失败: ${SAG_CB_FAILS})"
+        SAG_DETAILS+=("⚠️ SAG 熔断器: ${SAG_CB_STATE_NAME}")
+        SAG_OK=false
+    fi
+else
+    cron_ok "SAG 熔断器文件不存在（可能未触发过失败，属正常）"
+    SAG_DETAILS+=("ℹ️ SAG 熔断器: 无失败记录")
+fi
+
+# 4.2 检查 SAG 服务可连通性
+SAG_API_URL="${SAG_API_URL:-http://127.0.0.1:4173}"
+if command -v curl &>/dev/null; then
+    SAG_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${SAG_API_URL}/search" \
+        -H "Content-Type: application/json" \
+        -d '{"query":"test","topK":1,"searchMode":"fast"}' \
+        --max-time 5 2>/dev/null || echo "000")
+    if [[ "$SAG_HTTP" == "200" ]]; then
+        cron_ok "SAG 服务可连通 (HTTP 200)"
+        SAG_DETAILS+=("✅ SAG 服务: 可连通")
+    else
+        cron_warn "SAG 服务不可达 (HTTP ${SAG_HTTP})"
+        SAG_DETAILS+=("⚠️ SAG 服务: HTTP ${SAG_HTTP}")
+        SAG_OK=false
+    fi
+else
+    SAG_DETAILS+=("ℹ️ SAG 连通性: 跳过（无 curl）")
+fi
+
+_STEP_RESULTS+=("${SAG_DETAILS[@]}")
+
+# ===== 5. 汇总 =====
 cron_section "巡检汇总"
 
-if [[ "$FAIL_COUNT" -le 5 && "$STABILITY_PASS" -ge "$_STABILITY_MIN" ]]; then
+if [[ "$FAIL_COUNT" -le 5 && "$STABILITY_PASS" -ge "$_STABILITY_MIN" && "$SAG_OK" == true ]]; then
     cron_ok "知识导航 Router 巡检全部通过 ✅"
     _STEP_RESULTS+=("✅ 巡检全部通过")
 else

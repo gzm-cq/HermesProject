@@ -5,6 +5,7 @@
 
 # === Include ===
 scripts/**/*.py
+scripts/**/*.sh
 config.yaml
 prompts/**/*.txt
 README.md

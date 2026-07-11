@@ -306,6 +306,9 @@ def collect_baseline(log_file: str = "") -> dict:
                     "total_chars": data.get("total_chars", 0),
                     "injected_count": data.get("injected_count", 0),
                     "recalled_ids": data.get("recalled_ids", []),
+                    "hs_kept": data.get("hs_kept", 0),
+                    "kt_kept": data.get("kt_kept", 0),
+                    "sag_kept": data.get("sag_kept", 0),
                     "eval_expected_ids": data.get("eval_expected_ids", []),
                     "eval_recall_hit": data.get("eval_recall_hit", 0),
                     "eval_recall_k": data.get("eval_recall_k", 0),
@@ -347,10 +350,16 @@ def collect_baseline(log_file: str = "") -> dict:
         kept_vals = [r["kept_results"] for r in records]
         score_vals = [r["avg_score"] for r in records]
         latency_vals = [r["latency_ms"] for r in records]
+        hs_vals = [r["hs_kept"] for r in records]
+        kt_vals = [r["kt_kept"] for r in records]
+        sag_vals = [r["sag_kept"] for r in records]
 
         kept_mean, kept_lo, kept_hi = bootstrap_ci(kept_vals)
         score_mean, score_lo, score_hi = bootstrap_ci(score_vals)
         latency_mean, latency_lo, latency_hi = bootstrap_ci(latency_vals)
+        hs_mean, _, _ = bootstrap_ci(hs_vals)
+        kt_mean, _, _ = bootstrap_ci(kt_vals)
+        sag_mean, _, _ = bootstrap_ci(sag_vals)
 
         # recall@k 汇总（仅精确匹配有）
         recall_hits = [r["eval_recall_hit"] for r in records if r["eval_recall_k"] > 0]
@@ -377,6 +386,9 @@ def collect_baseline(log_file: str = "") -> dict:
             "avg_total_results": round(sum(r["total_results"] for r in records) / n, 1),
             "avg_excluded_marked": round(sum(r["excluded_marked"] for r in records) / n, 1),
             "avg_injected_count": round(sum(r["injected_count"] for r in records) / n, 1),
+            "avg_hs_kept": round(hs_mean, 2),
+            "avg_kt_kept": round(kt_mean, 2),
+            "avg_sag_kept": round(sag_mean, 2),
             # 不保存 raw_records — 基线 JSON 文件膨胀
         }
         if recall_hits:
@@ -409,10 +421,16 @@ def compute_dimension_stats(baseline: dict) -> dict[str, Any]:
         kept_vals = [d["avg_kept_results"] for d in items]
         score_vals = [d["avg_score"] for d in items]
         latency_vals = [d["avg_latency_ms"] for d in items]
+        hs_vals = [d.get("avg_hs_kept", 0) for d in items]
+        kt_vals = [d.get("avg_kt_kept", 0) for d in items]
+        sag_vals = [d.get("avg_sag_kept", 0) for d in items]
 
         kept_m, kept_lo, kept_hi = bootstrap_ci(kept_vals)
         score_m, score_lo, score_hi = bootstrap_ci(score_vals)
         latency_m, latency_lo, latency_hi = bootstrap_ci(latency_vals)
+        hs_m, _, _ = bootstrap_ci(hs_vals)
+        kt_m, _, _ = bootstrap_ci(kt_vals)
+        sag_m, _, _ = bootstrap_ci(sag_vals)
 
         # 精确 vs 模糊匹配分布
         counted_true = sum(d.get("eval_counted_true", 0) for d in items)
@@ -423,6 +441,9 @@ def compute_dimension_stats(baseline: dict) -> dict[str, Any]:
             "kept": {"mean": round(kept_m, 2), "ci_95": [round(kept_lo, 2), round(kept_hi, 2)]},
             "score": {"mean": round(score_m, 4), "ci_95": [round(score_lo, 4), round(score_hi, 4)]},
             "latency_ms": {"mean": round(latency_m, 0), "ci_95": [round(latency_lo, 0), round(latency_hi, 0)]},
+            "hs_kept": round(hs_m, 2),
+            "kt_kept": round(kt_m, 2),
+            "sag_kept": round(sag_m, 2),
             "eval_counted_true": counted_true,
             "eval_counted_false": counted_false,
         }
@@ -620,6 +641,7 @@ def print_report(baseline: dict, stats: dict[str, Any], log_file: str = "") -> N
         print(f"    kept:  {kept['mean']:.2f}  [{kept['ci_95'][0]:.2f}, {kept['ci_95'][1]:.2f}]")
         print(f"    score: {score['mean']:.3f}  [{score['ci_95'][0]:.3f}, {score['ci_95'][1]:.3f}]")
         print(f"    delay: {latency['mean']:.0f}ms [{latency['ci_95'][0]:.0f}, {latency['ci_95'][1]:.0f}]ms")
+        print(f"    分路:  hs={dim_info.get('hs_kept', 0):.2f}  kt={dim_info.get('kt_kept', 0):.2f}  sag={dim_info.get('sag_kept', 0):.2f}")
         print()
 
     if stats:

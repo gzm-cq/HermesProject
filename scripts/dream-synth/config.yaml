@@ -24,7 +24,9 @@ feishu:
 wiki:
   base_path: "/mnt/c/Users/1/Desktop/AI/my-knowledge/axiom/wiki/pages"
 
-# 缓存
+# 缓存（持久化路径，重启不丢失）
 cache:
-  verdict_dir: "/tmp/dream-verdicts"
-  promote_log: "/tmp/dream-promote-log.json"
+  verdict_dir: "/root/.hermes/cache/dream-synth/verdicts"
+  promote_log: "/root/.hermes/cache/dream-synth/promote-log.json"
+  pattern_log: "/root/.hermes/cache/dream-synth/pattern-log.json"
+  feishu_log: "/root/.hermes/cache/dream-synth/feishu-log.json"

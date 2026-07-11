@@ -63,9 +63,12 @@ _PERSONAL = "as we discussed earlier"       # personal: 含 as we discussed
 def _reset_globals() -> None:
     """每个测试前重置模块级全局状态。"""
     import knowledge_navigation.core.circuit_breaker as cb
-    cb._circuit_failures = 0
-    cb._circuit_open_until = 0.0
-    cb._circuit_failure_types.clear()
+    cb._hindsight_cb._failures = 0
+    cb._hindsight_cb._open_until = 0.0
+    cb._hindsight_cb._failure_types.clear()
+    cb._sag_cb._failures = 0
+    cb._sag_cb._open_until = 0.0
+    cb._sag_cb._failure_types.clear()
     nav_hooks._injected_ids.clear()
     nav_hooks._hit_counter = nav_hooks._HitCounter()
     nav_hooks._task_tracker = nav_hooks._TaskTracker()

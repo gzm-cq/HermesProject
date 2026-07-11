@@ -1,6 +1,6 @@
 """熔断器 + 飞书通知。
 
-Hindsight recall 连续失败时触发熔断（跳过 recall），冷却后自动恢复。
+Hindsight / SAG recall 连续失败时触发熔断（跳过 recall），冷却后自动恢复。
 熔断打开时发送飞书卡片通知。
 
 纯独立模块，只引用 CONFIG 和 logging。
@@ -13,17 +13,135 @@ import logging
 import threading
 import time
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 from knowledge_navigation.config import CONFIG
 
 logger = logging.getLogger(__name__)
 
-# ── 熔断器状态 ──
-_circuit_failures: int = 0
-_circuit_open_until: float = 0.0
-_circuit_failure_types: Counter[str] = Counter()
-_circuit_lock = threading.Lock()
+
+class CircuitBreaker:
+    """命名空间化的熔断器，每路召回独立一个实例。
+
+    状态持久化到 JSON 文件，服务重启后可恢复。
+    """
+
+    def __init__(self, name: str, threshold: int, cooldown: int, state_file: str = ""):
+        self.name = name
+        self.threshold = threshold
+        self.cooldown = cooldown
+        self.state_file = state_file
+        self._failures: int = 0
+        self._open_until: float = 0.0
+        self._total_failures: int = 0
+        self._failure_types: Counter[str] = Counter()
+        self._lock = threading.Lock()
+        self._load_state()
+
+    def _state_file_path(self) -> str:
+        if self.state_file:
+            return self.state_file
+        module_dir = Path(__file__).resolve().parent.parent.parent
+        return str(module_dir / "circuit_breaker.json")
+
+    def _load_state(self) -> None:
+        """从 JSON 文件加载熔断器状态。"""
+        try:
+            path = self._state_file_path()
+            if not Path(path).exists():
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            cb_data = data.get(self.name, {})
+            self._failures = int(cb_data.get("consecutive_failures", 0))
+            self._open_until = float(cb_data.get("open_until", 0.0))
+            self._total_failures = int(cb_data.get("total_failures", 0))
+            types = cb_data.get("failure_types", {})
+            if isinstance(types, dict):
+                self._failure_types = Counter({k: int(v) for k, v in types.items()})
+        except Exception as e:
+            logger.debug("[%s] 加载熔断器状态失败: %s", self.name, e)
+
+    def _save_state(self) -> None:
+        """持久化熔断器状态到 JSON 文件。"""
+        try:
+            path = self._state_file_path()
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            data: dict[str, Any] = {}
+            try:
+                if Path(path).exists():
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+            except Exception:
+                pass
+            data[self.name] = {
+                "state": "open" if self._open_until > time.time() else "closed",
+                "consecutive_failures": self._failures,
+                "open_until": self._open_until,
+                "total_failures": self._total_failures,
+                "failure_types": dict(self._failure_types),
+                "last_updated": time.time(),
+            }
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            Path(tmp_path).replace(path)
+        except Exception as e:
+            logger.debug("[%s] 保存熔断器状态失败: %s", self.name, e)
+
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._open_until <= 0:
+                return False
+            if time.time() < self._open_until:
+                return True
+            self._failures = 0
+            self._open_until = 0.0
+            self._failure_types.clear()
+        self._save_state()
+        return False
+
+    def record_failure(self, category: str = "unknown") -> bool:
+        """记录一次失败，返回是否触发了熔断。"""
+        _should_notify = False
+        _failure_snapshot: dict[str, int] = {}
+        with self._lock:
+            self._failures += 1
+            self._total_failures += 1
+            self._failure_types[category] += 1
+            if self._failures >= self.threshold:
+                self._open_until = time.time() + self.cooldown
+                logger.warning(
+                    "[%s] 熔断器开启：连续 %d 次 recall 失败，跳过 %d 秒",
+                    self.name, self._failures, self.cooldown,
+                )
+                _should_notify = True
+                _failure_snapshot = dict(self._failure_types)
+                self._failure_types.clear()
+        self._save_state()
+        if _should_notify:
+            _notify_feishu_circuit_open(self.name, _failure_snapshot)
+        return _should_notify
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._open_until = 0.0
+            self._failure_types.clear()
+        self._save_state()
+
+
+_hindsight_cb = CircuitBreaker(
+    name="hindsight",
+    threshold=CONFIG.circuit_breaker_threshold,
+    cooldown=CONFIG.circuit_breaker_cooldown,
+)
+_sag_cb = CircuitBreaker(
+    name="sag",
+    threshold=CONFIG.circuit_breaker_threshold,
+    cooldown=CONFIG.circuit_breaker_cooldown,
+)
 
 # ── 飞书通知状态 ──
 _CATEGORY_LABELS: dict[str, str] = {
@@ -43,58 +161,43 @@ _FEISHU_MESSAGE_URL = "https://open.feishu.cn/open-apis/im/v1/messages?receive_i
 
 
 # ====================================================================
-# 熔断器
+# 兼容旧 API（Hindsight 专用）
 # ====================================================================
 
 
 def circuit_is_open() -> bool:
-    """检查熔断器是否开启（跳过 recall）。"""
-    global _circuit_failures, _circuit_open_until
-    with _circuit_lock:
-        if _circuit_open_until <= 0:
-            return False
-        if time.time() < _circuit_open_until:
-            return True
-        # 冷却期已过，重置
-        _circuit_failures = 0
-        _circuit_open_until = 0.0
-        _circuit_failure_types.clear()
-        return False
+    """检查 Hindsight 熔断器是否开启（跳过 recall）。"""
+    return _hindsight_cb.is_open()
 
 
 def circuit_record_failure(category: str = "unknown") -> None:
-    """记录一次失败，必要时触发熔断并发送飞书通知。
-
-    Args:
-        category: 失败类别（exception / service_error）。
-    """
-    global _circuit_failures, _circuit_open_until, _circuit_failure_types
-    _should_notify = False
-    _failure_snapshot: dict[str, int] = {}
-    with _circuit_lock:
-        _circuit_failures += 1
-        _circuit_failure_types[category] += 1
-        if _circuit_failures >= CONFIG.circuit_breaker_threshold:
-            _circuit_open_until = time.time() + CONFIG.circuit_breaker_cooldown
-            logger.warning(
-                "熔断器开启：连续 %d 次 recall 失败，跳过 %d 秒",
-                _circuit_failures, CONFIG.circuit_breaker_cooldown,
-            )
-            _should_notify = True
-            _failure_snapshot = dict(_circuit_failure_types)
-            _circuit_failure_types.clear()
-    # 锁外发送通知（HTTP 不阻塞其他线程）
-    if _should_notify:
-        _notify_feishu_circuit_open(_failure_snapshot)
+    """记录一次 Hindsight 失败，必要时触发熔断并发送飞书通知。"""
+    _hindsight_cb.record_failure(category)
 
 
 def circuit_record_success() -> None:
-    """成功调用后重置熔断器。"""
-    global _circuit_failures, _circuit_open_until, _circuit_failure_types
-    with _circuit_lock:
-        _circuit_failures = 0
-        _circuit_open_until = 0.0
-        _circuit_failure_types.clear()
+    """Hindsight 成功调用后重置熔断器。"""
+    _hindsight_cb.record_success()
+
+
+# ====================================================================
+# SAG 熔断器 API
+# ====================================================================
+
+
+def sag_circuit_is_open() -> bool:
+    """检查 SAG 熔断器是否开启。"""
+    return _sag_cb.is_open()
+
+
+def sag_circuit_record_failure(category: str = "unknown") -> None:
+    """记录一次 SAG 失败。"""
+    _sag_cb.record_failure(category)
+
+
+def sag_circuit_record_success() -> None:
+    """SAG 成功后重置熔断器。"""
+    _sag_cb.record_success()
 
 
 # ====================================================================
@@ -141,7 +244,7 @@ def _get_feishu_token() -> str:
         return ""
 
 
-def _notify_feishu_circuit_open(failure_types: dict[str, int]) -> None:
+def _notify_feishu_circuit_open(name: str, failure_types: dict[str, int]) -> None:
     """熔断器打开时通过飞书发送卡片消息（限频 5 分钟一次）。"""
     global _LAST_NOTIFICATION_TIME
     now = time.time()
@@ -170,10 +273,11 @@ def _notify_feishu_circuit_open(failure_types: dict[str, int]) -> None:
 
     top_cat = max(failure_types, key=failure_types.get)  # type: ignore[arg-type]
     template = _CATEGORY_LEVELS.get(top_cat, "red")
+    name_display = name.upper()
 
     card_body = {
         "header": {
-            "title": {"tag": "plain_text", "content": "\u26a0\ufe0f Hindsight Recall \u6545\u969c"},
+            "title": {"tag": "plain_text", "content": f"\u26a0\ufe0f {name_display} Recall \u6545\u969c"},
             "template": template,
         },
         "elements": [
@@ -187,7 +291,7 @@ def _notify_feishu_circuit_open(failure_types: dict[str, int]) -> None:
                         f"\u8df3\u8fc7 {CONFIG.circuit_breaker_cooldown} \u79d2\n\n"
                         f"**\u5931\u8d25\u5206\u5e03\uff1a**\n{dist_text}\n\n"
                         f"**\u65f6\u95f4\uff1a**{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"**\u76ee\u6807\u670d\u52a1\uff1a**localhost:9177"
+                        f"**\u76ee\u6807\u670d\u52a1\uff1a**{name}"
                     ),
                 },
             },

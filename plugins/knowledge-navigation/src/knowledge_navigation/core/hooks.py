@@ -42,23 +42,53 @@ from knowledge_navigation.core.env_loader import get_env
 logger = logging.getLogger(__name__)
 
 # 知识树集成（通过 knowledge-tree-plugin 公共 API）
-try:
-    from knowledge_tree_plugin.public_api import (
-        recall_from_tree as _recall_knowledge_tree,
-        recall_from_tree_raw as _recall_knowledge_tree_raw,
-        multi_hop_recall as _multi_hop_recall,
-    )
-    HAS_KNOWLEDGE_TREE = True
-    logger.info("知识树模块加载成功，知识树 recall 已启用")
-except ImportError as _kt_err:
-    HAS_KNOWLEDGE_TREE = False
-    logger.warning("知识树模块不可用（knowledge_tree_plugin.public_api 未找到），知识树 recall 降级为空: %s", _kt_err)
+# 延迟导入：knowledge-tree-plugin 必须先于 knowledge-navigation 加载，
+# 但为确保在插件加载顺序异常时仍能工作，使用 lazy import 在首次调用时加载。
+_KT_IMPORT_TRIED = False
+_KT_MODULE = None
 
-    def _recall_knowledge_tree(*args: object, **kwargs: object) -> None:
-        return None
+def _ensure_kt_imported():
+    """延迟导入 knowledge_tree_plugin，只在首次调用时执行。
+    
+    避免模块顶层 import 因插件加载顺序问题导致 ImportError。
+    成功后缓存模块引用，后续调用零开销。
+    """
+    global _KT_IMPORT_TRIED, _KT_MODULE, HAS_KNOWLEDGE_TREE
+    if _KT_IMPORT_TRIED:
+        return _KT_MODULE is not None
+    _KT_IMPORT_TRIED = True
+    try:
+        from knowledge_tree_plugin.public_api import (
+            recall_from_tree as _kt_recall,
+            recall_from_tree_raw as _kt_recall_raw,
+            multi_hop_recall as _kt_multi_hop,
+        )
+        _KT_MODULE = True
+        HAS_KNOWLEDGE_TREE = True
+        # 注入到模块全局
+        global _recall_knowledge_tree, _recall_knowledge_tree_raw, _multi_hop_recall
+        _recall_knowledge_tree = _kt_recall
+        _recall_knowledge_tree_raw = _kt_recall_raw
+        _multi_hop_recall = _kt_multi_hop
+        logger.info("知识树模块加载成功，知识树 recall 已启用")
+        return True
+    except ImportError as _kt_err:
+        HAS_KNOWLEDGE_TREE = False
+        logger.warning("知识树模块不可用（knowledge_tree_plugin.public_api 未找到），知识树 recall 降级为空: %s", _kt_err)
+        return False
 
-    def _recall_knowledge_tree_raw(*args: object, **kwargs: object) -> list:
-        return []
+# 初始占位函数，首次调用时触发延迟导入
+def _recall_knowledge_tree(*args: object, **kwargs: object) -> None:
+    if _ensure_kt_imported():
+        return _recall_knowledge_tree(*args, **kwargs)
+    return None
+
+def _recall_knowledge_tree_raw(*args: object, **kwargs: object) -> list:
+    if _ensure_kt_imported():
+        return _recall_knowledge_tree_raw(*args, **kwargs)
+    return []
+
+HAS_KNOWLEDGE_TREE = False  # False = 尚未尝试或失败，True = 已成功导入
 
 # 共享线程池：复用 ThreadPoolExecutor 避免每次 pre_llm_call 创建/销毁开销
 # 最多 4 路并行 recall（Hindsight + KnowledgeTree + SkillMatch + SAG）
@@ -129,6 +159,7 @@ from knowledge_navigation.core.filtering import (
     extract_rerank_scores,
     filter_by_score,
 )
+from knowledge_navigation.core.recall_logger import RecallLogger
 from knowledge_navigation.core.router import route as _router_route
 from knowledge_navigation.core.use_log import UseLogger
 
@@ -276,7 +307,10 @@ def _touch_injected_session(session_id: str) -> None:
             _injected_session_ts.pop(sid, None)
 
 
-from knowledge_navigation.core.circuit_breaker import circuit_is_open, circuit_record_failure, circuit_record_success
+from knowledge_navigation.core.circuit_breaker import (
+    circuit_is_open, circuit_record_failure, circuit_record_success,
+    sag_circuit_is_open, sag_circuit_record_failure, sag_circuit_record_success,
+)
 
 
 # ========== 因果链 boost ==========
@@ -679,12 +713,19 @@ def _do_skill_match(query: str) -> str:
 
 def _do_sag_recall(query: str) -> list[dict]:
     """执行 SAG 文档检索（4th route），通过 REST API 调 /search。"""
+    if sag_circuit_is_open():
+        logger.debug("SAG 熔断器开启，跳过 recall")
+        return []
+    t0 = time.time()
     try:
         import requests as _req
+        # SAG /search 要求 sourceIds 为 array，从配置解析（逗号分隔）
+        source_ids = [s.strip() for s in CONFIG.sag_source_ids.split(",") if s.strip()]
         payload = {
             "query": query,
             "topK": CONFIG.sag_search_top_k,
             "searchMode": "fast",
+            "sourceIds": source_ids,
         }
         resp = _req.post(
             f"{CONFIG.sag_api_url}/search",
@@ -692,11 +733,24 @@ def _do_sag_recall(query: str) -> list[dict]:
             timeout=CONFIG.sag_search_timeout,
         )
         if resp.status_code != 200:
+            sag_circuit_record_failure("service_error")
+            logger.warning(
+                "SAG recall HTTP %d, 耗时 %.1fms",
+                resp.status_code, (time.time() - t0) * 1000,
+            )
             return []
         data = resp.json()
-        return data.get("sections", [])
+        sections = data.get("sections", [])
+        sag_circuit_record_success()
+        logger.info(
+            "SAG recall: %d sections, 耗时 %.1fms",
+            len(sections), (time.time() - t0) * 1000,
+            extra={"event": "sag_recall", "count": len(sections)},
+        )
+        return sections
     except Exception as e:
-        logger.debug("SAG recall 异常（跳过）: %s", e)
+        sag_circuit_record_failure("exception")
+        logger.debug("SAG recall 异常（跳过）: %s, 耗时 %.1fms", e, (time.time() - t0) * 1000)
         return []
 
 
@@ -743,7 +797,7 @@ def _build_knowledge_tree_candidate(kp: dict[str, Any]) -> dict[str, Any] | None
 
 def _candidate_score(result: dict[str, Any]) -> float:
     """统一读取候选最终分数。"""
-    for key in ("final_score", "rerank_score", "base_score"):
+    for key in ("final_score", "rerank_score", "base_score", "score"):
         value = result.get(key)
         if value is not None:
             try:
@@ -804,7 +858,7 @@ def _pass_gates(session_id: str, user_message: str, platform: str, is_first_turn
 
 
 def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
-    """调用 Router 决策三路 mask，异常时 fallback 全开。"""
+    """调用 Router 决策四路 mask，异常时 fallback 全开。"""
     try:
         mask = _router_route(
             session_id,
@@ -814,9 +868,13 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
             CONFIG.router_api_key,
             CONFIG.router_timeout,
         )
+        mask.setdefault("h", True)
+        mask.setdefault("kt", True)
+        mask.setdefault("s", True)
+        mask.setdefault("sag", False)
     except Exception as e:
-        logger.warning("Router 调用异常 (%s)，fallback 全开", e)
-        mask = {"h": True, "kt": True, "s": True, "sag": True}
+        logger.warning("Router 调用异常 (%s)，fallback 三路全开（SAG 保守关闭）", e)
+        mask = {"h": True, "kt": True, "s": True, "sag": False}
     logger.info(
         "Router mask: h=%s kt=%s s=%s sag=%s",
         mask["h"], mask["kt"], mask["s"], mask["sag"],
@@ -835,6 +893,7 @@ def _execute_recall(
     active_count: int,
     t0: float,
     query_trunc: str,
+    recall_logger: RecallLogger,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str, list[dict[str, Any]]]:
     """执行四路 recall（Hindsight + 知识树 + Skill + SAG），并行或串行。
 
@@ -854,11 +913,27 @@ def _execute_recall(
         sag_future = _recall_executor.submit(_do_sag_recall, user_message) if sag_active else None
         try:
             if hs_future is not None:
+                _hs_t0 = time.time()
                 try:
                     result = hs_future.result(timeout=CONFIG.timeout_seconds)
+                    _hs_latency = (time.time() - _hs_t0) * 1000
+                    _hs_results = result.get("results", []) if result else []
+                    recall_logger.record(
+                        "hindsight", _hs_results, _hs_latency,
+                        session_id=session_id, query=user_message,
+                    )
+                    if result is None:
+                        circuit_record_failure("service_error")
+                    else:
+                        circuit_record_success()
                 except FuturesTimeout:
                     hs_future.cancel()
                     circuit_record_failure("exception")
+                    recall_logger.record(
+                        "hindsight", [], (time.time() - _hs_t0) * 1000,
+                        session_id=session_id, query=user_message,
+                        error=f"timeout({CONFIG.timeout_seconds}s)",
+                    )
                     logger.error(
                         "Hindsight recall 超时（%d 秒）",
                         CONFIG.timeout_seconds,
@@ -866,6 +941,11 @@ def _execute_recall(
                     )
                 except Exception as e:
                     circuit_record_failure("exception")
+                    recall_logger.record(
+                        "hindsight", [], (time.time() - _hs_t0) * 1000,
+                        session_id=session_id, query=user_message,
+                        error=f"{type(e).__name__}: {e}",
+                    )
                     logger.error(
                         "Hindsight recall error",
                         extra={"session_id": session_id, "query_trunc": query_trunc, "error": f"{type(e).__name__}: {e}", "event": "recall_error"},
@@ -873,26 +953,76 @@ def _execute_recall(
 
             if kt_future is not None:
                 remaining = max(0.1, CONFIG.timeout_seconds - (time.time() - t0))
+                _kt_t0 = time.time()
                 try:
                     kt_raw_results = kt_future.result(timeout=remaining)
+                    _kt_latency = (time.time() - _kt_t0) * 1000
+                    recall_logger.record(
+                        "knowledge_tree", kt_raw_results, _kt_latency,
+                        session_id=session_id, query=user_message,
+                    )
                 except FuturesTimeout:
                     kt_future.cancel()
+                    recall_logger.record(
+                        "knowledge_tree", [], (time.time() - _kt_t0) * 1000,
+                        session_id=session_id, query=user_message,
+                        error=f"timeout({remaining:.1f}s)",
+                    )
                     logger.warning("知识树 recall 超时（%.1f 秒）", remaining)
                     kt_raw_results = []
                 except Exception as e:
+                    recall_logger.record(
+                        "knowledge_tree", [], (time.time() - _kt_t0) * 1000,
+                        session_id=session_id, query=user_message,
+                        error=f"{type(e).__name__}: {e}",
+                    )
                     logger.warning("知识树 recall 异常（跳过）: %s", e)
                     kt_raw_results = []
 
             if sk_future is not None:
+                _sk_t0 = time.time()
                 try:
                     skill_context = sk_future.result(timeout=5)
+                    _sk_latency = (time.time() - _sk_t0) * 1000
+                    _sk_results = [{"id": "skill_context", "score": 1.0}] if skill_context else []
+                    recall_logger.record(
+                        "skill", _sk_results, _sk_latency,
+                        session_id=session_id, query=user_message,
+                    )
                 except Exception as e:
+                    recall_logger.record(
+                        "skill", [], (time.time() - _sk_t0) * 1000,
+                        session_id=session_id, query=user_message,
+                        error=f"{type(e).__name__}: {e}",
+                    )
                     logger.debug("Skill match future error: %s", e)
 
             if sag_future is not None:
+                sag_remaining = max(0.1, CONFIG.sag_search_timeout - (time.time() - t0))
+                _sag_t0 = time.time()
                 try:
-                    sag_raw_results = sag_future.result(timeout=15)
+                    sag_raw_results = sag_future.result(timeout=sag_remaining)
+                    _sag_latency = (time.time() - _sag_t0) * 1000
+                    recall_logger.record(
+                        "sag", sag_raw_results, _sag_latency,
+                        session_id=session_id, query=user_message,
+                    )
+                except FuturesTimeout:
+                    sag_future.cancel()
+                    sag_circuit_record_failure("timeout")
+                    recall_logger.record(
+                        "sag", [], (time.time() - _sag_t0) * 1000,
+                        session_id=session_id, query=user_message,
+                        error=f"timeout({sag_remaining:.1f}s)",
+                    )
+                    logger.debug("SAG recall 超时（%.1f 秒）", sag_remaining)
                 except Exception as e:
+                    sag_circuit_record_failure("exception")
+                    recall_logger.record(
+                        "sag", [], (time.time() - _sag_t0) * 1000,
+                        session_id=session_id, query=user_message,
+                        error=f"{type(e).__name__}: {e}",
+                    )
                     logger.debug("SAG recall future error: %s", e)
         finally:
             # 取消未完成的 future（共享线程池不 shutdown）
@@ -907,27 +1037,82 @@ def _execute_recall(
     else:
         # 单路串行（节省线程开销，延迟无差别）
         if hs_active:
+            _hs_t0 = time.time()
             try:
                 result = _do_hindsight_recall(user_message)
+                _hs_latency = (time.time() - _hs_t0) * 1000
+                _hs_results = result.get("results", []) if result else []
+                recall_logger.record(
+                    "hindsight", _hs_results, _hs_latency,
+                    session_id=session_id, query=user_message,
+                )
                 if result is None:
                     circuit_record_failure("exception")
+                else:
+                    circuit_record_success()
             except Exception as e:
                 circuit_record_failure("exception")
+                recall_logger.record(
+                    "hindsight", [], (time.time() - _hs_t0) * 1000,
+                    session_id=session_id, query=user_message,
+                    error=f"{type(e).__name__}: {e}",
+                )
                 logger.error(
                     "Hindsight recall error",
                     extra={"session_id": session_id, "query_trunc": query_trunc, "error": f"{type(e).__name__}: {e}", "event": "recall_error"},
                 )
                 result = None
         if kt_active:
+            _kt_t0 = time.time()
             try:
                 kt_raw_results = _do_kt_recall(session_id, user_message)
+                _kt_latency = (time.time() - _kt_t0) * 1000
+                recall_logger.record(
+                    "knowledge_tree", kt_raw_results, _kt_latency,
+                    session_id=session_id, query=user_message,
+                )
             except Exception as e:
+                recall_logger.record(
+                    "knowledge_tree", [], (time.time() - _kt_t0) * 1000,
+                    session_id=session_id, query=user_message,
+                    error=f"{type(e).__name__}: {e}",
+                )
                 logger.warning("知识树 recall 异常（跳过）: %s", e)
                 kt_raw_results = []
         if s_active:
-            skill_context = _do_skill_match(user_message)
+            _sk_t0 = time.time()
+            try:
+                skill_context = _do_skill_match(user_message)
+                _sk_latency = (time.time() - _sk_t0) * 1000
+                _sk_results = [{"id": "skill_context", "score": 1.0}] if skill_context else []
+                recall_logger.record(
+                    "skill", _sk_results, _sk_latency,
+                    session_id=session_id, query=user_message,
+                )
+            except Exception as e:
+                recall_logger.record(
+                    "skill", [], (time.time() - _sk_t0) * 1000,
+                    session_id=session_id, query=user_message,
+                    error=f"{type(e).__name__}: {e}",
+                )
+                logger.debug("Skill match error: %s", e)
         if sag_active:
-            sag_raw_results = _do_sag_recall(user_message)
+            _sag_t0 = time.time()
+            try:
+                sag_raw_results = _do_sag_recall(user_message)
+                _sag_latency = (time.time() - _sag_t0) * 1000
+                recall_logger.record(
+                    "sag", sag_raw_results, _sag_latency,
+                    session_id=session_id, query=user_message,
+                )
+            except Exception as e:
+                sag_circuit_record_failure("exception")
+                recall_logger.record(
+                    "sag", [], (time.time() - _sag_t0) * 1000,
+                    session_id=session_id, query=user_message,
+                    error=f"{type(e).__name__}: {e}",
+                )
+                logger.debug("SAG recall error: %s", e)
 
     return result, kt_raw_results, skill_context, sag_raw_results
 
@@ -975,24 +1160,28 @@ def _dedup_and_budget(
 
     if CONFIG.enable_token_budget:
         hs_list = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
+        sag_list = [r for r in kept if r.get("source") == "sag"]
         kt_list = [r for r in kept if r.get("source") == "knowledge_tree"]
         skill_list = []
         if skill_context:
             skill_list = [{"text": skill_context, "source": "skill", "final_score": 1.0}]
 
         hs_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_list)
+        sag_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in sag_list)
         kt_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_list)
         skill_tokens_before = estimate_tokens(skill_context) if skill_context else 0
 
+        hs_sag_combined = hs_list + sag_list
         hs_kept_tb, kt_kept_tb, skill_kept_tb = apply_token_budget(
-            hs_list, kt_list, skill_list,
+            hs_sag_combined, kt_list, skill_list,
             CONFIG.token_budget_total,
             CONFIG.token_budget_hindsight_ratio,
             CONFIG.token_budget_kt_ratio,
             CONFIG.token_budget_skill_ratio,
         )
 
-        hs_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb)
+        hs_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb if r.get("source", "hindsight") == "hindsight")
+        sag_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb if r.get("source") == "sag")
         kt_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_kept_tb)
         skill_tokens_after = estimate_tokens(skill_kept_tb[0]["text"]) if skill_kept_tb else 0
 
@@ -1003,8 +1192,9 @@ def _dedup_and_budget(
             skill_context = ""
 
         logger.info(
-            "Token budget: hs %d→%d, kt %d→%d, skill %d→%d (total budget=%d)",
+            "Token budget: hs %d→%d, sag %d→%d, kt %d→%d, skill %d→%d (total budget=%d)",
             hs_tokens_before, hs_tokens_after,
+            sag_tokens_before, sag_tokens_after,
             kt_tokens_before, kt_tokens_after,
             skill_tokens_before, skill_tokens_after,
             CONFIG.token_budget_total,
@@ -1012,6 +1202,8 @@ def _dedup_and_budget(
                 "event": "token_budget",
                 "hs_tokens_before": hs_tokens_before,
                 "hs_tokens_after": hs_tokens_after,
+                "sag_tokens_before": sag_tokens_before,
+                "sag_tokens_after": sag_tokens_after,
                 "kt_tokens_before": kt_tokens_before,
                 "kt_tokens_after": kt_tokens_after,
                 "skill_tokens_before": skill_tokens_before,
@@ -1077,7 +1269,7 @@ def _assemble_xml_output(
     summary = ctx["summary"]
     kept_before_compress = ctx.get("kept_before_compress", len(kept))
 
-    # 分离 Hindsight 和知识树结果
+    # 分离 Hindsight、知识树、SAG 结果
     hs_kept = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
     kt_kept = [r for r in kept if r.get("source") == "knowledge_tree"]
     sag_kept = [r for r in kept if r.get("source") == "sag"]
@@ -1108,11 +1300,11 @@ def _assemble_xml_output(
             f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</memory>'
             for r in kt_kept
         )
-    context_lines.append(
-        f"<knowledge source=\"knowledge_tree\" count=\"{len(kt_kept)}\">\n"
-        f"{kt_xml}\n"
-        f"</knowledge>"
-    )
+        context_lines.append(
+            f"<knowledge source=\"knowledge_tree\" count=\"{len(kt_kept)}\">\n"
+            f"{kt_xml}\n"
+            f"</knowledge>"
+        )
 
     # 3.5 SAG 文档结果
     if sag_kept:
@@ -1142,45 +1334,70 @@ def _assemble_xml_output(
     # 提取已召回并过滤后的 memory_id（用于离线 recall@k 评估）
     recalled_ids = [m.get("id", "") for m in kept if m.get("id")]
 
-    # 构建日志 extra 字段
-    log_extra: dict[str, Any] = {
-        "session_id": session_id,
-        "query_trunc": query_trunc,
-        "event": "recall_success",
-        "total_results": len(raw_results),
-        "excluded_marked": excluded_count,
-        "kept_results": len(kept),
-        "dropped_results": len(raw_results) - kept_before_kt,
-        "score_stats": calculate_score_stats([_candidate_score(r) for r in kept]),
-        "injected_count": len(context_lines),
-        "total_chars": sum(len(line) for line in context_lines),
-        "has_knowledge_tree": len(kt_raw_results) > 0,
-        "kt_dedup_removed": kt_dedup_removed,
-        "latency_ms": latency_ms,
-        "score_comparison": score_comparison,
-        "recalled_ids": recalled_ids,
-    }
-    if CONFIG.enable_score_span_compress and kept_before_compress > len(kept):
-        log_extra["compressed_from"] = kept_before_compress
-        log_extra["compressed_to"] = len(kept)
-    if eval_match:
-        log_extra["eval_match_method"] = eval_match.get("match_method", "none")
-        log_extra["eval_match_confidence"] = round(float(eval_match.get("confidence", 0.0)), 4)
-        log_extra["eval_counted"] = bool(eval_match.get("counted"))
-        if eval_match.get("counted"):
-            log_extra["eval_query_id"] = eval_match["query_id"]
-            if eval_match["expected_ids"]:
-                expected_set = set(eval_match["expected_ids"])
-                log_extra["eval_expected_ids"] = eval_match["expected_ids"]
-                hindsight_ids = [rid for rid in recalled_ids if "-" in rid]
-                log_extra["eval_recall_hit"] = len(expected_set & set(hindsight_ids))
-                log_extra["eval_recall_k"] = len(eval_match["expected_ids"])
-        else:
-            log_extra["eval_candidate_id"] = eval_match["query_id"]
-    if summary:
-        log_extra["task_summary_round"] = _task_tracker.current_round(session_id)
-
-    logger.info("recall success", extra=log_extra)
+    # 统一使用 RecallLogger 输出汇总日志
+    _recall_logger = ctx.get("recall_logger")
+    if _recall_logger is not None:
+        _compressed_from = kept_before_compress if CONFIG.enable_score_span_compress and kept_before_compress > len(kept) else None
+        _compressed_to = len(kept) if _compressed_from is not None else None
+        _summary_round = _task_tracker.current_round(session_id) if summary else None
+        log_extra = _recall_logger.summary(
+            kept_results=kept,
+            session_id=session_id,
+            query_trunc=query_trunc,
+            excluded_count=excluded_count,
+            kt_dedup_removed=kt_dedup_removed,
+            total_chars=sum(len(line) for line in context_lines),
+            injected_count=len(context_lines),
+            score_comparison=score_comparison,
+            eval_match=eval_match,
+            total_latency_ms=latency_ms,
+            compressed_from=_compressed_from,
+            compressed_to=_compressed_to,
+            task_summary_round=_summary_round,
+            has_knowledge_tree=len(kt_raw_results) > 0,
+        )
+        log_extra["dropped_results"] = len(raw_results) - kept_before_kt
+    else:
+        # fallback：无 RecallLogger 时走旧逻辑
+        log_extra: dict[str, Any] = {
+            "session_id": session_id,
+            "query_trunc": query_trunc,
+            "event": "recall_success",
+            "total_results": len(raw_results),
+            "excluded_marked": excluded_count,
+            "kept_results": len(kept),
+            "dropped_results": len(raw_results) - kept_before_kt,
+            "score_stats": calculate_score_stats([_candidate_score(r) for r in kept]),
+            "injected_count": len(context_lines),
+            "total_chars": sum(len(line) for line in context_lines),
+            "has_knowledge_tree": len(kt_raw_results) > 0,
+            "kt_dedup_removed": kt_dedup_removed,
+            "latency_ms": latency_ms,
+            "score_comparison": score_comparison,
+            "recalled_ids": recalled_ids,
+            "hs_kept": len(hs_kept),
+            "kt_kept": len(kt_kept),
+            "sag_kept": len(sag_kept),
+        }
+        if CONFIG.enable_score_span_compress and kept_before_compress > len(kept):
+            log_extra["compressed_from"] = kept_before_compress
+            log_extra["compressed_to"] = len(kept)
+        if eval_match:
+            log_extra["eval_match_method"] = eval_match.get("match_method", "none")
+            log_extra["eval_match_confidence"] = round(float(eval_match.get("confidence", 0.0)), 4)
+            log_extra["eval_counted"] = bool(eval_match.get("counted"))
+            if eval_match.get("counted"):
+                log_extra["eval_query_id"] = eval_match["query_id"]
+                if eval_match["expected_ids"]:
+                    expected_set = set(eval_match["expected_ids"])
+                    log_extra["eval_expected_ids"] = eval_match["expected_ids"]
+                    log_extra["eval_recall_hit"] = len(expected_set & set(recalled_ids))
+                    log_extra["eval_recall_k"] = len(eval_match["expected_ids"])
+            else:
+                log_extra["eval_candidate_id"] = eval_match["query_id"]
+        if summary:
+            log_extra["task_summary_round"] = _task_tracker.current_round(session_id)
+        logger.info("recall success", extra=log_extra)
 
     # 追加自动加载的技能内容
     if skill_context:
@@ -1233,34 +1450,6 @@ def _post_process_recall(
 
     latency_ms = int((time.time() - t0) * 1000)
     raw_results = result.get("results", [])
-
-    # ===== P2-2 Phase A: 记录召回使用日志 =====
-    _ul = _get_use_logger()
-    if _ul is not None:
-        try:
-            if hs_active and raw_results:
-                _ul.log_recall(
-                    query=user_message,
-                    results=raw_results,
-                    source="hindsight",
-                    session_id=session_id,
-                )
-            if kt_raw_results:
-                _ul.log_recall(
-                    query=user_message,
-                    results=kt_raw_results,
-                    source="knowledge_tree",
-                    session_id=session_id,
-                )
-            if skill_context:
-                _ul.log_recall(
-                    query=user_message,
-                    results=[{"id": "skill_context", "score": 1.0}],
-                    source="skill",
-                    session_id=session_id,
-                )
-        except Exception as _ul_err:
-            logger.debug("use_log record failed silently: %s", _ul_err)
 
     if not raw_results and not kt_raw_results and not skill_context:
         if hs_active:
@@ -1415,10 +1604,12 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     _sag_active = mask.get("sag", False)
     _active_count = sum([_hs_active, _kt_active, _s_active, _sag_active])
 
+    _recall_logger = RecallLogger(use_logger=_get_use_logger())
+
     result, kt_raw_results, _skill_context, sag_raw_results = _execute_recall(
         session_id, user_message,
         _hs_active, _kt_active, _s_active, _sag_active, _active_count,
-        t0, query_trunc,
+        t0, query_trunc, _recall_logger,
     )
 
     # 多跳关联展开
@@ -1430,34 +1621,57 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         session_id, user_message, query_trunc, t0, _eval_match,
     )
     if _pp_result is None:
-        return _skill_context if _skill_context else None
-    kept = _pp_result
-    latency_ms = _pp_meta["latency_ms"]
-    raw_results = _pp_meta["raw_results"]
-    excluded_count = _pp_meta["excluded_count"]
-    kept_before_kt = _pp_meta["kept_before_kt"]
-    kt_dedup_removed = _pp_meta["kt_dedup_removed"]
-    score_comparison = _pp_meta["score_comparison"]
-    kept_before_compress = _pp_meta.get("kept_before_compress", len(kept))
-    summary = _pp_meta.get("summary")
-    eval_match = _pp_meta.get("eval_match", _eval_match)
-    kt_raw_results = _pp_meta.get("kt_raw_results", kt_raw_results)
+        if sag_raw_results and _sag_active:
+            kept = []
+            latency_ms = int((time.time() - t0) * 1000)
+            raw_results = []
+            excluded_count = 0
+            kept_before_kt = 0
+            kt_dedup_removed = 0
+            score_comparison = {}
+            kept_before_compress = 0
+            summary = None
+            eval_match = _eval_match
+        else:
+            return _skill_context if _skill_context else None
+    else:
+        kept = _pp_result
+        latency_ms = _pp_meta["latency_ms"]
+        raw_results = _pp_meta["raw_results"]
+        excluded_count = _pp_meta["excluded_count"]
+        kept_before_kt = _pp_meta["kept_before_kt"]
+        kt_dedup_removed = _pp_meta["kt_dedup_removed"]
+        score_comparison = _pp_meta["score_comparison"]
+        kept_before_compress = _pp_meta.get("kept_before_compress", len(kept))
+        summary = _pp_meta.get("summary")
+        eval_match = _pp_meta.get("eval_match", _eval_match)
+        kt_raw_results = _pp_meta.get("kt_raw_results", kt_raw_results)
 
     # ===== SAG 结果合并（4th route）=====
     if sag_raw_results and _sag_active:
         sag_count = 0
+        sag_candidates: list[dict[str, Any]] = []
         for sec in sag_raw_results:
+            try:
+                raw_score = float(sec.get("score", 0.5))
+            except (TypeError, ValueError):
+                raw_score = 0.5
             candidate = {
                 "id": sec.get("chunkId", f"sag_{sag_count}"),
                 "text": sec.get("content", ""),
-                "score": sec.get("score", 0.5),
+                "score": raw_score,
+                "base_score": raw_score,
+                "final_score": raw_score,
+                "rerank_score": raw_score,
                 "source": "sag",
                 "heading": sec.get("heading", ""),
                 "document_id": sec.get("documentId", ""),
             }
-            if candidate.get("score", 0) >= CONFIG.min_score:
-                kept.append(candidate)
+            if candidate["final_score"] >= CONFIG.min_score:
+                sag_candidates.append(candidate)
                 sag_count += 1
+        kept.extend(sag_candidates)
+
         logger.info(
             "SAG recall: %d sections merged",
             sag_count,
@@ -1478,4 +1692,5 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         "score_comparison": score_comparison,
         "summary": summary,
         "kept_before_compress": kept_before_compress,
+        "recall_logger": _recall_logger,
     })

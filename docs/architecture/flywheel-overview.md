@@ -14,12 +14,12 @@
 | | Hindsight retain | （外部服务） | 对话经验自动沉淀为记忆单元 |
 | **知识组织** | 聚类分析 | `scripts/clustering-analysis-v3/` | HDBSCAN 聚类 + 因果链检测，优化 RAG 索引 |
 | | 记忆清理 | `scripts/memory-cleanup/` | LLM 分类 retain/remove/merge/compress，控制 L2 token |
-| **知识消费** | 知识导航插件 | `plugins/knowledge-navigation/` | LLM Router 三路召回（H + KT + S），注入上下文 |
+| **知识消费** | 知识导航插件 | `plugins/knowledge-navigation/` | LLM Router 四路召回（H + KT + S + SAG），注入上下文 |
 
 ### 飞轮闭环
 
 ```
-对话/任务 ──→ 知识导航插件（三路召回） ──→ LLM 输出
+对话/任务 ──→ 知识导航插件（四路召回） ──→ LLM 输出
    ↑                                            |
    |                                            v
    |                              新经验 -> Hindsight retain
@@ -47,15 +47,15 @@
 
 | 项目 | 路径 | 作用 |
 |------|------|------|
-| Router 决策 | `plugins/knowledge-navigation/core/router.py` | LLM Router 决策 `{h, kt, s}` mask，含三层 JSON 解析兜底 |
-| Router 健康巡检 | `scripts/cron-wrappers/kn-router-health-check.sh` | 每日检查 Router 解析失败率、recall 成功率、模型稳定性 |
+| Router 决策 | `plugins/knowledge-navigation/core/router.py` | LLM Router 决策 `{h, kt, s, sag}` mask，含三层 JSON 解析兜底 |
+| Router 健康巡检 | `scripts/cron-wrappers/kn-router-health-check.sh` | 每日检查 Router 解析失败率、recall 成功率、模型稳定性、SAG 熔断器状态 |
 | 知识导航基线 | `scripts/cron-wrappers/knowledge-navigation-baseline.sh` | 每周采集 baseline，LLM judge 评估，delta 检测告警 |
 | Skill 评估 | `scripts/cron-wrappers/run-skill-eval.sh` | 每日评估 Skill 匹配质量，退化告警 |
 
 **Router 飞轮闭环**：
 
 ```
-用户消息 → LLM Router 决策 → 按 mask 条件执行三路召回 → LLM 输出
+用户消息 → LLM Router 决策 → 按 mask 条件执行四路召回 → LLM 输出
    ↑                                                     |
    |                                                     v
    |                                   Router 健康巡检 + 基线采集
