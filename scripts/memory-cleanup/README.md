@@ -75,7 +75,7 @@ memory-cleanup run --json
 
 ## Cron
 
-每日 13:00 执行 dry-run（`daily_dryrun.sh` → `cron_common.sh` 包装）。
+每日 13:00 执行实际清理（`daily_dryrun.sh` → `cron_common.sh` 包装，`--vote 1 --apply`）。
 
 ## 配置
 

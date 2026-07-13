@@ -160,7 +160,8 @@ class TestPreLlmCall:
         """测试 recall 异常时返回 None。"""
         mock_recall.side_effect = RuntimeError("API down")
 
-        result = pre_llm_call("session-123", "12345678901", platform="cli")
+        with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+            result = pre_llm_call("session-123", "12345678901", platform="cli")
 
         assert result is None
 
@@ -172,7 +173,8 @@ class TestPreLlmCall:
         """测试空结果返回 None。"""
         mock_recall.return_value = None
 
-        result = pre_llm_call("session-123", "12345678901", platform="cli")
+        with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+            result = pre_llm_call("session-123", "12345678901", platform="cli")
 
         assert result is None
 
@@ -184,7 +186,8 @@ class TestPreLlmCall:
         """测试 results 为空列表时返回 None。"""
         mock_recall.return_value = self._mock_recall(results=[])
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
             result = pre_llm_call("session-123", "12345678901", platform="cli")
 
         assert result is None
@@ -200,7 +203,8 @@ class TestPreLlmCall:
             trace={"reranked": [{"node_id": "node1", "rerank_score": 0.1}]},
         )
 
-        result = pre_llm_call("session-123", "12345678901", platform="cli")
+        with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+            result = pre_llm_call("session-123", "12345678901", platform="cli")
 
         assert result is None
 
@@ -335,7 +339,8 @@ class TestCircuitBreaker:
 
         threshold = CONFIG.circuit_breaker_threshold
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
             # 前 threshold-1 次失败计数增加但熔断器不打开
             for i in range(threshold - 1):
                 result = pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
@@ -373,7 +378,8 @@ class TestCircuitBreaker:
         threshold = CONFIG.circuit_breaker_threshold
         cooldown = CONFIG.circuit_breaker_cooldown
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
             # threshold 次异常触发熔断
             for _ in range(threshold):
                 pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
@@ -405,7 +411,8 @@ class TestCircuitBreaker:
         mock_recall: MagicMock,
     ) -> None:
         """成功调用重置失败计数。"""
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
             # 2 次失败
             mock_recall.side_effect = [RuntimeError("down"), RuntimeError("down")]
             for _ in range(2):
@@ -444,7 +451,8 @@ class TestCircuitBreaker:
         cb._hindsight_cb._failures = CONFIG.circuit_breaker_threshold
         cb._hindsight_cb._open_until = base_time + CONFIG.circuit_breaker_cooldown
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
             caplog.set_level(logging.INFO)
             result = pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
 
@@ -1094,3 +1102,128 @@ class TestSagRecall:
         assert _candidate_score(candidate) == 0.85
         candidate_no_final = {"source": "sag", "score": 0.7}
         assert _candidate_score(candidate_no_final) == 0.7
+
+
+class TestTokenBudgetEvent:
+    """测试 token_budget 事件的分源 token 字段输出。"""
+
+    LONG_QUERY = "请详细解释量子计算中的纠缠现象以及它在密码学中的应用" * 3
+
+    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    def test_token_budget_event_contains_per_source_fields(
+        self,
+        mock_recall: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """token_budget 事件必须含 hs/sag/kt/skill 的 before/after 字段和 total_budget。"""
+        mock_recall.return_value = {
+            "results": [{"id": "n1", "text": "memory content"}],
+            "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
+        }
+
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+            caplog.set_level(logging.INFO)
+            pre_llm_call("sess-tb", self.LONG_QUERY, platform="cli")
+
+        tb_records = [rec for rec in caplog.records if getattr(rec, "event", None) == "token_budget"]
+        assert tb_records, "必须输出 token_budget 事件"
+        rec = tb_records[-1]
+        # 四路 before/after 字段必须齐全
+        for prefix in ("hs", "sag", "kt", "skill"):
+            assert hasattr(rec, f"{prefix}_tokens_before"), f"缺 {prefix}_tokens_before"
+            assert hasattr(rec, f"{prefix}_tokens_after"), f"缺 {prefix}_tokens_after"
+        assert hasattr(rec, "total_budget")
+        # after 不应大于 before（token 只会减少不会增加）
+        assert rec.hs_tokens_after <= rec.hs_tokens_before
+        assert rec.kt_tokens_after <= rec.kt_tokens_before
+        assert rec.skill_tokens_after <= rec.skill_tokens_before
+
+
+class TestRecallLoggerEvents:
+    """测试 RecallLogger 框架输出的 recall_{source} 事件。"""
+
+    LONG_QUERY = "请详细解释机器学习中的梯度下降算法以及学习率的影响" * 3
+
+    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    def test_recall_hindsight_event_logged(
+        self,
+        mock_recall: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """recall_hindsight 事件必须含 source/count/latency_ms/score_stats。"""
+        mock_recall.return_value = {
+            "results": [{"id": "n1", "text": "memory", "score": 0.9}],
+            "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
+        }
+
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+            caplog.set_level(logging.INFO)
+            pre_llm_call("sess-rl", self.LONG_QUERY, platform="cli")
+
+        hs_records = [rec for rec in caplog.records if getattr(rec, "event", None) == "recall_hindsight"]
+        assert hs_records, "必须输出 recall_hindsight 事件"
+        rec = hs_records[-1]
+        assert getattr(rec, "source") == "hindsight"
+        assert getattr(rec, "count") == 1
+        assert getattr(rec, "latency_ms") is not None
+        # score_stats 字段必须存在（即使为空字典也算存在）
+        assert hasattr(rec, "score_stats")
+
+    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    def test_recall_sag_event_logged_when_sag_active(
+        self,
+        mock_recall: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """SAG 开启时必须输出 recall_sag 事件。"""
+        mock_recall.return_value = {
+            "results": [{"id": "n1", "text": "hs memory", "score": 0.8}],
+            "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.8}]},
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sections": [
+            {"chunkId": "s1", "content": "sag 内容", "score": 0.75, "documentId": "d1"}
+        ]}
+
+        with patch.object(nav_hooks, "_router_route",
+                          return_value={"h": True, "kt": False, "s": False, "sag": True}), \
+             patch("requests.post", return_value=mock_resp), \
+             patch.object(nav_hooks, "_do_skill_match", return_value=""):
+            caplog.set_level(logging.INFO)
+            pre_llm_call("sess-sag-rl", self.LONG_QUERY, platform="cli")
+
+        sag_records = [rec for rec in caplog.records if getattr(rec, "event", None) == "recall_sag"]
+        assert sag_records, "SAG 开启时必须输出 recall_sag 事件"
+        rec = sag_records[-1]
+        assert getattr(rec, "source") == "sag"
+        assert getattr(rec, "count") >= 1
+
+    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    def test_recall_success_contains_per_source_kept_counts(
+        self,
+        mock_recall: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """recall_success 事件必须含 hs_kept/kt_kept/sag_kept/skill_kept 四个字段。"""
+        mock_recall.return_value = {
+            "results": [{"id": "n1", "text": "memory", "score": 0.9}],
+            "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
+        }
+
+        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+            caplog.set_level(logging.INFO)
+            pre_llm_call("sess-success", self.LONG_QUERY, platform="cli")
+
+        success_records = [rec for rec in caplog.records if getattr(rec, "event", None) == "recall_success"]
+        assert success_records, "必须输出 recall_success 事件"
+        rec = success_records[-1]
+        # 四路 kept 计数字段必须存在
+        for field in ("hs_kept", "kt_kept", "sag_kept", "skill_kept"):
+            assert hasattr(rec, field), f"recall_success 缺字段 {field}"
+        # per_source 字段必须存在（dict 结构）
+        assert hasattr(rec, "per_source")
+        assert isinstance(getattr(rec, "per_source"), dict)

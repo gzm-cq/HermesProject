@@ -263,7 +263,7 @@ def find_log_file() -> str:
     return ""
 
 
-def collect_baseline(log_file: str = "") -> dict:
+def collect_baseline(log_file: str = "", since: str = "") -> dict:
     """从 trace.log 中提取评估基线数据（支持精确 + 模糊 eval 匹配）。
 
     改动说明（2026-06-29）：
@@ -271,8 +271,14 @@ def collect_baseline(log_file: str = "") -> dict:
     - 现在采集所有 recall_success 事件，精确/模糊匹配都纳入
     - 分组 key：eval_query_id > eval_candidate_id > query_trunc（兜底）
 
+    改动说明（2026-07-12）：
+    - 增加 since 参数，支持按自然天过滤，只汇总指定日期之后的记录
+
     Args:
         log_file: 日志文件路径，为空时自动查找
+        since: ISO 格式日期或时间戳（如 "2026-07-11" 或 "2026-07-11T23:00:00"），
+                为空时不过滤（全量汇总）
+
 
     Returns:
         {query_id: {total_requests, avg_*, ci_*, raw_records}}
@@ -296,6 +302,12 @@ def collect_baseline(log_file: str = "") -> dict:
                 data = json.loads(line)
             except (json.JSONDecodeError, TypeError):
                 continue
+
+            # ── 时间过滤：since 参数，只汇总指定日期之后的记录 ──
+            if since:
+                ts = data.get("timestamp", "")
+                if ts and ts < since:
+                    continue
 
             event = data.get("event", "")
 
@@ -866,6 +878,7 @@ def _parse_args() -> dict[str, Any]:
         "delta": False,
         "trigger": False,
         "log_file": "",
+        "since": "",
     }
     # 用 consume 计数器支持消费多个后续参数（避免 skip_next 单次跳过的边界问题）
     consume = 0
@@ -896,6 +909,13 @@ def _parse_args() -> dict[str, Any]:
             args["delta"] = True
         elif arg == "--trigger":
             args["trigger"] = True
+        elif arg == "--since":
+            # --since 后跟日期参数
+            if len(sys.argv) > i + 2 and not sys.argv[i + 2].startswith("--"):
+                args["since"] = sys.argv[i + 2]
+                consume = 1
+            else:
+                print("错误: --since 需要一个日期参数 (如 2026-07-11)", file=sys.stderr)
         elif not arg.startswith("--") and not args["log_file"]:
             args["log_file"] = arg
     return args
@@ -932,7 +952,7 @@ def main() -> None:
         return
 
     log_file = args["log_file"]
-    baseline = collect_baseline(log_file)
+    baseline = collect_baseline(log_file, since=args["since"])
 
     if not baseline:
         print("⚠️  未找到评估基线数据。")

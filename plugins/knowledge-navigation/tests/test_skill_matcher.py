@@ -616,3 +616,122 @@ def test_single_stage_match_without_prescreen(mock_ensure: MagicMock) -> None:
 
 def test_prescreen_top_k_default() -> None:
     assert _PRESCREEN_TOP_K == 30
+
+
+# ====================================================================
+# Fallback 机制（LLM 返回空时回退到 union top-K）
+# ====================================================================
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_fallback_when_llm_returns_empty(mock_ensure: MagicMock) -> None:
+    """LLM 返回空 → fallback 到 keyword prescreen top-K。"""
+    import knowledge_navigation.core.skill_matcher as sm
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/skills/docker/SKILL.md", "category": "ops"},
+        {"name": "git-workflow", "description": "Git branching patterns", "path": "/skills/git/SKILL.md", "category": "dev"},
+    ]
+
+    with patch("httpx.post", return_value=_mock_llm_response("[]")):
+        results = match_skills("docker deploy")
+
+    # Fallback 应返回 keyword prescreen 的 top-3
+    assert len(results) >= 1
+    assert results[0]["name"] == "docker-patterns"
+    # Fallback 分数应低于 LLM 命中基线 0.5
+    assert float(results[0]["score"]) < 0.5
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_fallback_when_llm_error(mock_ensure: MagicMock) -> None:
+    """LLM 调用异常 → fallback 到 keyword prescreen top-K。"""
+    import knowledge_navigation.core.skill_matcher as sm
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/skills/docker/SKILL.md", "category": "ops"},
+    ]
+
+    with patch("httpx.post", side_effect=ConnectionError("timeout")):
+        results = match_skills("docker deploy")
+
+    assert len(results) == 1
+    assert results[0]["name"] == "docker-patterns"
+    assert float(results[0]["score"]) < 0.5
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_no_fallback_without_prescreen(mock_ensure: MagicMock) -> None:
+    """关闭预筛时 LLM 返回空 → 不触发 fallback，直接返回空。"""
+    import knowledge_navigation.core.skill_matcher as sm
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/skills/docker/SKILL.md", "category": "ops"},
+    ]
+
+    with patch("httpx.post", return_value=_mock_llm_response("[]")):
+        results = match_skills("docker", enable_keyword_prescreen=False)
+
+    assert results == []
+    sm._skill_index = None
+
+
+# ====================================================================
+# Embedding + Union 机制
+# ====================================================================
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_union_with_embedding_candidates(mock_ensure: MagicMock) -> None:
+    """Embedding 预筛补全关键词漏筛的候选 → union 后 LLM 可见更多候选。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    # 两个 skill：docker 有关键词重叠，db-migration 无关键词重叠
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops"},
+        {"name": "db-migration", "description": "Database schema versioning", "path": "/p2", "category": "ops"},
+    ]
+
+    # Mock embedding prescreen 返回 db-migration（关键词漏筛的）
+    def mock_emb_prescreen(query, candidates, top_k=20):
+        result = []
+        for c in candidates:
+            if c["name"] == "db-migration":
+                c_copy = dict(c)
+                c_copy["_emb_score"] = 0.85
+                result.append(c_copy)
+        return result
+
+    with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
+         patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
+         patch.object(sm, "_embedding_prescreen", side_effect=mock_emb_prescreen), \
+         patch("httpx.post", return_value=_mock_llm_response('["db-migration"]')):
+        results = match_skills("database version upgrade")
+
+    # LLM 应该能从 union 中选到 db-migration
+    assert len(results) == 1
+    assert results[0]["name"] == "db-migration"
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_embedding_degraded_skips_emb(mock_ensure: MagicMock) -> None:
+    """Embedding 熔断/降级时返回无 _emb_score 的候选 → 跳过 embedding，只用 keyword。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops"},
+    ]
+
+    # Mock embedding prescreen 返回降级结果（无 _emb_score）
+    def mock_emb_prescreen(query, candidates, top_k=20):
+        return [{"name": "docker-patterns", "description": "Docker stuff", "path": "/p1", "category": "ops"}]
+
+    with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
+         patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
+         patch.object(sm, "_embedding_prescreen", side_effect=mock_emb_prescreen), \
+         patch("httpx.post", return_value=_mock_llm_response('["docker-patterns"]')):
+        results = match_skills("docker deploy")
+
+    assert len(results) == 1
+    assert results[0]["name"] == "docker-patterns"
+    sm._skill_index = None

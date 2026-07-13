@@ -3,7 +3,7 @@
 #
 # 部署路径: /root/.hermes/scripts/memory-cleanup/daily_dryrun.sh
 # 依赖公共库: /root/.hermes/lib/cron_common.sh（由 cron-common 项目部署）
-# 调度建议:   0 2 * * * (每日 02:00)
+# 调度建议:   0 13 * * * (每日 13:00)
 #
 # 功能:
 #   - flock 防重入
@@ -31,8 +31,8 @@ cron_init "memory-cleanup"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-cron_section "记忆清理 (--vote 1 --apply)"
-if bash run.sh --vote 1 --apply; then
+cron_section "记忆清理 (--vote 1 --apply --quiet)"
+if bash run.sh --vote 1 --apply --quiet; then
     cron_ok "记忆清理完成"
     _STEP_RESULTS+=("✅ 记忆清理 --vote 1 --apply")
 else

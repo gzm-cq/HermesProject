@@ -49,6 +49,7 @@ def _make_summary(
     entries: list[str],
     result: dict[str, Any],
     v2_result: dict[str, Any],
+    char_limit: int = 50000,
 ) -> dict[str, Any]:
     """构建单个源的汇总字典。"""
     remove_indices: set[int] = {
@@ -69,6 +70,7 @@ def _make_summary(
     total_flagged = sum(f.get("count", 0) for f in flagged)
     return {
         "total_entries": len(entries),
+        "char_limit": char_limit,
         "phase1_merge": len(result.get("merge", [])),
         "phase1_compress": len(result.get("compress", [])),
         "phase1_hindsight": len(result.get("hindsight", [])),
@@ -94,6 +96,7 @@ def run(
     ),
     log_level: Optional[str] = typer.Option(None, "--log-level", help="日志级别（DEBUG/INFO/WARNING）"),
     json_output: bool = typer.Option(False, "--json", help="以 JSON 格式输出结果"),
+    quiet: bool = typer.Option(False, "--quiet", help="简洁模式：只输出空间占用和执行概要（适合 cron 通知）"),
     # 投票策略：vote > 0 时每轮独立分类，remove 决策取并集（任一表决删除即删除），
     # 其他决策（merge/compress/hindsight）取交集（须全体一致）。
     # vote=0 时使用配置的轮数（cfg.vote_count），vote>=2 启用多轮投票。
@@ -120,8 +123,8 @@ def run(
         cfg.vote_count = vote
     setup_logging(cfg.log_level)
 
-    # JSON 模式下重定向 stdout，抑制所有 print() 输出
-    if cfg.output_mode == "json":
+    # JSON / quiet 模式下重定向 stdout，抑制中间 print 输出
+    if cfg.output_mode == "json" or quiet:
         stdout_cm: contextlib.AbstractContextManager = contextlib.redirect_stdout(io.StringIO())
     else:
         stdout_cm = contextlib.nullcontext()
@@ -430,8 +433,8 @@ def run(
         },
         "sources": {},
     }
-    report_data["sources"]["MEMORY.md"] = _make_summary("MEMORY.md", mem_entries, mem_result, mem_v2)
-    report_data["sources"]["USER.md"] = _make_summary("USER.md", user_entries, user_result, user_v2)
+    report_data["sources"]["MEMORY.md"] = _make_summary("MEMORY.md", mem_entries, mem_result, mem_v2, cfg.memory_char_limit)
+    report_data["sources"]["USER.md"] = _make_summary("USER.md", user_entries, user_result, user_v2, cfg.user_char_limit)
     if apply:
         report_data["execution"] = exec_results
 
@@ -451,6 +454,30 @@ def run(
     if cfg.output_mode == "json":
         print(json.dumps(report_data, ensure_ascii=False, indent=2))
 
+    # ── Quiet 模式输出简洁摘要（空间 + 执行概要） ──
+    if quiet and cfg.output_mode != "json":
+        mem_src = report_data["sources"].get("MEMORY.md", {})
+        user_src = report_data["sources"].get("USER.md", {})
+        mem_after = mem_src.get("after_cleanup", {})
+        user_after = user_src.get("after_cleanup", {})
+        mem_limit = mem_src.get("char_limit", 50000)
+        user_limit = user_src.get("char_limit", 15000)
+        mem_chars = mem_after.get("keep_chars", 0)
+        user_chars = user_after.get("keep_chars", 0)
+        mem_usage = round(mem_chars / mem_limit * 100, 1) if mem_limit else 0
+        user_usage = round(user_chars / user_limit * 100, 1) if user_limit else 0
+        total_compress = mem_src.get("phase1_compress", 0) + user_src.get("phase1_compress", 0)
+        total_hindsight = mem_src.get("phase1_hindsight", 0) + user_src.get("phase1_hindsight", 0)
+        total_remove = mem_src.get("phase1_remove", 0) + user_src.get("phase1_remove", 0)
+        total_merge = mem_src.get("phase1_merge", 0) + user_src.get("phase1_merge", 0)
+        mode_str = "apply" if apply else "dry-run"
+        print(f"记忆清理完成 ({mode_str})")
+        print(f"  MEMORY.md: {mem_chars:,}/{mem_limit:,} chars ({mem_usage}%)")
+        print(f"  USER.md:   {user_chars:,}/{user_limit:,} chars ({user_usage}%)")
+        print(f"  产出: compress={total_compress} hindsight={total_hindsight} remove={total_remove} merge={total_merge}")
+        if report_data.get("total_time_s"):
+            print(f"  耗时: {report_data['total_time_s']}s")
+
 
 def main() -> None:
     """CLI 主入口。"""
@@ -459,6 +486,11 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n⚠️ 用户中断", file=sys.stderr)
         raise typer.Exit(1)
+    except Exception as e:
+        quiet = "--quiet" in sys.argv
+        if quiet:
+            print(f"记忆清理失败: {e}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":

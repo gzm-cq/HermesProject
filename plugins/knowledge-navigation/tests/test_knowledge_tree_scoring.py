@@ -25,7 +25,7 @@ def test_knowledge_tree_candidates_have_final_scores_in_score_stats(
     nav_hooks._injected_ids.clear()
 
     mock_recall.return_value = {"results": [], "trace": {}}
-    mock_route.return_value = {"h": False, "kt": True, "s": False}
+    mock_route.return_value = {"h": False, "kt": True, "s": False, "sag": False}
     kt_results = [
         {"id": 101, "text": "知识树结果A", "score": 0.8},
         {"id": 102, "text": "知识树结果B", "score": 0.6},

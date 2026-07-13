@@ -870,10 +870,11 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
         mask.setdefault("h", True)
         mask.setdefault("kt", True)
         mask.setdefault("s", True)
-        mask.setdefault("sag", True)
+        # SAG fallback 必须为 False（见 project_memory：normal 和 exception 路径一致）
+        mask.setdefault("sag", False)
     except Exception as e:
-        logger.warning("Router 调用异常 (%s)，fallback 四路全开", e)
-        mask = {"h": True, "kt": True, "s": True, "sag": True}
+        logger.warning("Router 调用异常 (%s)，fallback 三路全开，SAG 关闭", e)
+        mask = {"h": True, "kt": True, "s": True, "sag": False}
     logger.info(
         "Router mask: h=%s kt=%s s=%s sag=%s",
         mask["h"], mask["kt"], mask["s"], mask["sag"],

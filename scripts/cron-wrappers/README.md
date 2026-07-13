@@ -8,9 +8,13 @@
 
 ```
 scripts/cron-wrappers/
-├── cron-jobs-config.md                               # 全部 10 个 cron job 配置锚点
-├── health-check-cron.sh                              # 健康巡检
+├── cron-jobs-config.md                               # 全部 13 个 cron job 配置锚点
+├── flywheel-health-report.py                         # 飞轮健康报告生成器
+├── flywheel-health-report.sh                         # 飞轮健康报告 cron wrapper
+├── kn-router-health-check.sh                         # Router 健康巡检
+├── health-check-cron.sh                              # 系统健康巡检
 ├── knowledge-navigation-baseline.sh                  # 知识导航 recall 基线
+├── run-skill-eval.sh                                 # Skill 评测
 ├── memory-cleanup/daily_dryrun.sh                    # 记忆清理干跑
 ├── daily-learn/daily_learn.sh                        # 每日在线学习
 ├── skillopt-runner/skillopt-nightly-run.sh           # SkillOpt 增量优化

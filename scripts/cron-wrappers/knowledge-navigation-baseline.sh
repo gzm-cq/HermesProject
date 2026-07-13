@@ -55,8 +55,10 @@ else
 fi
 
 # ===== 执行基线采集 =====
-cron_section "评估基线 delta 检测"
-if python3 scripts/collect_baseline.py --delta --trigger; then
+# --since 当天0点（UTC），只汇总当天 trace.log 数据，避免新旧混合
+_BASELINE_SINCE=$(date -u +%Y-%m-%dT00:00:00)
+cron_section "评估基线 delta 检测 (since $_BASELINE_SINCE)"
+if python3 scripts/collect_baseline.py --delta --trigger --since "$_BASELINE_SINCE"; then
     cron_ok "评估基线检测完成"
     _STEP_RESULTS+=("✅ 评估基线 delta 检测")
 else
