@@ -240,6 +240,7 @@ def parse_trace_log(trace_path: Path,
         "recall_sag": [],
         "token_budget": [],
         "sag_merge": [],
+        "eval_query_bypass": [],
     }
     if not trace_path.is_file():
         return events
@@ -386,6 +387,7 @@ def _percentile(values: list[float], p: float) -> float:
 def analyze_router(trace: dict[str, list[dict]],
                    data_flywheel: Path) -> tuple[list[dict], dict, dict]:
     masks = trace["router_mask"]
+    eval_bypasses = trace.get("eval_query_bypass", [])
     successes = trace["recall_success"]
     empties = trace["recall_empty_results"]
     timeouts = trace["recall_timeout"]
@@ -397,15 +399,37 @@ def analyze_router(trace: dict[str, list[dict]],
     if total_masks == 0:
         return [], {"status": "no_data"}, {}
 
+    # 区分 eval 查询和真实用户消息的 mask
+    # router_mask 事件紧跟 eval_query_bypass 则认为是 eval 查询
+    _EVAL_WINDOW = 5.0  # 5 秒内的后继 mask 视为 eval 触发
+    eval_mask_flags: set[int] = set()
+    if eval_bypasses:
+        for eb in eval_bypasses:
+            eb_ts = eb.get("timestamp", "")
+            for i, m in enumerate(masks):
+                m_ts = m.get("timestamp", "")
+                if eb_ts <= m_ts:
+                    try:
+                        delta = (datetime.fromisoformat(m_ts) - datetime.fromisoformat(eb_ts)).total_seconds()
+                        if 0 <= delta <= _EVAL_WINDOW:
+                            eval_mask_flags.add(i)
+                    except (ValueError, TypeError):
+                        continue
+
+    real_masks = [m for i, m in enumerate(masks) if i not in eval_mask_flags]
+    eval_masks = [m for i, m in enumerate(masks) if i in eval_mask_flags]
+    real_total = len(real_masks)
+    eval_total = len(eval_masks)
+
     full_off = sum(
-        1 for m in masks
+        1 for m in real_masks
         if not m.get("mask", {}).get("h")
         and not m.get("mask", {}).get("kt")
         and not m.get("mask", {}).get("s")
         and not m.get("mask", {}).get("sag")
     )
     full_on = sum(
-        1 for m in masks
+        1 for m in real_masks
         if m.get("mask", {}).get("h")
         and m.get("mask", {}).get("kt")
         and m.get("mask", {}).get("s")
@@ -432,10 +456,10 @@ def analyze_router(trace: dict[str, list[dict]],
             scores.append(ss["avg"])
     avg_score = sum(scores) / len(scores) if scores else 0
 
-    h_on = sum(1 for m in masks if m.get("mask", {}).get("h"))
-    kt_on = sum(1 for m in masks if m.get("mask", {}).get("kt"))
-    s_on = sum(1 for m in masks if m.get("mask", {}).get("s"))
-    sag_on = sum(1 for m in masks if m.get("mask", {}).get("sag"))
+    h_on = sum(1 for m in real_masks if m.get("mask", {}).get("h"))
+    kt_on = sum(1 for m in real_masks if m.get("mask", {}).get("kt"))
+    s_on = sum(1 for m in real_masks if m.get("mask", {}).get("s"))
+    sag_on = sum(1 for m in real_masks if m.get("mask", {}).get("sag"))
 
     # SAG 专项统计（recall_sag 含 error 场景，需区分）
     sag_recall_attempts = len(sag_recalls)
@@ -449,13 +473,13 @@ def analyze_router(trace: dict[str, list[dict]],
     sag_p95 = _percentile(sag_latencies, 0.95)
 
     issues = []
-    full_off_pct = full_off / total_masks * 100
+    full_off_pct = full_off / real_total * 100
     if full_off_pct > TH["router_full_off_pct"]:
         issues.append({
             "severity": "P0",
             "flywheel": "Router",
             "desc": f"Router全关率 {full_off_pct:.1f}% (阈值 {TH['router_full_off_pct']}%)",
-            "detail": f"{full_off}/{total_masks} 次路由全关，直接跳过召回",
+            "detail": f"{full_off}/{real_total} 次路由全关，直接跳过召回",
         })
     if empty_rate > TH["recall_empty_pct"]:
         issues.append({
@@ -490,15 +514,17 @@ def analyze_router(trace: dict[str, list[dict]],
 
     metrics = {
         "total_masks": total_masks,
+        "real_total": real_total,
+        "eval_total": eval_total,
         "full_off": full_off,
         "full_off_pct": round(full_off_pct, 1),
         "full_on": full_on,
-        "full_on_pct": round(full_on / total_masks * 100, 1),
+        "full_on_pct": round(full_on / real_total * 100, 1),
         "h_on": h_on,
         "kt_on": kt_on,
         "s_on": s_on,
         "sag_on": sag_on,
-        "sag_on_pct": round(sag_on / total_masks * 100, 1) if total_masks else 0,
+        "sag_on_pct": round(sag_on / real_total * 100, 1) if real_total else 0,
         "success_count": len(successes),
         "empty_count": len(empties),
         "timeout_count": len(timeouts),
@@ -667,20 +693,6 @@ def analyze_skill_usage(skill_usage_path: Path, now: datetime) -> tuple[list[dic
     recent_7d.sort(key=lambda x: x["last_used_at"], reverse=True)
 
     issues = []
-    if len(never_used) > TH["skill_unused_warn_count"]:
-        issues.append({
-            "severity": "P1",
-            "flywheel": "Skill",
-            "desc": f"{len(never_used)} 个 active skill 从未被使用（阈值 {TH['skill_unused_warn_count']}）",
-            "detail": f"共 {len(active)} 个 active，使用过 {len(used)} 个",
-        })
-    if len(stale) > TH["skill_unused_warn_count"]:
-        issues.append({
-            "severity": "P1",
-            "flywheel": "Skill",
-            "desc": f"{len(stale)} 个 skill 超过 {TH['skill_unused_warn_days']} 天未使用",
-            "detail": "可能已过时，建议 review 归档",
-        })
 
     results = {
         "total_skills": len(all_skills),
@@ -715,19 +727,20 @@ def analyze_token_budget(trace: dict) -> tuple[list[dict], dict, dict]:
     exhaust_count = 0
 
     for e in events:
-        hs_before = e.get("hs_tokens_before", 0) or 0
         hs_after = e.get("hs_tokens_after", 0) or 0
-        kt_before = e.get("kt_tokens_before", 0) or 0
         kt_after = e.get("kt_tokens_after", 0) or 0
-        skill_before = e.get("skill_tokens_before", 0) or 0
         skill_after = e.get("skill_tokens_after", 0) or 0
         total_after = hs_after + kt_after + skill_after
         total_used = total_budget - total_after if total_budget else 0
-        hs_used_list.append(hs_before - hs_after if hs_before > hs_after else 0)
-        kt_used_list.append(kt_before - kt_after if kt_before > kt_after else 0)
-        skill_used_list.append(skill_before - skill_after if skill_before > skill_after else 0)
+        # 分源消耗用 after 值（实际保留的 token），非 before-after（裁剪量）
+        hs_used_list.append(hs_after)
+        kt_used_list.append(kt_after)
+        skill_used_list.append(skill_after)
         total_used_list.append(total_used)
-        if total_after <= 0 or (total_budget and total_used / total_budget > 0.95):
+        # 排除全关场景（total_after=0 时没有召回，不存在预算耗尽）
+        if total_after <= 0:
+            continue
+        if total_budget and total_used / total_budget > 0.95:
             exhaust_count += 1
 
     def _stats(lst):
@@ -1302,7 +1315,7 @@ def analyze_data_credibility(kt_result: dict, router_metrics: dict,
     notes = []
 
     # Sample size
-    n_masks = router_metrics.get("total_masks", 0)
+    n_masks = router_metrics.get("real_total", 0)
     if n_masks > 0 and n_masks < TH["min_sample_size"]:
         warnings.append(
             f"Router trace.log 样本量 {n_masks} < {TH['min_sample_size']}，"
@@ -1394,7 +1407,7 @@ def check_dependency_chain(states: dict[str, dict]) -> list[dict]:
         down_state = states.get(downstream, {})
         down_run = down_state.get("run_at", "")
         down_status = down_state.get("status", "")
-        if not down_run or down_status != "success":
+        if not down_run or down_status not in ("success", "partial"):
             continue
         try:
             down_time = datetime.fromisoformat(down_run)
@@ -1404,7 +1417,7 @@ def check_dependency_chain(states: dict[str, dict]) -> list[dict]:
             up_state = states.get(up_name, {})
             up_run = up_state.get("run_at", "")
             up_status = up_state.get("status", "")
-            if up_status != "success":
+            if up_status not in ("success", "partial"):
                 issues.append({
                     "severity": "P1",
                     "flywheel": _CRON_TO_FLYWHEEL.get(downstream, downstream),
@@ -1640,9 +1653,9 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     if router_m.get("status") == "no_data":
         L.append("- 无 trace.log 数据")
     else:
-        L.append(f"- 路由总次数: {router_m['total_masks']} | "
-                 f"样本量: {'充足' if router_m['total_masks'] >= TH['min_sample_size'] else '⚠️ 偏少'}")
-        L.append(f"- 全关率: {router_m['full_off_pct']}% ({router_m['full_off']}/{router_m['total_masks']}) | "
+        L.append(f"- 路由总次数: {router_m['total_masks']}（真实 {router_m['real_total']}，eval 测试 {router_m['eval_total']}）| "
+                 f"样本量: {'充足' if router_m['real_total'] >= TH['min_sample_size'] else '⚠️ 偏少'}")
+        L.append(f"- 全关率: {router_m['full_off_pct']}% ({router_m['full_off']}/{router_m['real_total']}) | "
                  f"全开率: {router_m['full_on_pct']}% ({router_m['full_on']})")
         L.append(f"- Hindsight 开启: {router_m['h_on']} | 知识树: {router_m['kt_on']} | Skill: {router_m['s_on']} | SAG: {router_m['sag_on']} ({router_m['sag_on_pct']}%)")
         L.append(f"- 召回成功: {router_m['success_count']} | 空结果: {router_m['empty_count']} | "
@@ -1911,9 +1924,9 @@ def generate_recommendations(
 
     # --- Router ---
     if router_m.get("status") != "no_data":
-        n = router_m.get("total_masks", 0)
+        n = router_m.get("real_total", 0)
         if n > 0 and n < TH["min_sample_size"]:
-            recs.append({"flywheel": "Router", "desc": f"样本量不足（{n} 次 < {TH['min_sample_size']}），建议增加日常路由量或降低最小样本阈值"})
+            recs.append({"flywheel": "Router", "desc": f"样本量不足（真实消息 {n} 次 < {TH['min_sample_size']}），建议增加日常路由量或降低最小样本阈值"})
         full_off = router_m.get("full_off_pct", 0)
         if full_off > 15:
             recs.append({"flywheel": "Router", "desc": f"全关率 {full_off}% 偏高，建议检查 Router prompt 是否过度保守或模型超时频发"})
@@ -1975,16 +1988,6 @@ def generate_recommendations(
                 recs.append({"flywheel": "Skill", "desc": f"Recall ({recall}) 远低于 Precision ({precision})，建议扩充同义词库或增加中英文双向匹配"})
             elif precision < recall * 0.7:
                 recs.append({"flywheel": "Skill", "desc": f"Precision ({precision}) 远低于 Recall ({recall})，建议收紧匹配规则或增加负样本"})
-
-    # --- Skill 真实使用 ---
-    if skill_usage_m and skill_usage_m.get("status") != "no_data":
-        never_used = skill_usage_m.get("never_used_count", 0)
-        active = skill_usage_m.get("active_count", 0)
-        if active and never_used / active > 0.15:
-            recs.append({"flywheel": "Skill", "desc": f"{never_used}/{active} ({never_used/active*100:.0f}%) 个 active skill 从未使用，建议 review 并归档低价值 skill"})
-        stale = skill_usage_m.get("stale_count", 0)
-        if stale > TH["skill_unused_warn_count"]:
-            recs.append({"flywheel": "Skill", "desc": f"{stale} 个 skill 超过 {TH['skill_unused_warn_days']} 天未使用，建议评估是否仍需维护"})
 
     # --- KN Baseline ---
     if kn_m.get("status") != "no_data":
