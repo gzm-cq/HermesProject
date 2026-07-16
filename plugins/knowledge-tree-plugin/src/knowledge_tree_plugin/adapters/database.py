@@ -380,18 +380,16 @@ class PluginDatabaseAdapter:
             """
             WITH RECURSIVE descendants AS (
                 SELECT id, name, node_type, parent_id, k_vector, local_offset,
-                       display_order, valid_from, valid_until
+                       display_order
                 FROM knowledge_tree WHERE parent_id = %s
                 UNION ALL
                 SELECT kt.id, kt.name, kt.node_type, kt.parent_id,
-                       kt.k_vector, kt.local_offset, kt.display_order,
-                       kt.valid_from, kt.valid_until
+                       kt.k_vector, kt.local_offset, kt.display_order
                 FROM knowledge_tree kt
                 JOIN descendants d ON kt.parent_id = d.id
             )
             SELECT d.id, d.name, d.node_type, d.parent_id,
-                   d.k_vector, d.local_offset, kpt.text,
-                   d.valid_from, d.valid_until
+                   d.k_vector, d.local_offset, kpt.text
             FROM descendants d
             LEFT JOIN knowledge_point_texts kpt
                    ON kpt.tree_node_id = d.id
@@ -410,8 +408,8 @@ class PluginDatabaseAdapter:
                 "k_vector": _parse_k_vector(r[4]),
                 "local_offset": _parse_k_vector(r[5]),
                 "text": r[6] or "",
-                "valid_from": r[7].isoformat() if r[7] else None,
-                "valid_until": r[8].isoformat() if r[8] else None,
+                "valid_from": None,
+                "valid_until": None,
             }
             for r in rows
         ]

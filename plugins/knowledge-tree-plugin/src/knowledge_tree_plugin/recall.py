@@ -275,23 +275,30 @@ def attention_filter(
             scores.append((i, sim))
 
         scores_arr = np.array([s[1] for s in scores], dtype=np.float32)
-        scores_arr -= np.max(scores_arr)
-        exp_scores = np.exp(scores_arr)
-        softmax_scores = exp_scores / (np.sum(exp_scores) + 1e-10)
 
-        ranked = sorted(
-            [(candidates[idx], float(softmax_scores[i])) for i, (idx, _) in enumerate(scores)],
-            key=lambda x: x[1], reverse=True,
-        )
-
-        # cold_start 用余弦相似度，min_score 有绝对语义；非 cold_start 用
-        # softmax attention，分数随兄弟节点数量变化，不适合直接套 0.3 阈值。
-        # 因此非冷启动采用"保留 topK，但过滤接近 0 的噪音"策略。
+        # cold_start uses cosine similarity (absolute semantics), no softmax.
+        # Non-cold_start uses softmax attention (relative distribution).
         if cold_start:
+            # Keep raw cosine scores for filtering and ranking
+            ranked = sorted(
+                [(candidates[idx], float(scores_arr[i])) for i, (idx, _) in enumerate(scores)],
+                key=lambda x: x[1], reverse=True,
+            )
             kept = [(node, score) for node, score in ranked if score >= min_score]
         else:
+            # Softmax for attention mode (relative scores)
+            scores_arr -= np.max(scores_arr)
+            exp_scores = np.exp(scores_arr)
+            softmax_scores = exp_scores / (np.sum(exp_scores) + 1e-10)
+
+            ranked = sorted(
+                [(candidates[idx], float(softmax_scores[i])) for i, (idx, _) in enumerate(scores)],
+                key=lambda x: x[1], reverse=True,
+            )
+            # Softmax scores are relative; use floor instead of absolute threshold
             floor = 1.0 / max(len(ranked), 1) * 0.1
             kept = [(node, score) for node, score in ranked if score >= floor]
+
         kept = kept[:max_results]
 
         result: list[dict[str, Any]] = []

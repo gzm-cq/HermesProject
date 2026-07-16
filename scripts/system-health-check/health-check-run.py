@@ -35,7 +35,7 @@ def format_summary(data: dict) -> str:
     ts = meta.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     local_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    services = ["hermes", "litellm", "hindsight", "dify", "postgres", "mcp", "orphan_scan", "memory_files"]
+    services = ["hermes", "litellm", "hindsight", "sag", "postgres", "mcp", "moonbridge", "orphan_scan", "memory_files"]
     lines = [f"# 🏥 系统健康巡检报告", f"**时间**: {local_time}", ""]
 
     results = {}
@@ -51,7 +51,7 @@ def format_summary(data: dict) -> str:
     emojis = " ".join(STATUS_EMOJI.get(results.get(s, "fail"), "❓") for s in services)
     n_ok = sum(1 for s in services if results.get(s) == "ok")
     lines.append(f"{emojis}")
-    lines.append(f"**{n_ok}/8** 项正常 | 巡检耗时 < 30s")
+    lines.append(f"**{n_ok}/{len(services)}** 项正常 | 巡检耗时 < 30s")
     lines.append("")
 
     # 逐项详情
@@ -77,8 +77,12 @@ def format_summary(data: dict) -> str:
             healthy = '✅' if 'healthy' in health_raw.lower() else '❌'
             pg = '✅' if checks.get('pg_connection') else '❌'
             detail = f"进程 {checks.get('process_count', '?')} 个 {alive} | 健康 {healthy} | PG {pg}"
-        elif svc == "dify":
-            detail = f"容器 {checks.get('containers_running', '?')} 个 | API {'✅' if checks.get('api_health','') else '❌'} | Web {'✅' if checks.get('web_reachable') else '❌'}"
+        elif svc == "sag":
+            alive = '✅' if checks.get('sag_process_alive') else '❌'
+            mcp = '✅' if checks.get('sag_mcp_process_alive') else '❌'
+            http = '✅' if checks.get('http_endpoint','') not in ('000','','') else '❌'
+            pg = '✅' if checks.get('pg_connection') else '❌'
+            detail = f"SAG 进程 {alive} | MCP {mcp} | HTTP {http} | PG {pg}"
         elif svc == "postgres":
             detail = f"连接数 {checks.get('active_connections', '?')} | pgvector {'✅' if checks.get('pgvector_enabled') else '❌'} | 磁盘 {checks.get('disk_usage_pct', '?')}%"
         elif svc == "mcp":
@@ -88,32 +92,40 @@ def format_summary(data: dict) -> str:
             wmcp_ok = checks.get('windows_mcp_reachable', False)
             wmcp_http = checks.get('windows_mcp_http', 'N/A')
             parts = [f"{up}/{exp} 个在线"]
-            sorted_names = ["axiom-wiki", "postgres", "filesystem", "codegraph", "openclaw", "windows-mcp"]
+            sorted_names = ["axiom-wiki", "postgres", "codegraph", "sag", "windows-mcp"]
             for name in sorted_names:
                 cnt = sc.get(name, 0)
                 if name == "windows-mcp":
-                    emoji = '✅' if wmcp_ok else '❌'
-                    parts.append(f"win-mcp {emoji}({wmcp_http})")
+                    e = '✅' if wmcp_ok else '❌'
+                    parts.append(f"win-mcp {e}({wmcp_http})")
                 else:
-                    emoji = '✅' if cnt > 0 else '❌'
-                    parts.append(f"{name[:5]} {emoji}")
+                    e = '✅' if cnt > 0 else '❌'
+                    parts.append(f"{name[:5]} {e}")
             detail = " | ".join(parts)
+        elif svc == "moonbridge":
+            alive = '✅' if checks.get('process_alive') else '❌'
+            http = checks.get('http_endpoint','')
+            reach = '✅' if http not in ('000','','') else '❌'
+            detail = f"进程 {alive} | 端口 38440 {reach}({http})"
         elif svc == "orphan_scan":
             orphans = checks.get('orphan_pids', [])
-            detail = f"异常进程 {len(orphans)} 个" if orphans else "无异常进程"
+            dead = checks.get('dead_containers', 0)
+            detail = f"异常进程 {len(orphans)} 个 | 死容器 {dead}" if orphans or dead else "无异常进程"
         elif svc == "memory_files":
             parts = []
             for name in ["MEMORY.md", "USER.md"]:
-                info = checks.get(name, {})
-                if "error" in info:
-                    parts.append(f"{name} ❌ {info['error']}")
+                mf = checks.get(name, {})
+                if "error" in mf:
+                    parts.append(f"{name} ❌ {mf['error']}")
                 else:
-                    chars = info.get("chars", 0)
-                    limit = info.get("limit", 0)
-                    pct = info.get("pct", 0)
-                    emoji = "🟢" if pct < 75 else ("🟡" if pct < 90 else "🔴")
-                    parts.append(f"{name} {emoji} {pct:.0f}% ({chars:,}/{limit:,})")
+                    chars = mf.get("chars", 0)
+                    limit = mf.get("limit", 0)
+                    pct = mf.get("pct", 0)
+                    e = "🟢" if pct < 75 else ("🟡" if pct < 90 else "🔴")
+                    parts.append(f"{name} {e} {pct:.0f}% ({chars:,}/{limit:,})")
             detail = " | ".join(parts)
+        else:
+            detail = str(checks)
 
         lines.append(f"{emoji} **{svc.upper()}**: {detail}")
 

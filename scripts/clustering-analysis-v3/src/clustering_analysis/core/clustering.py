@@ -490,7 +490,7 @@ def adaptive_hdbscan_params(
         min_cluster_size = 5
         min_samples = 4
     elif n_samples < 2000:
-        min_cluster_size = 8
+        min_cluster_size = 5
         min_samples = 6
     else:
         min_cluster_size = 15
@@ -530,7 +530,7 @@ def run_hdbscan_clustering(
     hdb_kwargs = dict(
         min_cluster_size=min_cluster_size,
         cluster_selection_method=cluster_selection_method,
-        metric="euclidean",
+        metric="cosine",
         copy=False,
     )
     if min_samples is not None:

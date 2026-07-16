@@ -621,7 +621,7 @@ def run(
             sub_emb,
             min_cluster_size=hdb_min_cluster_size,
             min_samples=hdb_min_samples,
-            cluster_selection_method="leaf",
+            cluster_selection_method="eom",
         )
         hdbscan_cluster_count = len(set(r_labels) - {-1})
 

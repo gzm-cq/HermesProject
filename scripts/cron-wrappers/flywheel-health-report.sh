@@ -2,7 +2,7 @@
 # flywheel-health-report.sh — 飞轮健康报告统一生成
 #
 # 部署路径: /root/.hermes/scripts/flywheel-health-report.sh
-# 调度建议: 0 17 * * *（每日 17:00，所有 cron 跑完后）
+# 调度: CN 08:00（UTC 00:00），此时前一天 UTC 数据已完整
 #
 # 功能:
 #   - 调用 flywheel-health-report.py 生成报告

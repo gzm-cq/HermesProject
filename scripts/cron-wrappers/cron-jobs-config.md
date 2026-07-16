@@ -24,10 +24,11 @@
 | 10 | 知识树k_vector每周兜底维护 | 09:00 | 6 | no_agent | `knowledge-tree-builder/scripts/knowledge-tree-kvector-maintenance.sh` | `/root/.hermes/scripts/knowledge-tree-builder` |
 | 11 | 每周深度研究-知识树学习 | 09:00 | 0 | agent | —（LLM prompt 驱动） | — |
 | 12 | 论文投稿提醒-改投 | 09:00 | 一次性(2026-08-06) | agent | —（LLM prompt 驱动） | — |
-| 13 | 飞轮健康报告 | 17:00 | * | no_agent | `flywheel-health-report.sh` | — |
+| 13 | 飞轮健康报告 | 08:00 | * | no_agent | `flywheel-health-report.sh` | — |
 
 **说明：**
 - 执行日：`*` = 每日，`1` = 周一，`1-5` = 工作日，`0` = 周日，`6` = 周六
+- 飞轮健康报告在 CN 08:00 运行，确保 UTC 前一天数据已完整（用户前一天晚间改动可见）
 - 所有任务在 08:00-16:00 工作时间内运行，script 路径为相对 `~/.hermes/scripts/` 解析
 - agent 类型任务没有 script，由 Hermes cron 调度 LLM 代理执行 prompt
 - 当前共 13 个任务：11 个 no_agent 脚本 + 2 个 agent 任务

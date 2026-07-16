@@ -13,4 +13,4 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 cd "$SCRIPT_DIR"
 
-python3 scripts/dream-daily.py "$@" 2>&1 | logger -t dream-daily
+python3 dream-daily.py "$@" 2>&1 | logger -t dream-daily

@@ -1130,15 +1130,31 @@ def analyze_clustering(data_flywheel: Path) -> tuple[list[dict], dict, dict]:
             "detail": "大部分数据被归为噪声，聚类效果有限",
         })
 
-    # Noise rate trend
+    # Noise rate trend — 用前 3 次滚动均值作基线，避免单次离群值误判趋势
     trend = {}
-    if prev:
-        prev_noise = prev.get("noise_units", 0)
-        prev_total = prev.get("processed_units", 0)
-        prev_rate = (prev_noise / prev_total * 100) if prev_total else 0
-        delta = noise_rate - prev_rate
-        result["noise_rate_delta"] = round(delta, 1)
-        trend["噪声率"] = f"{prev_rate:.1f}% → {noise_rate:.1f}% ({delta:+.1f}%)"
+    WINDOW = 3
+    window = runs[-(WINDOW + 1):-1] if len(runs) > WINDOW else (runs[:-1] if len(runs) > 1 else [])
+    if window:
+        window_rates = []
+        for r in window:
+            p_n = r.get("noise_units", 0)
+            p_t = r.get("processed_units", 0)
+            if p_t > 0:
+                window_rates.append(p_n / p_t * 100)
+        if window_rates:
+            baseline_rate = sum(window_rates) / len(window_rates)
+            delta = noise_rate - baseline_rate
+            result["noise_rate_delta"] = round(delta, 1)
+            result["noise_rate_baseline"] = round(baseline_rate, 1)
+            result["noise_rate_baseline_window"] = len(window)
+            trend["噪声率"] = f"{baseline_rate:.1f}%（{len(window)}次均值）→ {noise_rate:.1f}% ({delta:+.1f}%)"
+            # 离群标注：当前相对窗口均值偏离 >2pp，提示趋势可能是异常波动
+            if abs(delta) > 2.0:
+                trend["噪声率_离群"] = (
+                    "⚠️ 单次偏离均值 >2pp，趋势可能为异常波动而非真恶化/改善"
+                )
+    else:
+        result["noise_rate_delta"] = 0.0
 
     return issues, result, trend
 
@@ -1502,8 +1518,9 @@ def _resolve_trend_arrow(delta_val: float) -> str:
 def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]:
     now = datetime.now(timezone.utc)
     now_str = now.strftime("%Y-%m-%d %H:%M UTC")
-    # 报告在 UTC 09:00 生成，当天 UTC 日只过了 9 小时，数据不完整。
-    # 改为统计前一天的完整 UTC 日（24 小时数据完整）。
+    # 报告在 CN 08:00（UTC 00:00）生成，此时 UTC 前一天的完整 24h 数据已就绪。
+    # 数据窗口 = UTC 昨天，对应 CN 用户视角的"昨天"（晚间已完成的改动）。
+    # 例：CN 7/16 08:00 生成报告 → 数据窗口 = UTC 7/15 = CN 7/15（含用户 7/15 晚间改动）
     data_window = (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
     cron_state_dir = home / CRON_STATE_SUBPATH

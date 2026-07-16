@@ -653,6 +653,8 @@ def _do_hindsight_recall(query: str) -> dict | None:
 def _do_kt_recall(session_id: str, query: str) -> list[dict]:
     """执行知识树 recall，有异常时返回空列表。"""
     if not HAS_KNOWLEDGE_TREE:
+        _ensure_kt_imported()
+    if not HAS_KNOWLEDGE_TREE:
         return []
     try:
         return _recall_knowledge_tree_raw(session_id, query)
@@ -982,7 +984,7 @@ def _execute_recall(
             if sk_future is not None:
                 _sk_t0 = time.time()
                 try:
-                    skill_context = sk_future.result(timeout=5)
+                    skill_context = sk_future.result(timeout=10)
                     _sk_latency = (time.time() - _sk_t0) * 1000
                     _sk_results = [{"id": "skill_context", "score": 1.0}] if skill_context else []
                     recall_logger.record(
@@ -1599,7 +1601,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     query_trunc = user_message[:60]
 
     _hs_active = mask["h"] and not _hs_circuit_open
-    _kt_active = mask["kt"] and HAS_KNOWLEDGE_TREE
+    _kt_active = mask["kt"] and (HAS_KNOWLEDGE_TREE or _ensure_kt_imported())
     _s_active = mask["s"]
     _sag_active = mask.get("sag", False)
     _active_count = sum([_hs_active, _kt_active, _s_active, _sag_active])

@@ -166,7 +166,7 @@ class KnowledgeNavigationConfig:
     router_model: str = field(default="s-deepseek-v4-flash")
     router_api_url: str = field(default="http://127.0.0.1:4142/v1")
     router_api_key: str = field(default="")
-    router_timeout: int = field(default=5)
+    router_timeout: int = field(default=15)  # 5s 太紧，15s 减少超时率
 
     # Skill Matcher: 三级筛选架构（关键词 + Embedding + LLM）
     # 注意：kn_skill_keyword_prescreen 已废弃，match_skills 现为纯 LLM 全量匹配

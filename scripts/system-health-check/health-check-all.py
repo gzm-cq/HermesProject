@@ -80,7 +80,8 @@ def get_systemd_pids():
     if _SYSTEMD_PIDS is not None:
         return _SYSTEMD_PIDS
     out, _, _ = run(
-        "for svc in hermes-gateway hindsight-daemon litellm axiom-wiki-mcp-sse; do "
+        "for svc in hermes-gateway hindsight-daemon litellm axiom-wiki-mcp-sse "
+        "codegraph-mcp postgres-mcp sag sag-mcp moonbridge; do "
         "systemctl show -P MainPID \"$svc\" 2>/dev/null; done || true"
     )
     pids = set()
@@ -228,55 +229,44 @@ def check_hindsight():
     })
 
 # ============================================
-# 4. Dify
+# 4. SAG (SQL-Retrieval Augmented Generation)
 # ============================================
-def check_dify():
-    out, _, _ = run(
-        "docker ps --filter 'name=dify' --format '{{.Names}}' 2>/dev/null || true"
-    )
-    names = [n.strip() for n in out.split("\n") if n.strip()]
-    container_count = len(names)
-    all_up = True
-    for name in names:
-        s_out, _, _ = run(
-            f"docker ps --filter 'name={name}' --filter 'status=running' "
-            f"--format '{{.Names}}' 2>/dev/null || true"
-        )
-        if not s_out.strip():
-            all_up = False
-            break
+def check_sag():
+    """Check SAG server + SAG MCP SSE bridge via systemd + HTTP."""
+    # SAG main server (port 8080 internally, but we check via systemd)
+    out, _, _ = run("systemctl show -P MainPID sag.service 2>/dev/null || echo 0")
+    sag_pid = int(out or 0)
+    sag_alive = sag_pid > 0
 
-    dupes = set()
-    seen = set()
-    for n in names:
-        if n in seen: dupes.add(n)
-        seen.add(n)
-    has_dupes = len(dupes) > 0
+    # SAG MCP SSE bridge (port 4175)
+    out, _, _ = run("systemctl show -P MainPID sag-mcp.service 2>/dev/null || echo 0")
+    sag_mcp_pid = int(out or 0)
+    sag_mcp_alive = sag_mcp_pid > 0
 
-    out, _, _ = run(
-        "docker exec dify-api-1 curl -s http://localhost:5001/health --max-time 5 "
-        "2>/dev/null || echo 'unreachable'"
-    )
-    api_health = out[:200] if out else "unreachable"
+    # HTTP health check on MCP SSE port
+    out, _, rc = run("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4175/ --max-time 5 2>/dev/null || echo '000'")
+    sag_http = out.strip() if out else "000"
+    sag_reachable = sag_http not in ("000", "")
 
+    # DB connectivity (sag_lite database in shared-postgres:5434)
     out, _, _ = run(
-        "docker ps --filter 'name=dify-web-1' --filter 'status=running' "
-        "--format '{{.Status}}' 2>/dev/null || echo 'not running'"
+        "PGPASSWORD=postgres psql -h 127.0.0.1 -p 5434 -U postgres -d sag_lite "
+        "-c \"SELECT 1 AS alive\" --no-align -t 2>/dev/null || echo 'failed'"
     )
-    web_reachable = out != "not running" and "Up" in out
+    sag_pg_ok = out.strip() == "1"
 
     st = "ok"
-    if container_count == 0: st = "fail"
-    elif not all_up: st = "warn"
-    elif has_dupes: st = "warn"
+    if not sag_alive and not sag_mcp_alive: st = "fail"
+    elif not sag_reachable: st = "warn"
+    elif not sag_pg_ok: st = "warn"
 
-    write_check("dify", st, {
-        "containers_running": container_count,
-        "container_names": names,
-        "all_up": all_up,
-        "duplicate_detected": has_dupes,
-        "api_health": api_health,
-        "web_reachable": web_reachable,
+    write_check("sag", st, {
+        "sag_process_alive": sag_alive,
+        "sag_mcp_process_alive": sag_mcp_alive,
+        "sag_pid": sag_pid,
+        "sag_mcp_pid": sag_mcp_pid,
+        "http_endpoint": sag_http,
+        "pg_connection": sag_pg_ok,
     })
 
 # ============================================
@@ -336,14 +326,12 @@ def check_postgres():
 # ============================================
 # 6. MCP
 # ============================================
-# All 6 MCP servers from config.yaml (mcp_servers section)
-MCP_SERVERS = ["axiom-wiki", "postgres", "filesystem", "codegraph", "openclaw", "windows-mcp"]
+# All 5 MCP servers from config.yaml (mcp_servers section)
+MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "sag", "windows-mcp"]
 MCP_PATTERNS = {
-    "axiom-wiki":      r'axiom-wiki',
-    "postgres":        r'server-postgres',
-    "filesystem":      r'server-filesystem',
-    "codegraph":       r'codegraph.*(?:serve.*mcp|sse-bridge)',
-    "openclaw":        r'openclaw-sse-bridge',
+    "axiom-wiki":  r'axiom-wiki-mcp-sse\.mjs',
+    "postgres":    r'postgres-mcp-sse\.mjs',
+    "codegraph":   r'codegraph-mcp-sse\.mjs',
 }
 # windows-mcp runs on Windows host, checked via HTTP endpoint
 WINDOWS_MCP_URL = "http://127.0.0.1:8000/sse"
@@ -361,6 +349,9 @@ def check_mcp():
     for name, pattern in MCP_PATTERNS.items():
         c = count_processes(pattern)
         server_counts[name] = c
+    # sag checked via systemd (not an SSE bridge process pattern)
+    out, _, _ = run("systemctl is-active sag.service 2>/dev/null || echo inactive")
+    server_counts["sag"] = 1 if out.strip() == "active" else 0
 
     # List all MCP PIDs excluding self & parent
     out, _, _ = run("ps -eo pid=,args= 2>/dev/null || true")
@@ -409,6 +400,32 @@ def check_mcp():
         "mcp_pids": mcp_pids,
         "windows_mcp_reachable": wmcp_reachable,
         "windows_mcp_http": wmcp_http,
+    })
+
+
+# ============================================
+# 7. Moon Bridge (Responses API converter)
+# ============================================
+def check_moonbridge():
+    """Check Moon Bridge service via systemd + port 38440."""
+    out, _, _ = run("systemctl show -P MainPID moonbridge.service 2>/dev/null || echo 0")
+    mb_pid = int(out or 0)
+    mb_alive = mb_pid > 0
+
+    # HTTP check — moonbridge returns 404 on / which means it's alive
+    out, _, _ = run("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38440/ --max-time 5 2>/dev/null || echo '000'")
+    mb_http = out.strip() if out else "000"
+    mb_reachable = mb_http not in ("000", "")
+
+    st = "ok"
+    if not mb_alive: st = "fail"
+    elif not mb_reachable: st = "warn"
+
+    write_check("moonbridge", st, {
+        "process_alive": mb_alive,
+        "pid": mb_pid,
+        "http_endpoint": mb_http,
+        "port": 38440,
     })
 
 
@@ -469,10 +486,10 @@ def check_orphans():
     orphan_count = len(orphans)
 
     out, _, _ = run(
-        "docker ps -a --filter 'name=dify' --filter 'status=exited' "
+        "docker ps -a --filter 'status=exited' "
         "--format '{{.Names}}' 2>/dev/null | wc -l || echo 0"
     )
-    dead_dify = int(out or 0)
+    dead_containers = int(out or 0)
 
     out, _, _ = run(
         "docker ps -a --filter 'status=created' --format '{{.Names}}' "
@@ -482,12 +499,12 @@ def check_orphans():
 
     st = "ok"
     if orphan_count > 5: st = "warn"
-    if dead_dify > 0: st = "warn"
+    if dead_containers > 5: st = "warn"
 
     write_check("orphan_scan", st, {
         "orphan_count": orphan_count,
         "orphan_pids": orphans,
-        "dead_dify_containers": dead_dify,
+        "dead_containers": dead_containers,
         "dangling_containers": dangling,
     })
 
@@ -503,12 +520,13 @@ if __name__ == "__main__":
         "hermes": check_hermes,
         "litellm": check_litellm,
         "hindsight": check_hindsight,
-        "dify": check_dify,
+        "sag": check_sag,
         "postgres": check_postgres,
         "mcp": check_mcp,
+        "moonbridge": check_moonbridge,
     }
     
-    with ThreadPoolExecutor(max_workers=7) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fn): name for name, fn in checks.items()}
         for future in as_completed(futures):
             name = futures[future]

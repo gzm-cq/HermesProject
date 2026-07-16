@@ -78,6 +78,20 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
                     else:
                         break
 
+    # 5) Extract JSON from LLM reasoning text: LLM sometimes outputs thinking
+    #    before JSON (e.g. "我们分析消息：...\n\n{\"h\": ...}") — pull the last
+    #    JSON object from the full text, not just the first one.
+    if data is None:
+        json_objects = re.findall(r'\{[^{}]*\}', text)
+        for obj_text in reversed(json_objects):  # check last one first (usually the answer)
+            try:
+                candidate = json.loads(obj_text)
+                if isinstance(candidate, dict) and all(k in candidate for k in ('h', 'kt', 's', 'sag')):
+                    data = candidate
+                    break
+            except json.JSONDecodeError:
+                continue
+
     # After salvage, require all 4 mask keys present — partial mask is dangerous
     # (missing key → False → route closed when it should be open)
     if isinstance(data, dict) and not all(k in data for k in ('h', 'kt', 's', 'sag')):
@@ -152,7 +166,7 @@ def route(
                 json={
                     "model": model,
                     "temperature": 0.1,
-                    "max_tokens": 256,
+                    "max_tokens": 512,  # Round2: 256→512 防DeepSeek推理文本截断导致JSON输出不全
                     "thinking": {"type": "disabled"},
                     "messages": [
                         {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
