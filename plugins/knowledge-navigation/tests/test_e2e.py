@@ -5,7 +5,8 @@
 2. 分来源 XML 标签输出格式验证
 
 注意：turn_gate 的 skip_pre_llm_call 在 Router 之前拦截，
-所以测试消息必须 > 10 字符且不以操作型前缀开头。
+仅跳过空消息、系统通知、内部维护 prompt、纯确认/闲聊、长英文消息。
+操作型前缀（"修"/"部署"等）已于 2026-07-03 废弃，不再跳过。
 """
 
 import json
@@ -50,7 +51,7 @@ def _mock_recall(results: list | None = None, trace: dict | None = None) -> dict
 
 
 # ========== 测试消息常量 ==========
-# 必须 > 10 字符且不以操作型前缀开头，才能通过 turn_gate 的 skip_pre_llm_call
+# 测试消息：turn_gate 仅跳过明确白名单（空消息/系统通知/确认/闲聊/长英文）
 _GENERIC = "请问什么是K8s的架构体系"       # 12 chars, 含"什么是"→generic
 _TASK_MSG = "帮我查一下 litellm 的配置"      # task: 含 litellm
 _PERSONAL = "as we discussed earlier"       # personal: 含 as we discussed

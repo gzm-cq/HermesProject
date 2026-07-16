@@ -120,7 +120,7 @@ class TestPreLlmCall:
 
     @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
     def test_long_operational_prompt_skips_recall(self, mock_recall: MagicMock) -> None:
-        """操作型短指令后附带长上下文时也应跳过 recall。"""
+        """操作型长消息含内部 prompt 特征时也应跳过 recall（仅靠内部 prompt 匹配）。"""
         result = pre_llm_call(
             "session-123",
             "修复\n<memory-context>" + "历史上下文" * 80 + "</memory-context>",
@@ -129,6 +129,45 @@ class TestPreLlmCall:
 
         assert result is None
         mock_recall.assert_not_called()
+
+    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    def test_operational_short_message_not_skipped_by_turn_gate(
+        self, mock_recall: MagicMock,
+    ) -> None:
+        """操作型短消息（如"修源码"）不应被 turn_gate 跳过，应交给 Router 决策。"""
+        mock_recall.return_value = self._mock_recall(
+            results=[{"id": "node1", "text": "相关经验"}],
+            trace={"reranked": [{"node_id": "node1", "rerank_score": 0.9}]},
+        )
+        with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False}):
+            with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+                result = pre_llm_call("session-123", "修源码", platform="cli")
+
+        # turn_gate 不应跳过 → Router 被调用 → recall 被调用
+        assert result is not None
+        mock_recall.assert_called_once()
+
+    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    def test_deploy_message_not_skipped_by_turn_gate(
+        self, mock_recall: MagicMock,
+    ) -> None:
+        """操作型消息"部署"不应被 turn_gate 跳过。"""
+        mock_recall.return_value = self._mock_recall(
+            results=[{"id": "node1", "text": "部署经验"}],
+            trace={"reranked": [{"node_id": "node1", "rerank_score": 0.9}]},
+        )
+        with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False}):
+            with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+                result = pre_llm_call("session-123", "部署到生产环境", platform="cli")
+
+        assert result is not None
+        mock_recall.assert_called_once()
+
+    def test_system_notice_skipped_by_turn_gate(self) -> None:
+        """系统通知（如 [Note: ...]）应被 turn_gate 跳过。"""
+        with patch.object(nav_hooks, "_router_route") as mock_route:
+            pre_llm_call("sess-sys", "[Note: model was just switched to default]", platform="cli")
+        mock_route.assert_not_called()
 
     @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
     def test_recall_success_returns_context(
@@ -187,8 +226,9 @@ class TestPreLlmCall:
         mock_recall.return_value = self._mock_recall(results=[])
 
         with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
-            result = pre_llm_call("session-123", "12345678901", platform="cli")
+             patch.object(nav_hooks, "_do_sag_recall", return_value=[]), \
+             patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": False}):
+            result = pre_llm_call("session-123", "查询某个具体的问题", platform="cli")
 
         assert result is None
 
@@ -204,7 +244,8 @@ class TestPreLlmCall:
         )
 
         with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
-            result = pre_llm_call("session-123", "12345678901", platform="cli")
+            with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": False}):
+                result = pre_llm_call("session-123", "查询某个具体的问题", platform="cli")
 
         assert result is None
 

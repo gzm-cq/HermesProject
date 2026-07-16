@@ -81,19 +81,10 @@ def skip_system_prompt(user_message: str, is_first_turn: bool) -> bool:
 
 # ========== 文本门控 ==========
 
-# 操作型命令前缀（模块加载时预计算小写，避免循环内重复 .lower()）
-_OPERATIONAL_PREFIXES: Final[tuple[str, ...]] = (
-    "读", "看", "查", "搜索", "找",
-    "执行", "运行", "部署",
-    "重启", "停止", "启动", "杀",
-    "巡检", "审计", "审查", "review",
-    "检查", "配置", "修改", "设置",
-    "创建", "删除", "写入", "修复", "修正",
-    "添加", "移除", "清理",
-)
-_OPERATIONAL_PREFIXES_LOWER: Final[tuple[str, ...]] = tuple(
-    p.lower() for p in _OPERATIONAL_PREFIXES
-)
+# 操作型命令前缀（已废弃：误关率过高，"修源码"/"部署"等真有价值的消息被跳过）
+# 现改为"默认不跳过，让消息走 Router 决策"原则。
+_OPERATIONAL_PREFIXES: Final[tuple[str, ...]] = ()  # noqa: E501  保留空元组以兼容旧引用，避免外部 import 报错
+_OPERATIONAL_PREFIXES_LOWER: Final[tuple[str, ...]] = ()
 
 # 纯确认/简短响应
 _CONFIRM_PATTERN: Final[re.Pattern] = re.compile(
@@ -102,14 +93,12 @@ _CONFIRM_PATTERN: Final[re.Pattern] = re.compile(
     re.IGNORECASE,
 )
 
-# 知识型关键词：命中时不跳过 recall，即使消息以操作型前缀开头。
-# 避免误伤“检查一下 X 的原理”“配置 Y 的机制是什么”这类有召回价值的提问。
-_KNOWLEDGE_SIGNAL_WORDS: Final[tuple[str, ...]] = (
-    "原理", "机制", "为什么", "为何", "原因", "导致", "区别", "对比",
-    "定义", "概念", "公式", "流程", "规则", "结论", "含义", "作用",
-    "是什么", "怎么回事", "如何理解",
+# 系统通知特征：方括号包裹的系统自动注入消息，不属于用户意图
+_SYSTEM_NOTICE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"\[Note:", re.IGNORECASE),
+    re.compile(r"\[ASYNC DELEGATION", re.IGNORECASE),
+    re.compile(r"model was just switched", re.IGNORECASE),
 )
-
 
 # 内部维护 / 自动注入 prompt：不进入 recall，避免递归召回和 Hindsight 超时
 _INTERNAL_PROMPT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
@@ -122,7 +111,10 @@ _INTERNAL_PROMPT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 
 
 def skip_pre_llm_call(user_message: str) -> str:
-    """pre_llm_call 文本门控：操作型对话跳过整个 recall 流水线。
+    """pre_llm_call 文本门控：白名单跳过，纯闲聊/确认/系统通知放行。
+
+    设计原则：默认不跳过，让消息走 Router 决策；只有明确属于"闲聊/确认/系统通知/内部维护"
+    时才跳过，避免误关有召回价值的操作指令（如"修源码"、"部署"等）。
 
     必须在来源门控通过后调用。返回非空字符串时跳过。
 
@@ -130,35 +122,23 @@ def skip_pre_llm_call(user_message: str) -> str:
         user_message: 本轮用户消息原文。
 
     Returns:
-        "" = 正常执行；非空字符串 = 跳过原因。
+        "" = 正常执行（走 Router）；非空字符串 = 跳过原因。
     """
     msg = user_message.strip()
     if not msg:
         return "消息为空"
 
+    # 系统通知：方括号包裹的系统自动注入消息
+    for pat in _SYSTEM_NOTICE_PATTERNS:
+        if pat.search(msg):
+            return f"系统通知({pat.pattern})"
+
+    # 内部维护 / 自动注入 prompt：避免递归召回
     for pat in _INTERNAL_PROMPT_PATTERNS:
         if pat.search(msg):
             return f"内部维护/注入prompt({pat.pattern})"
 
-    # 知识型关键词反转：含强知识信号的提问不跳过，即使以操作型前缀开头。
-    # 例如“检查一下 X 的原理”“配置 Y 的机制”仍有召回价值。
-    if any(word in msg for word in _KNOWLEDGE_SIGNAL_WORDS):
-        return ""
-
-    first_line_lower = msg.splitlines()[0].strip().lower()
-    for prefix_lower in _OPERATIONAL_PREFIXES_LOWER:
-        if first_line_lower.startswith(prefix_lower):
-            return f"操作型前缀({msg[:20]})"
-
-    if len(msg) <= 3:
-        return f"消息过短({len(msg)}字符)"
-
-    if len(msg) <= 40:
-        msg_lower = msg.lower()
-        for prefix_lower in _OPERATIONAL_PREFIXES_LOWER:
-            if msg_lower.startswith(prefix_lower):
-                return f"操作型前缀({msg[:20]})"
-
+    # 纯确认/闲聊模式：严格匹配整句
     if _CONFIRM_PATTERN.match(msg):
         return f"确认型消息({msg[:15]})"
 
@@ -168,6 +148,7 @@ def skip_pre_llm_call(user_message: str) -> str:
         if zh_chars / len(msg) < 0.05:
             return f"中文占比过低({zh_chars}/{len(msg)})"
 
+    # 其他情况默认不跳过，交给 Router 决策
     return ""
 
 
