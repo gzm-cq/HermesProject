@@ -870,8 +870,29 @@ def analyze_global_errors(error_log_path: Path, filter_date: str) -> tuple[list[
     error_keywords: Counter = Counter()
     total_lines = 0
     date_lines = 0
+    filtered_errors = 0
 
     line_re = re.compile(r"(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}[,\d]* (\w+) ([\w\.]+):")
+
+    def is_restart_cascade_noise(level: str, module: str, line: str) -> bool:
+        if level != "ERROR":
+            return False
+        low = line.lower()
+        if module == "asyncio":
+            if "unclosed client session" in low or "unclosed connector" in low:
+                return True
+            if "task exception was never retrieved" in low and "connectionclosedok" in low:
+                return True
+        if module == "lark":
+            if "receive message loop exit" in low and "code=1000" in line:
+                return True
+        if module.startswith("gateway.platforms.weixin") and "rate limited" in low:
+            return True
+        if module.startswith("mcp") and "sse" in low and ("connection" in low or "disconnect" in low or "closed" in low):
+            return True
+        if "hindsight" in low and ("daemon" in low or "not ready" in low or "unavailable" in low):
+            return True
+        return False
 
     with open(error_log_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -886,6 +907,9 @@ def analyze_global_errors(error_log_path: Path, filter_date: str) -> tuple[list[
                 module = m.group(3)
                 if date == filter_date:
                     date_lines += 1
+                    if is_restart_cascade_noise(level, module, line):
+                        filtered_errors += 1
+                        continue
                     levels[level] += 1
                     modules[module] += 1
                     low = line.lower()
@@ -927,6 +951,7 @@ def analyze_global_errors(error_log_path: Path, filter_date: str) -> tuple[list[
         "date_logs": date_lines,
         "error_count": error_count,
         "warning_count": warning_count,
+        "filtered_errors": filtered_errors,
         "error_pct": error_pct,
         "top_modules": top_modules,
         "top_keywords": top_keywords,
@@ -1796,8 +1821,11 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     if error_m.get("status") == "no_data":
         L.append("- 无 errors.log 数据")
     else:
+        filtered = error_m.get("filtered_errors", 0)
         L.append(f"- 当日问题日志: {error_m.get('date_logs', 0)} 条 "
                  f"(ERROR {error_m.get('error_count', 0)} | WARNING {error_m.get('warning_count', 0)})")
+        if filtered > 0:
+            L.append(f"- 已过滤重启级联噪音: {filtered} 条")
         L.append(f"- ERROR 占比: {error_m.get('error_pct', 0)}%")
         top_mods = error_m.get("top_modules", [])
         if top_mods:

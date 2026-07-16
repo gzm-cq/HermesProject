@@ -14,8 +14,8 @@ extract_enabled: true                 # 是否启用 post_llm_call 自动提取
 extract_min_dialog_length: 50         # 对话长度至少多少字符才尝试提取
 extract_max_input_length: 4000        # 输入 LLM 提取的最大字符数
 min_knowledge_point_length: 10        # 准入最小字数
-extract_llm_timeout_seconds: 30       # 在线提取 LLM read timeout
-extract_llm_retries: 1                # 在线提取失败不重试，避免阻塞后台队列
+extract_llm_timeout_seconds: 45       # 在线提取 LLM read timeout（从 30s 提升，减少超时失败）
+extract_llm_retries: 2                # 在线提取重试次数（从 1 提升，增加可靠性）
 
 # LLM（post_llm_call 提取用）
 llm_api_url: "http://127.0.0.1:4142/v1/chat/completions"

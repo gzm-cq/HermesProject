@@ -99,8 +99,8 @@ class KnowledgeNavigationConfig:
     min_score: float = field(default=0.35)
 
     # Performance
-    timeout_seconds: int = field(default=25)
-    max_retries: int = field(default=0)
+    timeout_seconds: int = field(default=30)
+    max_retries: int = field(default=2)
 
     # Logging
     trace_log_path: str = field(default="")

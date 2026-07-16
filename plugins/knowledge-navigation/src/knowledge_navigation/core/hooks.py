@@ -1550,7 +1550,7 @@ def _post_process_recall(
 
     for kp in kt_raw_results:
         candidate = _build_knowledge_tree_candidate(kp)
-        if candidate and candidate.get("final_score", 0) >= CONFIG.min_score:
+        if candidate:
             kept.append(candidate)
 
     return kept, {

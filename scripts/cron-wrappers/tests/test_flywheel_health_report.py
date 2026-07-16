@@ -359,6 +359,31 @@ class TestAnalyzeGlobalErrors:
         assert isinstance(metrics["top_modules"], list)
         assert len(metrics["top_modules"]) > 0
 
+    def test_restart_cascade_noise_filtered(self, tmp_path: Path) -> None:
+        """重启级联噪音应被过滤，不计入 ERROR 统计。"""
+        log_path = tmp_path / "errors.log"
+        log_path.write_text(
+            # asyncio 未关闭连接 - 应被过滤
+            "2026-07-10 07:37:00 ERROR asyncio: Unclosed client session\n"
+            "2026-07-10 07:37:01 ERROR asyncio: Unclosed connector\n"
+            "2026-07-10 07:37:02 ERROR asyncio: Task exception was never retrieved: ConnectionClosedOK\n"
+            # Lark WS 正常关闭 - 应被过滤
+            "2026-07-10 07:38:00 ERROR lark: Receive message loop exit, code=1000\n"
+            # Weixin 限流 - 应被过滤
+            "2026-07-10 07:39:00 ERROR gateway.platforms.weixin: rate limited\n"
+            # MCP SSE 断连 - 应被过滤
+            "2026-07-10 07:40:00 ERROR mcp.sse: SSE connection closed\n"
+            # Hindsight daemon 未就绪 - 应被过滤
+            "2026-07-10 07:41:00 ERROR knowledge_navigation: Hindsight daemon not ready\n"
+            # 真正的 ERROR - 不应被过滤
+            "2026-07-10 10:00:00 ERROR knowledge_tree.extract: LLM extraction failed\n"
+            "2026-07-10 11:00:00 ERROR knowledge_navigation.skill: skill_matcher timeout\n",
+            encoding="utf-8",
+        )
+        issues, metrics, _ = fhr.analyze_global_errors(log_path, "2026-07-10")
+        assert metrics["filtered_errors"] == 7
+        assert metrics["error_count"] == 2
+
 
 # ========== analyze_memory_cleanup ==========
 
