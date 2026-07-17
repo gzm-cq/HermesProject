@@ -129,6 +129,33 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
     }
 
 
+_CORE_TECH_KEYWORDS = frozenset({
+    # 系统组件名（不来自 skill 列表，架构级固定）
+    "skill", "kt", "sag", "hindsight", "litellm", "kn ", "router",
+    "gateway", "plugin", "deploy", "cron", "embed", "rerank",
+    "min_score", "token", "budget", "recall", "inject",
+    # 操作动词
+    "修复", "检查", "排他", "管道", "部署", "测试",
+    "运行", "验证", "重启", "日志", "错误", "报警", "飞轮",
+    "知识树", "聚类", "记忆", "清理", "巡检", "基线",
+})
+
+_dynamic_keywords_cache: frozenset[str] | None = None
+
+
+def _get_dynamic_keywords() -> frozenset[str]:
+    """Lazy load tech keywords from skill_matcher, with fallback to empty set."""
+    global _dynamic_keywords_cache
+    if _dynamic_keywords_cache is not None:
+        return _dynamic_keywords_cache
+    try:
+        from knowledge_navigation.core.skill_matcher import get_tech_keywords
+        _dynamic_keywords_cache = get_tech_keywords()
+    except Exception:
+        _dynamic_keywords_cache = frozenset()
+    return _dynamic_keywords_cache
+
+
 def _has_substantive_content(msg: str) -> bool:
     """Check if a message contains technical substance beyond pure chitchat.
 
@@ -138,17 +165,12 @@ def _has_substantive_content(msg: str) -> bool:
     # Question marks → substantive
     if "？" in msg or "?" in msg:
         return True
-    # Technical keywords (tool/component/parameter names)
-    tech_keywords = (
-        "skill", "kt", "sag", "hindsight", "litellm", "kn ", "router",
-        "gateway", "plugin", "deploy", "cron", "embed", "rerank",
-        "min_score", "token", "budget", "recall", "inject",
-        "报告", "修复", "检查", "排他", "管道", "部署", "测试",
-        "运行", "验证", "重启", "日志", "错误", "报警", "飞轮",
-        "知识树", "聚类", "记忆", "清理", "巡检", "基线",
-    )
+    # Technical keywords: core + dynamic (from skill list)
     msg_lower = msg.lower()
-    for kw in tech_keywords:
+    for kw in _CORE_TECH_KEYWORDS:
+        if kw in msg_lower:
+            return True
+    for kw in _get_dynamic_keywords():
         if kw in msg_lower:
             return True
     return False

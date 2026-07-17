@@ -916,3 +916,60 @@ def match_skills(
             query[:100].replace("\n", " "),
         )
     return fallback
+
+
+# ── 技术关键词提取（供 Router 全false防护使用） ──
+
+_tech_keywords_cache: frozenset[str] | None = None
+_tech_keywords_ts: float = 0.0
+_TECH_KEYWORDS_TTL = 3600.0  # 1 hour
+
+
+def get_tech_keywords() -> frozenset[str]:
+    """从已加载的 skill 列表中提取技术关键词集合。
+
+    用于 Router 全false防护：当 LLM 返回全关时，检查 query 是否含技术名词。
+    关键词来源：
+    - skill name 按 -/_ 拆分，取 ≥3 字符的部分
+    - skill description 走 _extract_keywords（CJK 2-gram + English token）
+    - 过滤停用词
+
+    Returns:
+        frozenset[str]，TTL 缓存 1 小时。skill 索引未加载时返回空集。
+    """
+    global _tech_keywords_cache, _tech_keywords_ts
+    import time as _time
+
+    now = _time.time()
+    if _tech_keywords_cache is not None and (now - _tech_keywords_ts) < _TECH_KEYWORDS_TTL:
+        return _tech_keywords_cache
+
+    skills = _get_skill_list()
+    if not skills:
+        _tech_keywords_cache = frozenset()
+        _tech_keywords_ts = now
+        return _tech_keywords_cache
+
+    keywords: set[str] = set()
+
+    for skill in skills:
+        if skill.get("category") == ".archive":
+            continue
+
+        # name 拆分：flywheel-health-report → flywheel, health, report
+        name = skill.get("name", "")
+        for part in re.split(r"[-_/.]+", name):
+            part = part.strip().lower()
+            if len(part) >= 3 and part not in _STOPWORDS:
+                keywords.add(part)
+
+        # description 关键词
+        desc = skill.get("description", "")
+        if desc:
+            keywords.update(_extract_keywords(desc))
+
+    result = frozenset(k for k in keywords if len(k) >= 3)
+    _tech_keywords_cache = result
+    _tech_keywords_ts = now
+    logger.debug("Tech keywords extracted: %d items from %d skills (filtered >=3 chars)", len(result), len(skills))
+    return result
