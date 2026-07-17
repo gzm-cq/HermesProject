@@ -92,6 +92,18 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
             except json.JSONDecodeError:
                 continue
 
+    # 6) Regex field extraction: LLM outputs reasoning text with partial JSON
+    #    e.g. "分析...需要历史经验。\n{\"h\": true, \"kt\": false, \"s\":"
+    #    Extract individual "key": value pairs via regex
+    if not isinstance(data, dict) or not all(k in data for k in ('h', 'kt', 's', 'sag')):
+        fields = {}
+        for key in ('h', 'kt', 's', 'sag'):
+            m = re.search(rf'"{key}"\s*:\s*(true|false)', text, re.IGNORECASE)
+            if m:
+                fields[key] = m.group(1).lower() == 'true'
+        if len(fields) == 4:
+            data = fields
+
     # After salvage, require all 4 mask keys present — partial mask is dangerous
     # (missing key → False → route closed when it should be open)
     if isinstance(data, dict) and not all(k in data for k in ('h', 'kt', 's', 'sag')):
@@ -115,6 +127,31 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
         "s": bool(data.get("s", False)),
         "sag": bool(data.get("sag", False)),
     }
+
+
+def _has_substantive_content(msg: str) -> bool:
+    """Check if a message contains technical substance beyond pure chitchat.
+
+    Used as a guard when Router LLM returns all-False — if the query contains
+    question marks, technical terms, or action verbs, it's likely a false negative.
+    """
+    # Question marks → substantive
+    if "？" in msg or "?" in msg:
+        return True
+    # Technical keywords (tool/component/parameter names)
+    tech_keywords = (
+        "skill", "kt", "sag", "hindsight", "litellm", "kn ", "router",
+        "gateway", "plugin", "deploy", "cron", "embed", "rerank",
+        "min_score", "token", "budget", "recall", "inject",
+        "报告", "修复", "检查", "排他", "管道", "部署", "测试",
+        "运行", "验证", "重启", "日志", "错误", "报警", "飞轮",
+        "知识树", "聚类", "记忆", "清理", "巡检", "基线",
+    )
+    msg_lower = msg.lower()
+    for kw in tech_keywords:
+        if kw in msg_lower:
+            return True
+    return False
 
 
 def _fetch_api_key() -> str:
@@ -192,6 +229,15 @@ def route(
                 _FALLBACK_COUNTER["json_parse"] += 1
                 logger.warning("Router JSON 解析失败, fallback 四路全开, raw: %s", raw[:200])
                 mask = {"h": True, "kt": True, "s": True, "sag": True}
+            elif not any(mask.values()):
+                # LLM returned all-False — guard against false negatives
+                # by checking for substantive keywords in the original message
+                if _has_substantive_content(safe_msg):
+                    logger.info("Router 全关但 query 含实质内容, fallback 全开, query=%s", safe_msg[:60])
+                    mask = {"h": True, "kt": True, "s": True, "sag": True}
+                    fallback_reason = "all_off_guarded"
+                else:
+                    fallback_reason = "success_all_off"
             else:
                 fallback_reason = "success"
 

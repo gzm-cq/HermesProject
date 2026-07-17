@@ -62,13 +62,14 @@ def build_router_prompt() -> str:
         "SAG — 文档：查阅结构化知识记录（反思笔记、方案、协议、报告等）？\n"
         "\n"
         "判断规则：\n"
-        "1. 纯闲聊/确认/系统通知（好的、谢谢、继续、Review、[Note]）→ 全关\n"
-        "2. 短命令/缩写（修、跑、重启、验证）→ 全开\n"
+        "1. 纯社交用语或用户明确表示不需要（好的、谢谢、先还原、我还没想好）→ 全关\n"
+        "2. 操作指令/短命令（修、修复、跑、重启、验证、测试、部署、检查）→ 全开\n"
         "3. 问「怎么用/怎么配置/怎么部署」→ S 开（可能需要 H/KT）\n"
         "4. 问「是什么/为什么/原理」→ KT 开（可能需要 H）\n"
         "5. 问「之前怎么做的/上次遇到」→ H 开\n"
         "6. 查阅方案/协议/报告 → SAG 开\n"
-        "7. 不确定 → 全开\n"
+        "7. 消息含问号或技术名词（工具名/组件名/参数名）→ 不算闲聊，至少开一路\n"
+        "8. 不确定 → 全开\n"
         "\n"
         "⚠️ 排他规则（必须先判断）：\n"
         "- 纯知识/原理问题不要开 S：「litellm能配置向量吗」「RRF公式是什么」→ 只开 KT\n"
@@ -77,6 +78,9 @@ def build_router_prompt() -> str:
         '消息："gbrain怎么用？" → {"h":true,"kt":true,"s":true,"sag":false,"confidence":0.9}\n'
         '消息："数据中台的技术协议里怎么写的" → {"h":false,"kt":false,"s":false,"sag":true,"confidence":0.9}\n'
         '消息："SAG 500超时是什么原因？" → {"h":true,"kt":true,"s":false,"sag":true,"confidence":0.8}\n'
+        '消息："报告中还有什么未办项？" → {"h":true,"kt":false,"s":false,"sag":true,"confidence":0.8}\n'
+        '消息："为什么用0.5不用0.05？" → {"h":true,"kt":true,"s":false,"sag":false,"confidence":0.7}\n'
+        '消息："好的" → {"h":false,"kt":false,"s":false,"sag":false,"confidence":0.9}\n'
         "\n"
         '输出 JSON：{"h": bool, "kt": bool, "s": bool, "sag": bool, "confidence": float}\n'
         "不要思考过程，直接输出 JSON。confidence<0.3 时全开。"
