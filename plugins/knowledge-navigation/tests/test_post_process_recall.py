@@ -66,3 +66,30 @@ class TestDedupAndBudget:
                 result, ctx = _dedup_and_budget(kept, "test-remove", "")
         assert len(result) == 1
         assert result[0]["id"] == "2"
+
+    def test_sag_pointer_not_deduped(self):
+        """SAG 指针模式文本结构相似但内容不同，不应被 dedup_by_text 误杀。"""
+        from knowledge_navigation.core.filtering import dedup_by_text
+
+        sag_results = [
+            {
+                "id": f"sag_{i}",
+                "text": f"[SAG 指针] heading: 章节{i} | score: 0.50 | preview: 内容{i}... | 如需完整内容，使用 sag_search 工具查询: 章节{i}",
+                "source": "sag",
+                "final_score": 0.5,
+            }
+            for i in range(10)
+        ]
+        deduped = dedup_by_text(sag_results)
+        assert len(deduped) == 10, f"SAG 指针候选被误杀: {len(sag_results)} → {len(deduped)}"
+
+    def test_hindsight_still_deduped(self):
+        """Hindsight 重复记忆仍应被去重。"""
+        from knowledge_navigation.core.filtering import dedup_by_text
+
+        results = [
+            {"id": "1", "text": "系统配置文件在 /etc/hermes/config.yaml", "source": "hindsight"},
+            {"id": "2", "text": "系统配置文件在 /etc/hermes/config.yaml", "source": "hindsight"},
+        ]
+        deduped = dedup_by_text(results)
+        assert len(deduped) == 1

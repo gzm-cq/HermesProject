@@ -194,6 +194,9 @@ def dedup_by_text(
 
     用于 Hindsight 的重复记忆过滤。不依赖 embedding，纯文本 n-gram 比较。
     保留第一个出现的条目，后续相似的跳过。
+
+    注意：SAG 指针模式的候选（"[SAG 指针] heading: ..."）结构高度相似但内容不同，
+    Jaccard 去重会误杀，因此跳过 SAG 来源的候选。
     """
     if not results:
         return results
@@ -203,6 +206,10 @@ def dedup_by_text(
     for r in results:
         text = str(r.get("text", "") or r.get("name", "")).strip()
         if not text:
+            continue
+        # SAG 指针模式文本结构高度相似但内容不同，跳过去重
+        if r.get("source") == "sag":
+            deduped.append(r)
             continue
         is_dup = any(_jaccard(text, seen) > threshold for seen in seen_texts)
         if not is_dup:
