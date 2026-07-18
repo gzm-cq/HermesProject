@@ -64,8 +64,9 @@ else
 fi
 
 # ===== 基线对比 + 退化检测（Phase 6）=====
-BASELINE_LATEST="/root/.hermes/data/flywheel/kt-baseline-latest.json"
-BASELINE_PREV="/root/.hermes/data/flywheel/kt-baseline-prev.json"
+HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
+BASELINE_LATEST="${HERMES_HOME}/data/flywheel/kt-baseline-latest.json"
+BASELINE_PREV="${HERMES_HOME}/data/flywheel/kt-baseline-prev.json"
 FLYWHEEL_DIR="$(dirname "$BASELINE_LATEST")"
 mkdir -p "$FLYWHEEL_DIR"
 

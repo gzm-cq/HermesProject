@@ -3,9 +3,6 @@
 import json
 import re
 import time
-from typing import Any
-
-import numpy as np
 
 # Optional HTTP deps
 try:

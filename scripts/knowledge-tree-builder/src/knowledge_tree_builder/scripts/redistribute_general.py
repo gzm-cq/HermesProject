@@ -18,6 +18,8 @@ import logging
 import re
 from typing import Any
 
+import numpy as np
+
 from knowledge_tree_builder.adapters.database import DatabaseAdapter
 from knowledge_tree_builder.core.embeddings import batch_embed, cosine_similarity
 from knowledge_tree_builder.llm.client import call_llm_json
@@ -81,7 +83,6 @@ def _load_domain_centroids(adapter: DatabaseAdapter) -> dict[str, list[float]]:
         )
         rows = cursor.fetchall()
         if rows:
-            import numpy as np
             vectors = [np.array(r[0], dtype=np.float32) for r in rows if r[0] is not None]
             if vectors:
                 centroid = np.mean(vectors, axis=0).tolist()
@@ -96,7 +97,6 @@ def _match_semantic(
     threshold: float = 0.50,
 ) -> str | None:
     """L2: 语义 cosine 匹配。返回最佳 domain 名，或 None。"""
-    import numpy as np
     vec = np.array(embedding, dtype=np.float32)
     best_domain: str | None = None
     best_score = threshold
@@ -272,8 +272,6 @@ def redistribute_general(
     l1l2_results: list[tuple[int, str | None]] = []  # (node_id, target_domain | None)
     llm_candidates: list[tuple[int, str]] = []       # (node_id, text)
 
-    import numpy as np
-
     for node_id, text, k_vector in rows:
         text_str = text or ""
 
@@ -314,10 +312,10 @@ def redistribute_general(
         if llm_candidates:
             domain_dist["(LLM 待判断)"] = len(llm_candidates)
 
-        print(f"   📊 迁移预览:")
+        logger.info("迁移预览:")
         for domain, count in sorted(domain_dist.items(), key=lambda x: -x[1]):
-            print(f"      {domain}: {count} 条")
-        print(f"      (保留 general: {stats['total'] - sum(domain_dist.values())} 条)")
+            logger.info("  %s: %d 条", domain, count)
+        logger.info("  (保留 general: %d 条)", stats["total"] - sum(domain_dist.values()))
         stats["migrated"] = len(l1l2_results)
         return stats
 

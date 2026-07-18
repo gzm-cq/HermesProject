@@ -31,7 +31,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         import yaml
     except ImportError:
-        logger.warning("PyYAML not installed, prompt loader degraded to code fallback")
+        logger.warning("PyYAML 未安装，prompt loader 降级为代码兜底")
         return {}
 
     try:
@@ -39,7 +39,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
             data = yaml.safe_load(f) or {}
         return data if isinstance(data, dict) else {}
     except Exception as e:
-        logger.warning("Failed to load prompts.yaml (%s): %s", path, e)
+        logger.warning("加载 prompts.yaml 失败 (%s): %s", path, e)
         return {}
 
 
@@ -68,7 +68,7 @@ def _ensure_loaded() -> None:
             if data:
                 _prompt_cache = data
                 _prompt_mtime = mtime
-                logger.info("prompts.yaml (re)loaded, %d categories", len(data))
+                logger.info("prompts.yaml (重新)加载完成，%d 个分类", len(data))
 
 
 def get_prompt(category: str, name: str, fallback: str = "") -> str:

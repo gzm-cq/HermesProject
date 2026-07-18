@@ -27,7 +27,6 @@ cron_init "kn-router-health-check"
 
 # ===== 环境准备 =====
 PLUGIN_DIR="/root/.hermes/plugins/knowledge-navigation"
-GATEWAY_LOG="/var/log/syslog"  # 或 journalctl 替代
 
 # ===== 1. 检查 Router JSON 解析失败次数（最近 24h）=====
 cron_section "Router 解析失败检查"
@@ -154,8 +153,8 @@ if [[ "$STABILITY_PASS" -lt "$_STABILITY_MIN" ]]; then
     cron_warn "Router 模型稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} 成功 (${STABILITY_RATE}%)"
     _STEP_RESULTS+=("⚠️ Router 稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} (${STABILITY_RATE}%)")
 else
-    cron_ok "Router 模型稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} 成功 (100%) ✅"
-    _STEP_RESULTS+=("✅ Router 稳定性: 100%")
+    cron_ok "Router 模型稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} 成功 (${STABILITY_RATE}%) ✅"
+    _STEP_RESULTS+=("✅ Router 稳定性: ${STABILITY_RATE}%")
 fi
 
 # ===== 4. SAG 服务与熔断器健康检查 =====

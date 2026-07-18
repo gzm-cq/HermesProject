@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -42,11 +43,25 @@ _EXTRACTION_FAIL_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"请提供"),
 ]
 
-_DOMAIN_ABBREVIATIONS: frozenset[str] = frozenset({
-    "HDBSCAN", "DBSCAN", "KNN", "SVM", "CNN", "RNN", "LSTM",
-    "GPT", "BERT", "LLM", "RAG", "API", "CLI", "JSON", "YAML",
-    "SQL", "PG", "ANN", "HNSW", "BM25", "PCA",
+# 域内通用缩写白名单（公开常量，供 split.py 等模块复用）
+DOMAIN_ABBREVIATIONS: frozenset[str] = frozenset({
+    # 聚类/ML
+    "HDBSCAN", "DBSCAN", "KNN", "SVM", "AUC", "F1", "ROC", "PCA",
+    "CNN", "RNN", "LSTM", "GRU", "GAN", "VAE", "RL", "DL", "ML", "NLP", "CV",
+    # Transformer
+    "GPT", "BERT", "T5", "LLM", "RAG", "LLMs",
+    # 数学/算法
+    "ANN", "HNSW", "BM25", "TF", "IDF", "SGD", "Adam",
+    "ReLU", "GELU", "softmax", "cosine",
+    # 工程
+    "API", "CLI", "JSON", "YAML", "HTTP", "HTTPS", "REST", "SQL", "PG",
+    "GPU", "CPU", "TPU", "SDK", "IDE", "CI", "CD",
+    # 向量/embedding
+    "embedding", "token", "tokens",
+    # 注意力机制
+    "Q", "K", "V",
 })
+_DOMAIN_ABBREVIATIONS = DOMAIN_ABBREVIATIONS  # 向后兼容别名
 
 # 建议/意见拦截 — 非知识事实，不应入知识树
 _SUGGESTION_PATTERNS: list[re.Pattern[str]] = [
@@ -433,8 +448,6 @@ def _embed_with_cache_ordered(
     original_embed: Callable[[list[str]], list[list[float]] | None],
 ) -> tuple[list[list[float]] | None, bool]:
     """按输入顺序返回 embedding，混合缓存命中/未命中时不能重排。"""
-    import hashlib
-
     result_list: list[list[float] | None] = [None] * len(texts)
     need: list[str] = []
     need_keys: list[str] = []
@@ -614,7 +627,6 @@ def admit_knowledge(
         _embed_cache = {}
 
     # 只计算未缓存的新文本
-    import hashlib
     _all_texts = [a["text"] for a in passed_guard]
     _need_embed: list[str] = []
     _need_keys: list[str] = []

@@ -1,4 +1,7 @@
-"""Step 1: LLM 知识点提取 — 每篇文章提取 3-8 个关键知识点"""
+"""Step 1: LLM 知识点提取 — 每篇文章提取 3-8 个关键知识点
+
+⚠️ 已弃用：被 phase/merged.py 替代，保留仅供历史回放和回滚
+"""
 
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import typer
 
@@ -94,7 +94,7 @@ def run(
     config_path: str = typer.Option(
         "config/default.yaml", "--config", help="配置文件路径（YAML）"
     ),
-    log_level: Optional[str] = typer.Option(None, "--log-level", help="日志级别（DEBUG/INFO/WARNING）"),
+    log_level: str | None = typer.Option(None, "--log-level", help="日志级别（DEBUG/INFO/WARNING）"),
     json_output: bool = typer.Option(False, "--json", help="以 JSON 格式输出结果"),
     quiet: bool = typer.Option(False, "--quiet", help="简洁模式：只输出空间占用和执行概要（适合 cron 通知）"),
     # 投票策略：vote > 0 时每轮独立分类，remove 决策取并集（任一表决删除即删除），
@@ -107,7 +107,11 @@ def run(
     默认 dry-run（只分类报告，不修改数据），加 --apply 才真正执行清理。
     """
     # ── 信号处理 ──
+    global _running
+    _running = True
     signal.signal(signal.SIGINT, _signal_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _signal_handler)
 
     # ── 计时 ──
     start_time = time.monotonic()
@@ -125,7 +129,7 @@ def run(
 
     # JSON / quiet 模式下重定向 stdout，抑制中间 print 输出
     if cfg.output_mode == "json" or quiet:
-        stdout_cm: contextlib.AbstractContextManager = contextlib.redirect_stdout(io.StringIO())
+        stdout_cm: contextlib.AbstractContextManager[None] = contextlib.redirect_stdout(io.StringIO())
     else:
         stdout_cm = contextlib.nullcontext()
 

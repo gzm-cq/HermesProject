@@ -17,7 +17,7 @@ def _safe_int_env(key: str, field: str, values: dict) -> None:
     """安全解析整型环境变量，失败时记录警告。"""
     v = os.getenv(key)
     if v is None:
-        return None
+        return
     try:
         values[field] = int(v)
     except ValueError:
@@ -28,7 +28,7 @@ def _safe_float_env(key: str, field: str, values: dict) -> None:
     """安全解析浮点型环境变量，失败时记录警告。"""
     v = os.getenv(key)
     if v is None:
-        return None
+        return
     try:
         values[field] = float(v)
     except ValueError:
@@ -39,7 +39,7 @@ def _safe_bool_env(key: str, field: str, values: dict) -> None:
     """安全解析布尔型环境变量，失败时记录警告。"""
     v = os.getenv(key)
     if v is None:
-        return None
+        return
     v_lower = v.lower()
     if v_lower in ("true", "1", "yes", "on"):
         values[field] = True
@@ -167,6 +167,22 @@ class AppConfig:
     hot_memory_promotion: bool = False
     hot_memory_access_count: int = 10
     l2_max_entries: int = 200
+
+    # ── 生命周期关键词（从配置读取，避免硬编码） ──
+    lifecycle_frequency_keywords: list[str] = field(default_factory=lambda: [
+        "经常", "常常", "总是", "每次", "日常", "每天", "每周", "常用",
+        "frequently", "often", "always", "daily", "weekly", "regularly",
+        "常用工具", "常用命令", "偏好", "喜欢",
+    ])
+    lifecycle_historical_keywords: list[str] = field(default_factory=lambda: [
+        "年", "月", "日",
+        "完成", "建于", "始于", "创建于", "发布于",
+        "之前", "以后", "以来",
+    ])
+    lifecycle_recent_keywords: list[str] = field(default_factory=lambda: [
+        "经常", "每天", "每周", "日常", "常用", "偏好",
+        "frequently", "daily", "regularly", "often",
+    ])
 
     # ── 校验配置 ──
     _VALID_OUTPUT_MODES: ClassVar[set[str]] = {"human", "json"}

@@ -26,7 +26,7 @@ fi
 cron_init "knowledge-navigation-baseline"
 
 # ===== 环境准备 =====
-PLUGIN_DIR="/root/.hermes/plugins/knowledge-navigation"
+PLUGIN_DIR="${HERMES_HOME:-/root/.hermes}/plugins/knowledge-navigation"
 cd "$PLUGIN_DIR"
 
 # 加载 Python 环境（如果 venv 存在）

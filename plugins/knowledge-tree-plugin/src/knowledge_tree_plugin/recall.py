@@ -261,14 +261,20 @@ def attention_filter(
 
         scores: list[tuple[int, float]] = []
 
+        # q_local 仅依赖 query_embedding/local_offset/child_count，与循环索引 i 无关，
+        # 提到循环外计算一次，避免每个候选重复投影（N 次冗余计算）
+        if not cold_start:
+            q_local = local_q(query_embedding, local_offset, child_count=len(candidates)) if local_offset else query_vec
+            q_local_np = np.array(q_local, dtype=np.float32) if isinstance(q_local, list) else q_local
+        else:
+            q_local_np = None  # cold_start 分支不使用
+
         for i, node in enumerate(candidates):
             k_vec = np.array(node["k_vector"], dtype=np.float32)
 
             if cold_start:
                 sim = cosine_similarity(query_vec, k_vec)
             else:
-                q_local = local_q(query_embedding, local_offset, child_count=len(candidates)) if local_offset else query_vec
-                q_local_np = np.array(q_local, dtype=np.float32) if isinstance(q_local, list) else q_local
                 dot_product = float(np.dot(q_local_np, k_vec))
                 sim = dot_product / (np.sqrt(dim) + 1e-10)
 

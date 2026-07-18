@@ -291,16 +291,25 @@ def _mmr_diversity(
         for c in candidates
     ]
 
-    selected: list[int] = []
-    remaining = set(range(len(candidates)))
+    # 预计算两两 Jaccard 相似度矩阵（上三角），避免 MMR 每轮重复计算
+    n = len(candidates)
+    sim_matrix: list[list[float]] = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            s = _jaccard(texts[i], texts[j])
+            sim_matrix[i][j] = s
+            sim_matrix[j][i] = s
 
-    for _ in range(min(max_results, len(candidates))):
+    selected: list[int] = []
+    remaining = set(range(n))
+
+    for _ in range(min(max_results, n)):
         best_idx = None
         best_mmr = -float("inf")
         for i in remaining:
             rel = norms[i]
             if selected:
-                div = max(_jaccard(texts[i], texts[j]) for j in selected)
+                div = max(sim_matrix[i][j] for j in selected)
             else:
                 div = 0.0
             mmr = lambda_mrr * rel - (1 - lambda_mrr) * div
@@ -525,6 +534,54 @@ def cross_domain_dedup(
     return _dedup_by_jaccard(kt_results, hs_texts, threshold, action, demote_factor)
 
 
+def _dedup_by_similarity(
+    kt_results: list[dict],
+    ref_items: list,
+    sim_fn,
+    threshold: float,
+    action: str = "demote",
+    demote_factor: float = 0.5,
+    kt_item_fn = None,
+) -> tuple[list[dict], int]:
+    """通用跨域去重/降权框架。
+
+    Args:
+        kt_results: 知识树候选结果
+        ref_items: 参考项列表（HS 文本或向量等）
+        sim_fn: 相似度函数 (kt_item, ref_item) -> float
+        threshold: 相似度阈值，>= 阈值判定为重复
+        action: "remove" 或 "demote"
+        demote_factor: 降权系数
+        kt_item_fn: 从 kt_result 提取比较项的函数，None 时用 (idx, result) 由 sim_fn 自行处理
+
+    Returns:
+        (处理后的结果列表, 去重/降权数量)
+    """
+    if action == "remove":
+        kept: list[dict] = []
+        removed = 0
+        for i, kp in enumerate(kt_results):
+            kt_item = kt_item_fn(i, kp) if kt_item_fn else kp
+            is_dup = any(sim_fn(kt_item, ref) >= threshold for ref in ref_items)
+            if is_dup:
+                removed += 1
+            else:
+                kept.append(kp)
+        return kept, removed
+    else:
+        demoted = 0
+        for i, kp in enumerate(kt_results):
+            kt_item = kt_item_fn(i, kp) if kt_item_fn else kp
+            is_dup = any(sim_fn(kt_item, ref) >= threshold for ref in ref_items)
+            if is_dup:
+                demoted += 1
+                current = extract_score(kp)
+                kp["final_score"] = current * demote_factor
+                kp["score"] = kp["final_score"]
+        kt_results.sort(key=extract_score, reverse=True)
+        return kt_results, demoted
+
+
 def _dedup_by_cosine(
     kt_results: list[dict],
     kt_vecs: list[list[float]],
@@ -534,39 +591,17 @@ def _dedup_by_cosine(
     demote_factor: float = 0.5,
 ) -> tuple[list[dict], int]:
     """使用 embedding 余弦相似度去重/降权。"""
-    if action == "remove":
-        kept: list[dict] = []
-        removed = 0
-        for i, kp in enumerate(kt_results):
-            if i >= len(kt_vecs):
-                kept.append(kp)
-                continue
-            is_dup = False
-            for hs_vec in hs_vecs:
-                if _cosine_similarity_vec(kt_vecs[i], hs_vec) >= threshold:
-                    is_dup = True
-                    removed += 1
-                    break
-            if not is_dup:
-                kept.append(kp)
-        return kept, removed
-    else:
-        demoted = 0
-        for i, kp in enumerate(kt_results):
-            if i >= len(kt_vecs):
-                continue
-            is_dup = False
-            for hs_vec in hs_vecs:
-                if _cosine_similarity_vec(kt_vecs[i], hs_vec) >= threshold:
-                    is_dup = True
-                    break
-            if is_dup:
-                demoted += 1
-                current = kp.get("final_score", kp.get("score", 0.0))
-                kp["final_score"] = current * demote_factor
-                kp["score"] = kp["final_score"]
-        kt_results.sort(key=lambda x: x.get("final_score", x.get("score", 0.0)), reverse=True)
-        return kt_results, demoted
+    def _kt_item_fn(idx: int, kp: dict):
+        return kt_vecs[idx] if idx < len(kt_vecs) else None
+
+    def _sim_fn(kt_vec, hs_vec):
+        if kt_vec is None:
+            return 0.0
+        return _cosine_similarity_vec(kt_vec, hs_vec)
+
+    return _dedup_by_similarity(
+        kt_results, hs_vecs, _sim_fn, threshold, action, demote_factor, _kt_item_fn,
+    )
 
 
 def _dedup_by_jaccard(
@@ -577,36 +612,15 @@ def _dedup_by_jaccard(
     demote_factor: float = 0.5,
 ) -> tuple[list[dict], int]:
     """使用字符 n-gram Jaccard 相似度去重/降权（embedding 不可用时的回退）。"""
-    if action == "remove":
-        kept: list[dict] = []
-        removed = 0
-        for kp in kt_results:
-            kt_text = (kp.get("text", "") or kp.get("name", "")).strip()
-            is_dup = False
-            for hs_text in hs_texts:
-                if _char_ngram_jaccard(kt_text, hs_text) >= threshold:
-                    is_dup = True
-                    removed += 1
-                    break
-            if not is_dup:
-                kept.append(kp)
-        return kept, removed
-    else:
-        demoted = 0
-        for kp in kt_results:
-            kt_text = (kp.get("text", "") or kp.get("name", "")).strip()
-            is_dup = False
-            for hs_text in hs_texts:
-                if _char_ngram_jaccard(kt_text, hs_text) >= threshold:
-                    is_dup = True
-                    break
-            if is_dup:
-                demoted += 1
-                current = kp.get("final_score", kp.get("score", 0.0))
-                kp["final_score"] = current * demote_factor
-                kp["score"] = kp["final_score"]
-        kt_results.sort(key=lambda x: x.get("final_score", x.get("score", 0.0)), reverse=True)
-        return kt_results, demoted
+    def _kt_item_fn(idx: int, kp: dict):
+        return (kp.get("text", "") or kp.get("name", "")).strip()
+
+    def _sim_fn(kt_text, hs_text):
+        return _char_ngram_jaccard(kt_text, hs_text)
+
+    return _dedup_by_similarity(
+        kt_results, hs_texts, _sim_fn, threshold, action, demote_factor, _kt_item_fn,
+    )
 
 
 # ========== Token 预算守门 (P1-1) ==========
@@ -647,18 +661,25 @@ def _results_total_tokens(results: list[dict]) -> int:
     return sum(estimate_tokens(_result_text(r)) for r in results)
 
 
+def extract_score(result: dict) -> float:
+    """从记忆结果 dict 中提取分数（统一入口）。
+
+    优先级：final_score > rerank_score > base_score > score
+    所有四路召回（HS/KT/Skill/SAG）共用同一提取逻辑，避免不一致。
+    """
+    for key in ("final_score", "rerank_score", "base_score", "score"):
+        val = result.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
 def _sort_by_score(results: list[dict]) -> list[dict]:
     """按分数降序排列结果。"""
-    def _score(r: dict) -> float:
-        for key in ("final_score", "rerank_score", "base_score", "score"):
-            val = r.get(key)
-            if val is not None:
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    continue
-        return 0.0
-    return sorted(results, key=_score, reverse=True)
+    return sorted(results, key=extract_score, reverse=True)
 
 
 def apply_token_budget(

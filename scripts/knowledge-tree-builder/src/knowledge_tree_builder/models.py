@@ -14,6 +14,9 @@ except ImportError:
 
 # ========== 1. 知识点类型枚举 ==========
 
+# Embedding 向量维度（与 BGE-M3 对齐）
+EMBEDDING_DIM: int = 1024
+
 
 class KnowledgeType(str, Enum):
     """五类知识点。继承 str 以支持 JSON 值直接比较。"""

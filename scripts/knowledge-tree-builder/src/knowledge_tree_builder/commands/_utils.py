@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from knowledge_tree_builder.adapters.database import _parse_k_vector
+from knowledge_tree_builder.adapters.database import parse_k_vector
 
 
 class JSONFormatter(logging.Formatter):
@@ -177,7 +177,7 @@ def _load_subjects_for_consolidation(adapter: Any) -> list[dict[str, Any]]:
         dim = None
         for cid, text, k_vec_data in rows:
             text = text or ""
-            k_list = _parse_k_vector(k_vec_data)
+            k_list = parse_k_vector(k_vec_data)
             if k_list is not None:
                 if dim is None:
                     dim = len(k_list)

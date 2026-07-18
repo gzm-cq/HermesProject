@@ -6,6 +6,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -74,7 +75,6 @@ def read_trace_lines(trace_path: str, task_id: str, max_lines: int = 5) -> list[
     Returns:
         匹配的消息行列表（JSON parsed）
     """
-    import re
     matches: list[dict[str, Any]] = []
     pattern = re.compile(re.escape(task_id), re.IGNORECASE)
 
@@ -156,7 +156,7 @@ def reflect_on_failure(
         )
         text = client.extract_content(response)
         data = client.parse_json_response(text)
-    except (ConnectionError, ValueError, json.JSONDecodeError) as e:
+    except (ConnectionError, ValueError) as e:
         logger.error("反思分析失败: %s", e)
         return ReflectionResult(
             task_id=task_id,

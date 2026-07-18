@@ -20,7 +20,10 @@ from typing import Any
 import numpy as np
 
 from knowledge_tree_builder import batch_embed, cosine_similarity
-from knowledge_tree_plugin.recall import locate_best_subject
+from knowledge_tree_plugin.recall import (
+    _CJK_STOP_CHARS as _CJK_STOP_WORDS,
+    locate_best_subject,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +34,6 @@ _leaf_cache_lock = threading.Lock()
 
 _CONFLICT_KEYWORDS = ("不", "不是", "不能", "无效", "不再", "相反", "错误", "不要")
 
-# 实体提取 — CJK 停用字
-_CJK_STOP_WORDS = frozenset(
-    "的了在是有和就不人都也到说要去会着这他那她它那些吗吧呢啊哦嗯嘛"
-)
 # 实体提取常见后缀（技术名词识别）
 _TECH_SUFFIXES = ("树", "表", "库", "器", "层", "线", "网", "图", "集", "据", "件", "法", "式")
 
@@ -271,17 +270,16 @@ def _extract_entities(text: str) -> list[str]:
     - 技术名词（含技术后缀）
     返回去重列表。
     """
-    import re as _re
     entities: set[str] = set()
 
     # 英文实体：驼峰/大写缩写/标识符
-    for token in _re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{2,}", text):
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{2,}", text):
         lower = token.lower()
         if lower not in ("the", "and", "for", "are", "not", "can", "use", "all"):
             entities.add(lower)
 
     # CJK 二字组（首字非停用字）
-    cjk_chars = _re.findall(r"[\u4e00-\u9fff]", text)
+    cjk_chars = re.findall(r"[\u4e00-\u9fff]", text)
     for i in range(len(cjk_chars) - 1):
         if cjk_chars[i] not in _CJK_STOP_WORDS:
             bigram = cjk_chars[i] + cjk_chars[i + 1]
@@ -360,6 +358,39 @@ def _locate_parent(
     return locate_best_subject(locate_query, avg_embedding, adapter)
 
 
+def _batch_cosine_similarity(
+    query_vec: np.ndarray,
+    candidate_vectors: list[list[float]],
+) -> np.ndarray:
+    """批量计算查询向量与所有候选向量的余弦相似度（向量化）。
+
+    Args:
+        query_vec: shape (D,) 查询向量
+        candidate_vectors: N 个候选向量列表
+
+    Returns:
+        shape (N,) 的相似度数组，无向量的位置为 0.0
+    """
+    if not candidate_vectors:
+        return np.array([], dtype=np.float32)
+    valid_vectors = []
+    valid_indices = []
+    for i, v in enumerate(candidate_vectors):
+        if v is not None:
+            valid_vectors.append(np.array(v, dtype=np.float32))
+            valid_indices.append(i)
+    if not valid_vectors:
+        return np.zeros(len(candidate_vectors), dtype=np.float32)
+    matrix = np.stack(valid_vectors, axis=0)  # (N_valid, D)
+    dot = matrix @ query_vec  # (N_valid,)
+    norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query_vec) + 1e-10
+    sims_valid = dot / norms
+    result = np.zeros(len(candidate_vectors), dtype=np.float32)
+    for idx, sim in zip(valid_indices, sims_valid):
+        result[idx] = float(sim)
+    return result
+
+
 def _dedup_before_insert_with_embedding(
     *,
     new_embedding: list[float],
@@ -368,13 +399,11 @@ def _dedup_before_insert_with_embedding(
 ) -> int | None:
     """用已计算的新知识点向量做去重检查，避免重复 embedding API 调用。"""
     new_vec = np.array(new_embedding, dtype=np.float32)
-    for existing in leaf_nodes:
-        existing_vec = existing.get("k_vector")
-        if existing_vec is None:
-            continue
-        sim = cosine_similarity(new_vec, np.array(existing_vec, dtype=np.float32))
-        if sim > threshold:
-            return existing.get("id")
+    k_vectors = [node.get("k_vector") for node in leaf_nodes]
+    sims = _batch_cosine_similarity(new_vec, k_vectors)
+    best_idx = int(np.argmax(sims)) if len(sims) else -1
+    if best_idx >= 0 and sims[best_idx] > threshold:
+        return leaf_nodes[best_idx].get("id")
     return None
 
 
@@ -385,16 +414,16 @@ def _detect_conflict_with_embedding(
     sibling_points: list[dict[str, Any]],
     conflict_threshold: float = 0.80,
 ) -> list[dict[str, Any]]:
-    """用已计算的新知识点向量做矛盾检测。"""
+    """用已计算的新知识点向量做矛盾检测（向量化批量计算）。"""
     new_vec = np.array(new_embedding, dtype=np.float32)
     new_has_negation = any(kw in new_point_text for kw in _CONFLICT_KEYWORDS)
     conflicts: list[dict[str, Any]] = []
 
-    for existing in sibling_points:
-        existing_vec = existing.get("k_vector")
-        if existing_vec is None:
-            continue
-        sim = cosine_similarity(new_vec, np.array(existing_vec, dtype=np.float32))
+    k_vectors = [p.get("k_vector") for p in sibling_points]
+    sims = _batch_cosine_similarity(new_vec, k_vectors)
+
+    for i, existing in enumerate(sibling_points):
+        sim = float(sims[i])
         if sim <= conflict_threshold:
             continue
         existing_name = existing.get("name", "") or ""

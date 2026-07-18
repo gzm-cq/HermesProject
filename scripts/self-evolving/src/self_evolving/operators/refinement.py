@@ -3,11 +3,10 @@
 Identifies redundancies, scans for risks using LLM pattern analysis,
 and iteratively optimizes content.
 """
-import json
 import logging
 import os
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from typing import List, Dict
 from pathlib import Path
 
 from self_evolving.models.risk_assessment import (
@@ -19,7 +18,17 @@ from self_evolving.prompt_loader import get_prompt
 
 logger = logging.getLogger(__name__)
 
-# ── Prompts (硬编码 fallback) ────────────────────────────────────────
+# ── 长度阈值常量（P2-SE-027） ─────────────────────────────────────────────
+_REDUNDANCY_SCAN_MIN_LENGTH = 500
+_RISK_SCAN_MIN_LENGTH = 200
+_LLM_COMPRESS_MIN_LENGTH = 1000
+
+# ── 风险评分阈值常量（P2-SE-029） ─────────────────────────────────────────
+_RISK_SCORE_HIGH_THRESHOLD = 0.7
+_RISK_SCORE_MEDIUM_THRESHOLD = 0.4
+_RISK_SCORE_LOW_THRESHOLD = 0.2
+
+# ── Prompts (硬编码 fallback) ────────────────────────────────────────────
 
 _FALLBACK_RISK_SCAN = """扫描以下内容，识别潜在风险。
 
@@ -169,7 +178,6 @@ class RefinementOperator:
         self._llm = llm_client or self._default_llm()
 
     def _default_llm(self) -> LLMClient:
-        import os
         key = self.config.llm_api_key or os.environ.get("LITELLM_MASTER_KEY", "")
         return LLMClient(
             api_url=self.config.llm_api_url,
@@ -224,7 +232,7 @@ class RefinementOperator:
                 seen_lines[stripped] = idx
 
         # LLM-based: detect structural redundancies for larger content
-        if len(content) > 500:
+        if len(content) > _REDUNDANCY_SCAN_MIN_LENGTH:
             prompt = REDUNDANCY_SCAN_PROMPT().format(
                 content=content[:self.config.max_input_length],
             )
@@ -249,7 +257,7 @@ class RefinementOperator:
         risk_factors = []
 
         # LLM-based risk scanning
-        if self.config.risk_scanning_enabled and len(content) > 200:
+        if self.config.risk_scanning_enabled and len(content) > _RISK_SCAN_MIN_LENGTH:
             prompt = RISK_SCAN_PROMPT().format(
                 content=content[:self.config.max_input_length],
             )
@@ -307,11 +315,11 @@ class RefinementOperator:
             risk_score = min(1.0, avg_score + 0.1)
             if max_sev == RiskLevel.CRITICAL:
                 overall_risk = RiskLevel.CRITICAL
-            elif max_sev == RiskLevel.HIGH or risk_score > 0.7:
+            elif max_sev == RiskLevel.HIGH or risk_score > _RISK_SCORE_HIGH_THRESHOLD:
                 overall_risk = RiskLevel.HIGH
-            elif max_sev == RiskLevel.MEDIUM or risk_score > 0.4:
+            elif max_sev == RiskLevel.MEDIUM or risk_score > _RISK_SCORE_MEDIUM_THRESHOLD:
                 overall_risk = RiskLevel.MEDIUM
-            elif risk_score > 0.2:
+            elif risk_score > _RISK_SCORE_LOW_THRESHOLD:
                 overall_risk = RiskLevel.LOW
             else:
                 overall_risk = RiskLevel.NONE
@@ -375,7 +383,7 @@ class RefinementOperator:
 
             if optimized != before:
                 steps.append(OptimizationStep(
-                    step_num=iteration * 100 + 1,
+                    step_num=len(steps) + 1,
                     action="remove_redundancy",
                     target=redundancy.redundancy_id,
                     before=before[:200], after=optimized[:200],
@@ -401,9 +409,10 @@ class RefinementOperator:
         optimization_log = []
         removed_redundancies = []
         replaced_risky_parts = []
+        actual_iterations = 0
 
         for iteration in range(self.config.optimization_budget):
-            risk_report = self.scan_risks(current_content)
+            risk_report = self.scan_risks(current_content, failure_patterns)
             current_redundancies = self.detect_redundancies(current_content)
             optimized, steps = self.optimize(current_content, current_redundancies, risk_report, iteration)
             optimization_log.extend(steps)
@@ -413,12 +422,13 @@ class RefinementOperator:
             current_content = optimized
             current_length = len(current_content)
             reduction_ratio = (original_length - current_length) / original_length if original_length > 0 else 0
+            actual_iterations += 1
             if reduction_ratio >= self.config.target_reduction_ratio:
                 break
             if not steps:
                 break
 
-        final_risk_report = self.scan_risks(current_content)
+        final_risk_report = self.scan_risks(current_content, failure_patterns)
         final_length = len(current_content)
         reduction_stats = {
             "original_length": original_length,
@@ -426,7 +436,7 @@ class RefinementOperator:
             "reduction_bytes": original_length - final_length,
             "reduction_ratio": (original_length - final_length) / original_length if original_length > 0 else 0,
             "target_ratio": self.config.target_reduction_ratio,
-            "iterations": len(optimization_log) // 3 + 1,
+            "iterations": actual_iterations,
             "redundancies_removed": len(removed_redundancies),
         }
 
@@ -446,7 +456,7 @@ class RefinementOperator:
 
     def _compress_output(self, content: str) -> str:
         """Use LLM for intelligent compression when content is large enough."""
-        if len(content) < 1000:
+        if len(content) < _LLM_COMPRESS_MIN_LENGTH:
             # Small content: rule-based compression
             lines = content.split("\n")
             compressed = []

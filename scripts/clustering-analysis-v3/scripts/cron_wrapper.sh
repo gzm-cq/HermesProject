@@ -37,6 +37,7 @@ LOG_FILE="/tmp/hindsight-cron-${TIMESTAMP}.log"
 SKIP_STEPS=""
 MODE="dry-run"
 CONFIRM_APPLY_VALUE="I_UNDERSTAND_THIS_WRITES_HINDSIGHT"
+_STEP_RESULTS=()
 
 # ===== 颜色 & 日志 =====
 C_CYA='\033[36m'; C_GRN='\033[32m'; C_RED='\033[31m'; C_YLW='\033[33m'; C_RST='\033[0m'

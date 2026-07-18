@@ -26,7 +26,7 @@ from kanban_reflection.core.reflector import (
     read_trace_lines,
 )
 
-logger = logging.getLogger("kanban_reflect_hook")
+logger = logging.getLogger(__name__)
 
 # 重试 prompt 模版
 RETRY_INJECT_TEMPLATE = """{inject_prefix}

@@ -10,6 +10,10 @@ except ImportError:
     requests = None  # type: ignore[assignment]
 
 
+# 请求间间隔（秒），避免 QPS 过载
+LLM_QPS_INTERVAL: float = 0.3
+
+
 def call_llm(
     prompt: str,
     *,
@@ -46,7 +50,7 @@ def call_llm(
     messages.append({"role": "user", "content": prompt})
 
     # 请求间间隔，避免 QPS 过载
-    time.sleep(0.3)
+    time.sleep(LLM_QPS_INTERVAL)
 
     for attempt in range(retries):
         try:

@@ -22,10 +22,13 @@ LLM_API_URL = os.environ.get("LLM_API_URL", "http://127.0.0.1:4142/v1/chat/compl
 LLM_API_KEY = os.environ.get("LLM_API_KEY", os.environ.get("LITELLM_MASTER_KEY", ""))
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 BATCH_SIZE = 20
+MAX_RETRIES = 3
+RETRY_INTERVAL_SEC = 3
+WRITE_BATCH_SIZE = 500
 
 # ── Helpers ──
 
-def _parse_pg_vector(val):
+def _parse_pg_vector(val: Any) -> np.ndarray | None:
     """Parse PostgreSQL vector value to numpy array."""
     if val is None: return None
     if isinstance(val, (list, tuple, np.ndarray)):
@@ -127,7 +130,7 @@ def extract_batch(texts: list[str]) -> list[list[str]]:
     """Extract entities from a batch of texts via LLM."""
     if not texts: return []
 
-    for attempt in range(3):
+    for attempt in range(MAX_RETRIES):
         try:
             with httpx.Client(timeout=120) as cli:
                 resp = cli.post(
@@ -161,14 +164,14 @@ def extract_batch(texts: list[str]) -> list[list[str]]:
                             if isinstance(parsed, list):
                                 result.append([e.strip() for e in parsed if isinstance(e,str) and e.strip()])
                             else: result.append([])
-                        except: result.append([])
+                        except (json.JSONDecodeError, ValueError): result.append([])
                     while len(result) < len(texts): result.append([])
                     return result
                 return [[] for _ in texts]
 
-        except Exception as e:
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
             print(f"  [WARN] attempt {attempt+1}: {e}", file=sys.stderr)
-            if attempt < 2: time.sleep(3)
+            if attempt < 2: time.sleep(RETRY_INTERVAL_SEC)
     return [[] for _ in texts]
 
 # ── Matching ──
@@ -194,10 +197,15 @@ def _match_entity(name: str, entity_idx: dict[str,str], threshold: float = 0.5) 
 # ── Main ──
 
 def main():
+    """回填 scope 实体到记忆单元。
+    
+    从聚类实体表读取数据，通过 LLM 提取 scope 信息，
+    批量回填到 memory_units 表的 entities 字段。
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--apply", action="store_true")
-    ap.add_argument("--batch-size", type=int, default=20)
+    ap.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     args = ap.parse_args()
 
     if not args.dry_run and not args.apply:
@@ -302,8 +310,8 @@ def main():
                     break
 
         # Batch write unit_entities
-        for i in range(0, len(write_plans), 500):
-            batch = write_plans[i:i+500]
+        for i in range(0, len(write_plans), WRITE_BATCH_SIZE):
+            batch = write_plans[i:i+WRITE_BATCH_SIZE]
             for p in batch:
                 db.add_unit_entity(p["unit_id"], p["entity_id"])
             db.commit()

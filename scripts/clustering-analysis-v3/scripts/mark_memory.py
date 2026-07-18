@@ -89,7 +89,7 @@ def get_mark_state(conn, unit_id: str) -> str:
         return "no_mark"
 
 
-def mark_memory(conn, unit_id: str, mark_type: str, note: str = None, dry_run: bool = False, commit: bool = True) -> str:
+def mark_memory(conn, unit_id: str, mark_type: str, note: str | None = None, dry_run: bool = False, commit: bool = True) -> str:
     """为记忆追加标记，幂等保护。返回 'already_marked' / 'not_found' / 'success'。"""
     state = get_mark_state(conn, unit_id)
     if state == "marked":
@@ -171,7 +171,7 @@ def _write_hermes_entries(path: str, entries: list[str]) -> None:
         f.write(SEPARATOR.join(entries) + "\n")
 
 
-def mark_hermes_memory(keyword: str, mark_type: str, note: str = None, dry_run: bool = False) -> int:
+def mark_hermes_memory(keyword: str, mark_type: str, note: str | None = None, dry_run: bool = False) -> int:
     """在 MEMORY.md 中模糊匹配含 keyword 的条目，追加标记。返回标记的条目数。"""
     if not os.path.exists(HERMES_MEMORY_PATH):
         print(f"  ⚠️  Hermes Memory 文件不存在: {HERMES_MEMORY_PATH}", file=sys.stderr)
@@ -229,7 +229,6 @@ def mark_keyword_memories(
     Returns:
         {"total_marked": int, "errors": int}
     """
-    import re as _re
 
     RULES: list[tuple[str, str, str]] = [
         ("失败", "错误", "失败"),
@@ -307,7 +306,7 @@ def mark_keyword_memories(
         for row in rows:
             unit_id, text = row[0], row[1] or ""
             if keyword.isascii() and keyword.isalpha():
-                if not _re.search(rf"\b{_re.escape(keyword)}\b", text, _re.I):
+                if not re.search(rf"\b{re.escape(keyword)}\b", text, re.I):
                     continue
             else:
                 if keyword.lower() not in text.lower():
@@ -340,7 +339,7 @@ def mark_keyword_memories(
                             break
                     if _skip:
                         continue
-            if any(_re.search(p, text, _re.I) for p in EXCLUDE_PATTERNS):
+            if any(re.search(p, text, re.I) for p in EXCLUDE_PATTERNS):
                 continue
             result = mark_memory(
                 db_adapter.conn, unit_id, mark_type, note=note, dry_run=dry_run, commit=False,

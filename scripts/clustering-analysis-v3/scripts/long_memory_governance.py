@@ -195,7 +195,8 @@ def main() -> int:
             print("  DRY-RUN：未修改数据库；加 --apply 执行归档+压缩")
             return 0
         archive_path = archive_rows(rows, Path(args.archive_dir))
-        assert archive_path is not None
+        if archive_path is None:
+            raise RuntimeError("archive_rows returned None unexpectedly")
         updated = update_rows(
             adapter,
             rows,

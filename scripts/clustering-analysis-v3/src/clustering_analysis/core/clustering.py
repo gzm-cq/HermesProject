@@ -1,11 +1,9 @@
 """聚类算法核心 — 纯业务逻辑，无外部 I/O"""
 
-import os
 import re
 import time
 import warnings
 from collections import Counter, defaultdict
-from typing import Any
 
 import numpy as np
 
@@ -35,9 +33,11 @@ from clustering_analysis.core.embeddings import call_llm_for_entity_with_causal
 CAUSAL_TRIGGERS = frozenset({
     "因为", "所以", "因此", "导致", "由于", "于是", "从而",
     "引发", "造成", "引起", "触发", "使得", "根因", "原因",
+    "产生", "促使", "衍生", "诱发", "致使", "酿成", "影响",
+    "衍化", "促成", "造就", "带来", "推动", "滋生", "诱致",
 })
 
-NOISE_WORDS = {
+NOISE_WORDS = frozenset({
     "系统状态",
     "系统",
     "系统日志",
@@ -89,7 +89,7 @@ NOISE_WORDS = {
     "查询",
     "写入",
     "读取",
-}
+})
 
 
 # ========== Causal detection ==========
@@ -490,7 +490,7 @@ def adaptive_hdbscan_params(
         min_cluster_size = 5
         min_samples = 4
     elif n_samples < 2000:
-        min_cluster_size = 5
+        min_cluster_size = 8
         min_samples = 6
     else:
         min_cluster_size = 15
@@ -521,7 +521,7 @@ def run_hdbscan_clustering(
     Returns:
         (labels, probabilities, silhouette) — labels: 聚类标签 (-1 为噪声), silhouette: Silhouette 评分或 None
     """
-    print("\n[Phase 4] HDBSCAN 聚类...")
+    print("\n[HDBSCAN] 聚类...")
     t0 = time.time()
 
     if not HDBSCAN_AVAILABLE:
@@ -565,8 +565,8 @@ def run_hdbscan_clustering(
                 sil = 0.0
             print(f"   Silhouette: {sil:.4f}")
             silhouette_val = sil
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"   [WARN] silhouette 计算失败: {exc}")
 
     return labels, probabilities, silhouette_val
 
@@ -617,6 +617,8 @@ def process_clusters(
     for group_label, members in filtered.items():
         print(f"   处理组 {group_label}（{len(members)} 人）...")
 
+        entity_id = f"group_{label_prefix}_{group_label}" if label_prefix else f"group_{group_label}"
+
         # Step 1: 提取实体名 + 因果对（LLM）
         if not skip_entity and len(members) >= min_llm_size:
             texts_for_llm = [unit_texts[i] for i in members]
@@ -627,10 +629,8 @@ def process_clusters(
             # fallback：取第一个记忆的前 10 字 + entity_id 后缀，保证唯一
             # 避免语义不同但有相同前10字的实体撞名，触发 DB ON CONFLICT 报错
             name_head = unit_texts[members[0]][:10] + "..."
-            entity_id = f"group_{label_prefix}_{group_label}" if label_prefix else f"group_{group_label}"
             canonical_name = f"{name_head} [{entity_id}]"
             causal_pairs = []
-        entity_id = f"group_{label_prefix}_{group_label}" if label_prefix else f"group_{group_label}"
 
         entity_write_plan.append(
             {

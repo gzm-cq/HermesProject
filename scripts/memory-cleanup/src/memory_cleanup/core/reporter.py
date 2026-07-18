@@ -36,14 +36,12 @@ def print_report(source: str, entries: list[str], result: dict[str, Any], char_l
     keep_chars = sum(len(entries[i]) for i in final_keep)
     total_chars = sum(len(e) for e in entries)
 
-    limit = char_limit
-
     print(f"\n{'#' * 60}")
     print(f"#  {source} — 分类结果")
     print(
         f"#  {len(entries)} 条 / {total_chars:,} 字符"
         f" → 保留 {len(final_keep)} 条 / {keep_chars:,} 字符"
-        f"（{keep_chars / limit * 100:.0f}%）"
+        f"（{keep_chars / char_limit * 100:.0f}%）"
     )
     print(f"{'#' * 60}")
     print(f"  merge: {len(merge_list)} 组 | remove: {len(remove_indices)} 条 | compress: {len(compress_list)} 条 | hindsight: {len(hindsight_list)} 条")

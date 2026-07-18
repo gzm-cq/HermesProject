@@ -107,3 +107,4 @@ agent-tasks/
 mnt/
 nul
 .workbuddy/
+.codegraph/

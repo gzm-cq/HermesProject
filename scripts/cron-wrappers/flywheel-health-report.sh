@@ -26,6 +26,9 @@ CHAT_ID="${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}"
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 REPORT_DIR="${HERMES_HOME}/logs/reports"
 SCRIPT_PATH="${HERMES_HOME}/scripts/flywheel-health-report.py"
+# P0/P1 通知最大行数（避免飞书消息过长）
+MAX_P0_LINES=5
+MAX_P1_LINES=8
 # 文件名用 CN 日期（用户视角的"今天"），与 py 内部 UTC 数据窗口解耦
 # py 内部统计 UTC 前一天的完整数据（CN 17:00 = UTC 09:00，前一天 UTC 数据已完整）
 TODAY_CN=$(TZ='Asia/Shanghai' date +%Y-%m-%d)
@@ -51,8 +54,8 @@ if command -v lark-cli &>/dev/null; then
     cron_section "发送飞书通知"
 
     # 只提取 P0/P1 数据行和失败任务（动态行数，不截断）
-    P0=$(awk '/^## 🔴 P0/{f=1;next} /^## /{f=0} f && /^\|/' "$REPORT_FILE" | tail -n +2 | head -5 || echo "")
-    P1=$(awk '/^## 🟡 P1/{f=1;next} /^## /{f=0} f && /^\|/' "$REPORT_FILE" | tail -n +2 | head -8 || echo "")
+    P0=$(awk '/^## 🔴 P0/{f=1;next} /^## /{f=0} f && /^\|/' "$REPORT_FILE" | tail -n +2 | head -${MAX_P0_LINES} || echo "")
+    P1=$(awk '/^## 🟡 P1/{f=1;next} /^## /{f=0} f && /^\|/' "$REPORT_FILE" | tail -n +2 | head -${MAX_P1_LINES} || echo "")
     FAILED_LINE=$(awk -F'|' '$3 ~ /❌/ {print}' "$REPORT_FILE" | head -1 || echo "")
 
     BODY=""

@@ -8,6 +8,9 @@ import numpy as np
 import psycopg2
 import psycopg2.extras
 
+DEFAULT_BANK_ID = "hermes"
+_DEFAULT_LINK_WEIGHT = 0.5
+
 
 class DatabaseAdapter:
     """PostgreSQL 数据库操作适配器"""
@@ -15,6 +18,7 @@ class DatabaseAdapter:
     def __init__(self, db_url: str) -> None:
         self.db_url = db_url
         self._conn: Any = None
+        self._has_quality_score_column: bool | None = None
 
     @property
     def conn(self) -> Any:
@@ -23,33 +27,27 @@ class DatabaseAdapter:
             self._conn = psycopg2.connect(self.db_url)
         return self._conn
 
-    def fetch_memory_units(self, sample_size: int) -> list[tuple]:
+    def fetch_memory_units(self, sample_size: int, bank_id: str | None = None) -> list[tuple]:
         """获取记忆单元数据
 
         Args:
             sample_size: 采样数，<=0 表示不限量全量获取。
+            bank_id: 按银行ID过滤，None 时使用默认 bank_id。
         """
+        bid = bank_id or self.bank_id
         with self.conn.cursor() as cur:
+            sql = """
+                SELECT id, bank_id, text, embedding
+                FROM memory_units
+                WHERE embedding IS NOT NULL AND text IS NOT NULL
+                  AND bank_id = %s
+                ORDER BY created_at DESC
+            """
             if sample_size > 0:
-                cur.execute(
-                    """
-                    SELECT id, bank_id, text, embedding
-                    FROM memory_units
-                    WHERE embedding IS NOT NULL AND text IS NOT NULL
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                    """,
-                    (sample_size,),
-                )
+                sql += " LIMIT %s"
+                cur.execute(sql, (bid, sample_size))
             else:
-                cur.execute(
-                    """
-                    SELECT id, bank_id, text, embedding
-                    FROM memory_units
-                    WHERE embedding IS NOT NULL AND text IS NOT NULL
-                    ORDER BY created_at DESC
-                    """,
-                )
+                cur.execute(sql, (bid,))
             return cur.fetchall()
 
     def fetch_unit_entities(self, unit_ids: list[str]) -> list[tuple]:
@@ -126,7 +124,7 @@ class DatabaseAdapter:
                     pass
         return result
 
-    def fetch_all_links(self, bank_id: str = "hermes") -> set[tuple[str, str, str]]:
+    def fetch_all_links(self, bank_id: str = DEFAULT_BANK_ID) -> set[tuple[str, str, str]]:
         """获取已有因果链的去重集合，用于跨运行跳过重复检测。
 
         Returns:
@@ -146,7 +144,7 @@ class DatabaseAdapter:
         self,
         *,
         force: bool = False,
-        bank_id: str = "hermes",
+        bank_id: str = DEFAULT_BANK_ID,
     ) -> None:
         """保留所有聚类数据（实体、关联、因果链均不清除）。
 
@@ -161,8 +159,7 @@ class DatabaseAdapter:
         memory_link_plan: list[dict[str, Any]],
         enriched_texts: dict[str, list[str]],
         *,
-        bank_id: str = "hermes",
-        precomputed_embeds_future: Any = None,
+        bank_id: str = DEFAULT_BANK_ID,
         prefetched_texts: dict[str, str] | None = None,
     ) -> None:
         """将聚类结果写入数据库（实体、unit 关联、因果链、富化文本）
@@ -354,7 +351,7 @@ class DatabaseAdapter:
                 link["from_id"],
                 link["to_id"],
                 link.get("link_type", "causes"),
-                min(1.0, float(link.get("weight", 0.5))),
+                min(1.0, float(link.get("weight", _DEFAULT_LINK_WEIGHT))),
                 e_uuid,
                 bank_id,
             ))
@@ -392,7 +389,7 @@ class DatabaseAdapter:
     @property
     def bank_id(self) -> str:
         """默认 bank_id"""
-        return "hermes"
+        return DEFAULT_BANK_ID
 
     def update_embedding(self, unit_id: str, embedding: list[float]) -> None:
         """更新单个记忆单元的 embedding"""
@@ -418,6 +415,20 @@ class DatabaseAdapter:
         self.conn.commit()
         return updated
 
+    def _check_quality_score_column(self) -> bool:
+        """检查 memory_units 表是否存在 quality_score 字段（结果缓存）。"""
+        if self._has_quality_score_column is not None:
+            return self._has_quality_score_column
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name='memory_units' AND column_name='quality_score'
+                """,
+            )
+            self._has_quality_score_column = cur.fetchone() is not None
+        return self._has_quality_score_column
+
     def update_quality_score(
         self,
         memory_id: str,
@@ -438,14 +449,10 @@ class DatabaseAdapter:
             是否成功更新
         """
         try:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = 'memory_units' AND column_name = 'quality_score'",
-                )
-                if not cur.fetchone():
-                    return False
+            if not self._check_quality_score_column():
+                return False
 
+            with self.conn.cursor() as cur:
                 details_json = json.dumps(quality_details) if quality_details else None
                 cur.execute(
                     "UPDATE memory_units SET quality_score = %s, quality_details = %s WHERE id = %s",
@@ -475,14 +482,10 @@ class DatabaseAdapter:
             return 0
 
         try:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = 'memory_units' AND column_name = 'quality_score'",
-                )
-                if not cur.fetchone():
-                    return 0
+            if not self._check_quality_score_column():
+                return 0
 
+            with self.conn.cursor() as cur:
                 params = [
                     (uid, score, json.dumps(details) if details else None)
                     for uid, score, details in updates

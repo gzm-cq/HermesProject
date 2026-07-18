@@ -24,33 +24,9 @@ def cmd_run_old(
     cluster_method: str,
 ) -> None:
     """[已废弃] 旧管线入口 — 请使用新管线: knowledge-tree-builder run"""
-    print("⚠️  run_old 已废弃，请使用: knowledge-tree-builder run")
-    config = load_config(config_path)
-    cfg = AppConfig.from_dict(config)
-
-    from knowledge_tree_builder.core.extractor import extract_knowledge_tree
-
-    input_path = Path(input_dir)
-    articles: list[dict[str, Any]] = []
-    for f in input_path.iterdir():
-        if f.suffix.lower() in (".md", ".txt", ".yaml", ".yml"):
-            text = f.read_text(encoding="utf-8")
-            articles.append({"title": f.stem, "text": text})
-
-    if not articles:
-        print("   ❌ 输入目录无文章")
-        raise typer.Exit(1)
-
-    results = extract_knowledge_tree(articles, config=cfg, cluster_method=cluster_method)
-
-    if not dry_run:
-        output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
-        with open(output_path / "tree.json", "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"   ✅ 输出: {output_path}/tree.json")
-    else:
-        print(f"   📊 预览: {len(results.get('tree', []))} 个节点")
+    print("❌  run_old 已废弃，请使用新管线命令: knowledge-tree-builder run")
+    print("    新管线支持完整的 Phase admit/analyze/split/place/review 流程。")
+    raise typer.Exit(1)
 
 
 def cmd_cluster(
@@ -61,33 +37,9 @@ def cmd_cluster(
     dry_run: bool,
 ) -> None:
     """[已废弃] HDBSCAN 聚类建树 — 请使用新管线: knowledge-tree-builder run"""
-    print("⚠️  cluster 已废弃，请使用: knowledge-tree-builder run")
-    config = load_config(config_path)
-    cfg = AppConfig.from_dict(config)
-
-    from knowledge_tree_builder.core.clustering import cluster_knowledge_points
-
-    input_path = Path(input_dir)
-    articles: list[dict[str, Any]] = []
-    for f in input_path.iterdir():
-        if f.suffix.lower() in (".md", ".txt"):
-            text = f.read_text(encoding="utf-8")
-            articles.append({"title": f.stem, "text": text})
-
-    if not articles:
-        print("   ❌ 输入目录无文章")
-        raise typer.Exit(1)
-
-    results = cluster_knowledge_points(articles, config=cfg, method=cluster_method)
-
-    if not dry_run:
-        output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
-        with open(output_path / "clustered.json", "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"   ✅ 输出: {output_path}/clustered.json")
-    else:
-        print(f"   📊 预览: {len(results.get('clusters', []))} 个簇")
+    print("❌  cluster 已废弃，请使用新管线命令: knowledge-tree-builder run")
+    print("    新管线支持完整的 Phase admit/analyze/split/place/review 流程。")
+    raise typer.Exit(1)
 
 
 def cmd_validate(input_json: str, config_path: str, output: str) -> None:

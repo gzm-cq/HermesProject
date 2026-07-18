@@ -78,11 +78,12 @@ class ConsolidationEngine:
         """)
         fragment_domains = float(cursor.fetchone()[0] or 0)
 
-        # 4. orphan_kps — 没有父节点的知识点
+        # 4. orphan_kps — 没有边关联的知识点（不在 knowledge_tree_edges 中）
         cursor.execute("""
             SELECT COUNT(*) FROM knowledge_tree kp
+            LEFT JOIN knowledge_tree_edges e ON kp.id = e.from_id OR kp.id = e.to_id
             WHERE kp.node_type = 'knowledge_point'
-            AND kp.parent_id IS NULL
+            AND e.from_id IS NULL
         """)
         orphan_kps = float(cursor.fetchone()[0] or 0)
 
@@ -546,10 +547,10 @@ class ConsolidationEngine:
             """,
             (domain_id,),
         )
-        from knowledge_tree_builder.adapters.database import _parse_k_vector
+        from knowledge_tree_builder.adapters.database import parse_k_vector
         results = []
         for r in cursor.fetchall():
-            k_vec = _parse_k_vector(r[1])
+            k_vec = parse_k_vector(r[1])
             if k_vec is not None:
                 results.append({"id": r[0], "k_vector": k_vec})
         return results

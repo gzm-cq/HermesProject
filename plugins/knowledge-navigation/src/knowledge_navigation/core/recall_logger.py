@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from knowledge_navigation.config import CONFIG
-from knowledge_navigation.core.filtering import calculate_score_stats
+from knowledge_navigation.core.filtering import calculate_score_stats, extract_score
 from knowledge_navigation.core.use_log import UseLogger
 
 logger = logging.getLogger(__name__)
@@ -38,15 +38,8 @@ class RecallResult:
         }
 
     def _extract_score(self, result: dict[str, Any]) -> float:
-        """从不同格式的结果中统一提取分数。"""
-        for key in ("final_score", "score", "rerank_score"):
-            v = result.get(key)
-            if v is not None:
-                try:
-                    return float(v)
-                except (TypeError, ValueError):
-                    continue
-        return 0.0
+        """从不同格式的结果中统一提取分数（委托给公共实现）。"""
+        return extract_score(result)
 
 
 class RecallLogger:

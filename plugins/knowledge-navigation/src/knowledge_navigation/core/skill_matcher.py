@@ -750,6 +750,9 @@ def _llm_match(
             info_map_lower = {s["name"].lower(): s["name"] for s in skill_list}
             results: list[dict[str, str]] = []
             for name in names[:top_k]:
+                # 类型校验：LLM 偶发返回非字符串元素（dict/int/null），跳过避免 KeyError/TypeError
+                if not isinstance(name, str):
+                    continue
                 # 优先精确匹配，否则尝试大小写不敏感匹配
                 matched_name = name if name in info_map else info_map_lower.get(name.lower())
                 if matched_name:
@@ -896,9 +899,9 @@ def match_skills(
     for c in sorted(llm_candidates, key=_fallback_sort_key, reverse=True)[:top_k]:
         name = c["name"]
         if name in info_map:
-            # 分数对齐：fallback 基线 0.3，低于 LLM 命中的 0.5
+            # 分数对齐：fallback 基线 0.3，低于 LLM 命中的 0.5（min 封顶 0.49 防止超越 LLM 基线）
             best = _fallback_sort_key(c)
-            final_score = 0.3 + best
+            final_score = min(0.49, 0.3 + best)
             fallback.append({
                 "name": name,
                 "description": info_map[name]["description"],

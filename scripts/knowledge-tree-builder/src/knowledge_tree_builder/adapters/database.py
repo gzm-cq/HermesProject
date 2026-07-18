@@ -17,13 +17,15 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 
+from knowledge_tree_builder.models import EMBEDDING_DIM
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_REVIEW_STATUS = "pending_review"
 LEGACY_REVIEW_STATUS = "pending"
 
 
-def _parse_k_vector(raw: object) -> list[float] | None:
+def parse_k_vector(raw: object) -> list[float] | None:
     """将 pgvector 的 k_vector 安全转为 Python list。
 
     无论 pgvector psycopg2 适配器是否生效（VECTOR 可能被读为字符串），
@@ -50,6 +52,10 @@ def _parse_k_vector(raw: object) -> list[float] | None:
         except (_json.JSONDecodeError, ValueError, TypeError):
             pass
     return None
+
+
+# 向后兼容别名（外部模块可能仍引用私有名）
+_parse_k_vector = parse_k_vector
 
 
 class DatabaseAdapter:
@@ -410,7 +416,7 @@ class DatabaseAdapter:
         )
         row = self.cursor.fetchone()
         if row and row[0] is not None:
-            return _parse_k_vector(row[0])
+            return parse_k_vector(row[0])
         return None
 
     def query_cooccurrence(self, subject_id: int, days_back: int = 30) -> dict[int, float]:
@@ -509,7 +515,7 @@ class DatabaseAdapter:
 
     def create_tables(self) -> None:
         """创建知识树相关表（首次部署用）"""
-        # 确保 pgvector 扩展已安装（VECTOR(1024) 依赖）
+        # 确保 pgvector 扩展已安装（VECTOR(EMBEDDING_DIM) 依赖）
         self.cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
         self.conn.commit()
         statements = [
@@ -522,7 +528,7 @@ class DatabaseAdapter:
                 extracted_at TIMESTAMPTZ
             )
             """,
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS knowledge_tree (
                 id SERIAL PRIMARY KEY,
                 parent_id INT REFERENCES knowledge_tree(id),
@@ -530,10 +536,10 @@ class DatabaseAdapter:
                 node_type VARCHAR(16),
                 display_order INT,
                 source_ids INTEGER[],
-                k_vector VECTOR(1024),
+                k_vector VECTOR({EMBEDDING_DIM}),
                 placement_count INT DEFAULT 0,
                 k_updated_at TIMESTAMPTZ,
-                local_offset VECTOR(1024),
+                local_offset VECTOR({EMBEDDING_DIM}),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )

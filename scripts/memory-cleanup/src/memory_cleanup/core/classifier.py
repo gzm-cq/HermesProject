@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from memory_cleanup.core.prompts import build_system_prompt
+from memory_cleanup.core.utils import KEYWORD_PATTERN
 
 if TYPE_CHECKING:
     from memory_cleanup.adapters.llm_client import LLMClient
@@ -21,6 +22,9 @@ AUTO_REMOVE_PATTERNS = [
     "Memory cleaning methodology",
     "memory cleanup pipeline",
 ]
+
+# 子批大小：每 5 条一个 LLM 调用
+SUB_BATCH_SIZE = 5
 
 
 def classify_all(
@@ -69,8 +73,6 @@ def _classify_single_round(
     max_workers: int,
 ) -> dict[str, Any]:
     """单轮分类：分批并行，每批内部再拆子批并行，减少单次 LLM 上下文量。"""
-    # 子批大小：每 5 条一个 LLM 调用
-    SUB_BATCH_SIZE = 5
     # 先分外层批（batch_size 条/批）
     outer_batches = [
         (entries[s : s + batch_size], s)
@@ -373,9 +375,8 @@ def validate_merge_quality(
         # 不会因为合并文本引入新术语就大幅拉低分值。
         # 条目数 ≤ 3 时用 max（任一原文重叠即放行），避免短条目误杀。
         # 中文关键词为空时回退到英文单词（[a-zA-Z]{4,}）检查。
-        ALL_KW_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}|[a-zA-Z]{4,}")
-        orig_kws = [set(ALL_KW_PATTERN.findall(o)) for o in originals]
-        merged_kw = set(ALL_KW_PATTERN.findall(merged))
+        orig_kws = [set(KEYWORD_PATTERN.findall(o)) for o in originals]
+        merged_kw = set(KEYWORD_PATTERN.findall(merged))
         if merged_kw:
             coverages = [
                 len(okw & merged_kw) / max(len(okw), 1)
@@ -599,9 +600,8 @@ def validate_compress_quality(
             orig_kw = _chinese_bigrams(original)
             comp_kw = _chinese_bigrams(compressed)
         else:
-            ALL_KW_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}|[a-zA-Z]{4,}")
-            orig_kw = set(ALL_KW_PATTERN.findall(original))
-            comp_kw = set(ALL_KW_PATTERN.findall(compressed))
+            orig_kw = set(KEYWORD_PATTERN.findall(original))
+            comp_kw = set(KEYWORD_PATTERN.findall(compressed))
         if orig_kw and comp_kw:
             kw_overlap = len(orig_kw & comp_kw) / max(len(orig_kw), 1)
             if kw_overlap < kw_threshold:

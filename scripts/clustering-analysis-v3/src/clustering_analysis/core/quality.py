@@ -10,6 +10,14 @@ try:
 except ImportError:
     requests = None  # type: ignore[assignment]
 
+_QUALITY_DIMS = ("informativeness", "clarity", "completeness", "timeliness")
+
+_LOW_QUALITY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
+    r"^(好的|嗯|哦|啊|是的|不是|可以|不行|好的呢|收到|了解|明白)$",
+    r"^(测试|test|TODO|TBD|FIXME)$",
+    r"^.{0,5}$",
+]]
+
 
 def _parse_llm_json_response(content: str) -> dict | None:
     """3 层解析兜底：直接解析 → markdown code block → raw JSON 对象"""
@@ -123,19 +131,12 @@ def estimate_quality_keywords(text: str) -> float:
     scores.append(term_score)
 
     # 5. 避免低质量信号
-    low_quality_patterns = [
-        r'^.{0,5}$',
-        r'^(测试|test|hello|hi|你好|啊|哦|嗯)',
-        r'^重复.*$',
-        r'^无$',
-        r'^暂无$',
-    ]
-    for pattern in low_quality_patterns:
-        if re.match(pattern, text, re.IGNORECASE):
+    for pattern in _LOW_QUALITY_PATTERNS:
+        if pattern.match(text):
             return 0.1
 
     # 加权平均
-    weights = [0.25, 0.25, 0.2, 0.15, 0.15]
+    weights = [0.3, 0.3, 0.2, 0.2]
     total = sum(s * w for s, w in zip(scores, weights[:len(scores)]))
     return _clamp_score(total)
 
@@ -169,13 +170,8 @@ def score_memory_quality(
     Returns:
         各维度分 + 综合分的字典
     """
-    default_scores = {
-        "informativeness": 0.5,
-        "clarity": 0.5,
-        "completeness": 0.5,
-        "timeliness": 0.5,
-        "overall": 0.5,
-    }
+    default_scores = {dim: 0.5 for dim in _QUALITY_DIMS}
+    default_scores["overall"] = 0.5
 
     if not text or not text.strip():
         return {k: 0.0 for k in default_scores}
@@ -250,8 +246,7 @@ def score_memory_quality(
                     result[key] = default_scores[key]
 
             if "overall" not in result or not isinstance(result.get("overall"), (int, float)):
-                dims = ["informativeness", "clarity", "completeness", "timeliness"]
-                result["overall"] = sum(result.get(d, 0.5) for d in dims) / len(dims)
+                result["overall"] = sum(result.get(d, 0.5) for d in _QUALITY_DIMS) / len(_QUALITY_DIMS)
 
             return result
 

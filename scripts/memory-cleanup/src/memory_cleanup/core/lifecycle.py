@@ -8,13 +8,12 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
+from memory_cleanup.config import CONFIG
+
 logger = logging.getLogger(__name__)
 
-FREQUENCY_KEYWORDS = [
-    "经常", "常常", "总是", "每次", "日常", "每天", "每周", "常用",
-    "frequently", "often", "always", "daily", "weekly", "regularly",
-    "常用工具", "常用命令", "偏好", "喜欢",
-]
+_DEFAULT_CREATED_DAYS_RECENT = 15
+_DEFAULT_CREATED_DAYS_NORMAL = 30
 
 
 def _parse_datetime(text: str) -> datetime | None:
@@ -54,17 +53,6 @@ def _estimate_last_access(entry: dict[str, Any], now: datetime) -> datetime:
     会被误判为创建时间。但因为使用了 0.7/0.3 权重，
     最终估算会偏向 now，减少误判影响。
     """
-    # 历史记录关键词，如果内容包含这些，日期可能是描述对象而非创建时间
-    HISTORICAL_KEYWORDS = [
-        "年", "月", "日",  # 日期描述
-        "完成", "建于", "始于", "创建于", "发布于",  # 时间状语
-        "之前", "以后", "以来",  # 时间范围
-    ]
-    RECENT_KEYWORDS = [
-        "经常", "每天", "每周", "日常", "常用", "偏好",
-        "frequently", "daily", "regularly", "often",
-    ]
-
     last_accessed = entry.get("last_accessed")
     if last_accessed:
         if isinstance(last_accessed, datetime):
@@ -77,10 +65,8 @@ def _estimate_last_access(entry: dict[str, Any], now: datetime) -> datetime:
     content = entry.get("content", "")
     content_lower = content.lower() if isinstance(content, str) else ""
 
-    # 检查内容是否包含近期使用信号
-    has_recent_signal = any(kw.lower() in content_lower for kw in RECENT_KEYWORDS)
-    # 检查内容是否包含历史记录信号
-    has_historical_signal = any(kw in content for kw in HISTORICAL_KEYWORDS)
+    has_recent_signal = any(kw.lower() in content_lower for kw in CONFIG.lifecycle_recent_keywords)
+    has_historical_signal = any(kw in content for kw in CONFIG.lifecycle_historical_keywords)
 
     created_at = entry.get("created_at")
     if created_at:
@@ -89,31 +75,26 @@ def _estimate_last_access(entry: dict[str, Any], now: datetime) -> datetime:
         elif isinstance(created_at, str):
             parsed = _parse_datetime(created_at)
             if parsed:
-                # 历史关键词信号在内容级别检测，created_at 字段本身不需要调整
                 created_dt = parsed
             else:
-                created_dt = now - timedelta(days=15 if has_recent_signal else 30)
+                created_dt = now - timedelta(days=_DEFAULT_CREATED_DAYS_RECENT if has_recent_signal else _DEFAULT_CREATED_DAYS_NORMAL)
         else:
-            created_dt = now - timedelta(days=15 if has_recent_signal else 30)
+            created_dt = now - timedelta(days=_DEFAULT_CREATED_DAYS_RECENT if has_recent_signal else _DEFAULT_CREATED_DAYS_NORMAL)
     else:
         if isinstance(content, str):
             parsed = _parse_datetime(content)
             if parsed:
-                # 如果有历史信号 + 无近期信号，日期可能是描述对象而非创建时间
-                # 保守估计：偏向 now，减少误判
                 if has_historical_signal and not has_recent_signal:
-                    created_dt = now - timedelta(days=30)
+                    created_dt = now - timedelta(days=_DEFAULT_CREATED_DAYS_NORMAL)
                 else:
                     created_dt = parsed
             else:
-                # 无日期信息，使用近期信号调整默认值
-                created_dt = now - timedelta(days=15 if has_recent_signal else 30)
+                created_dt = now - timedelta(days=_DEFAULT_CREATED_DAYS_RECENT if has_recent_signal else _DEFAULT_CREATED_DAYS_NORMAL)
         else:
-            created_dt = now - timedelta(days=30)
+            created_dt = now - timedelta(days=_DEFAULT_CREATED_DAYS_NORMAL)
 
     delta = now - created_dt
-    # 有近期信号的条目，权重更偏向 now（更活跃）
-    weight = 0.2 if has_recent_signal else 0.3
+    weight = 0.3 if has_recent_signal else 0.2
     estimated = created_dt + delta * weight
     return min(estimated, now)
 
@@ -136,7 +117,7 @@ def _estimate_access_count(entry: dict[str, Any]) -> int:
 
     freq_score = 0
     content_lower = content.lower()
-    for kw in FREQUENCY_KEYWORDS:
+    for kw in CONFIG.lifecycle_frequency_keywords:
         if kw.lower() in content_lower:
             freq_score += 2
 

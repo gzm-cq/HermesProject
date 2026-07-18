@@ -15,6 +15,9 @@ from memory_cleanup.config import AppConfig, CONFIG
 
 logger = logging.getLogger(__name__)
 
+# _remove_key 使用的候选唯一前缀长度列表（P2-MC-029）
+_UNIQUE_PREFIX_LENGTHS = (80, 120, 160, 240, 320)
+
 
 class MemoryFileStore:
     """MEMORY.md / USER.md 读写适配器。
@@ -131,7 +134,7 @@ class MemoryFileStore:
             the shortest unique prefix and fall back to the full entry.
             """
             entry = entries[idx]
-            for length in (80, 120, 160, 240, 320, len(entry)):
+            for length in (*_UNIQUE_PREFIX_LENGTHS, len(entry)):
                 key = entry[: min(length, len(entry))]
                 if sum(1 for e in entries if key and key in e) == 1:
                     return key

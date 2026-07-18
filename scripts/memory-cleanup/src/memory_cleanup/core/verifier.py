@@ -1,9 +1,9 @@
 """验证器 — Phase 2 session_search + LLM 验证 remove 候选（串行逐条，稳健版）。"""
 
-import datetime
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -12,17 +12,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-def _truncate(text: str, max_len: int = 400) -> str:
-    """在合理边界截断文本，避免在关键信息中间截断。"""
-    if len(text) <= max_len:
-        return text
-    suffix = "…（截断）"
-    truncated = text[:max_len - len(suffix)]
-    last_newline = truncated.rfind("\n")
-    if last_newline > (max_len - len(suffix)) // 2:
-        truncated = truncated[:last_newline]
-    return truncated + suffix
+# ── Phase 2 验证阈值常量（P2-MC-022） ──
+_SESSION_CONFIDENCE_THRESHOLD = 0.3
+_TIME_WINDOW_DAYS = 90
+_TIME_DECAY_FACTOR = 0.5
 
 
 def phase2_verify(
@@ -73,22 +66,22 @@ def phase2_verify(
         sess_ts = sess.get("timestamp", 0)
 
         # 时间窗口软降权
-        if sess_ts and confidence >= 0.3:
+        if sess_ts and confidence >= _SESSION_CONFIDENCE_THRESHOLD:
             date_match = re.search(r"20\d{2}[-/年]\d{1,2}[-/月]\d{0,2}", text)
             if date_match:
                 try:
                     date_str = date_match.group().replace("年", "-").replace("月", "-").replace("/", "-")
                     parts = [int(p) for p in date_str.split("-") if p]
                     if len(parts) >= 2:
-                        entry_date = datetime.date(parts[0], parts[1], parts[2] if len(parts) > 2 else 1)
-                        sess_date = datetime.date.fromtimestamp(float(sess_ts))
+                        entry_date = date(parts[0], parts[1], parts[2] if len(parts) > 2 else 1)
+                        sess_date = date.fromtimestamp(float(sess_ts))
                         days_diff = abs((entry_date - sess_date).days)
-                        if days_diff > 90:
-                            confidence = round(confidence * 0.5, 2)
+                        if days_diff > _TIME_WINDOW_DAYS:
+                            confidence = round(confidence * _TIME_DECAY_FACTOR, 2)
                 except (ValueError, OSError):
                     pass
 
-        snippet_for_llm: str | None = sess_text if confidence >= 0.3 else None
+        snippet_for_llm: str | None = sess_text if confidence >= _SESSION_CONFIDENCE_THRESHOLD else None
         tasks.append((idx, text, reason, source, snippet_for_llm, confidence))
 
     results: dict[str, list] = {"correct": [], "corrected": [], "keep": []}
@@ -125,6 +118,7 @@ def phase2_verify(
             )
             if not has_real_fix:
                 result["verdict"] = "correct"
+                result.pop("corrected_text", None)
                 _char_val = char_overlap if total_kw < 3 else kw_overlap
                 result["note"] = f"corrected_text 无效（overlap={effective_overlap:.2f}，kw={kw_overlap:.2f} char={_char_val:.2f}），降级为 correct"
 

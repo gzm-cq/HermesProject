@@ -44,6 +44,8 @@ from knowledge_tree_builder.core.cache_manager import (
 )
 from knowledge_tree_builder.llm.client import call_llm_json
 
+logger = logging.getLogger(__name__)
+
 
 def _domain_cache_key(article_path: str, article_title: str, input_dir: str, use_path_hash: bool) -> str:
     """生成领域缓存 key。
@@ -461,7 +463,7 @@ def _run_admit_phase(
                         if old_record is not None:
                             old_record.add_step("admit", {"result": "passed"})
                         break
-        for deduped in _admit_result.deduped:
+        for deduped in _admit_result.dedup_merged:
             source_title = deduped.get("source_title", "")
             text = deduped.get("text", "")
             for record in lineage_tracker.all_records():
@@ -476,9 +478,12 @@ def _run_admit_phase(
                     record.add_step("admit", {"result": "conflict"})
                     break
 
-    print(f"   通过 {_admit_result.stats['passed']} 条，"
-          f"去重合并 {_admit_result.stats['dedup_merged']} 条，"
-          f"矛盾 {_admit_result.stats['conflicts']} 条")
+    logger.info(
+        "通过 %d 条，去重合并 %d 条，矛盾 %d 条",
+        _admit_result.stats["passed"],
+        _admit_result.stats["dedup_merged"],
+        _admit_result.stats["conflicts"],
+    )
 
     return _admit_result
 

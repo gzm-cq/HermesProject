@@ -20,6 +20,7 @@ from knowledge_tree_builder.core.incremental import dedup_before_insert, detect_
 from knowledge_tree_builder.core.embeddings import batch_embed, cosine_similarity
 from knowledge_tree_builder.core.extractor import extract_knowledge_points
 from knowledge_tree_builder.core.clustering import build_tree
+from knowledge_tree_builder.models import EMBEDDING_DIM
 
 
 def cmd_add(text: str, title: str, config_path: str, dry_run: bool, verbose: bool) -> None:
@@ -43,7 +44,10 @@ def cmd_add(text: str, title: str, config_path: str, dry_run: bool, verbose: boo
     # Step 5: 增量去重 + 矛盾检测（有 DB 时）
     try:
         cfg = load_config(config_path)
-        db = DatabaseAdapter(cfg["db_url"])
+        db_url = cfg.get("db_url") or cfg.get("database", {}).get("url")
+        if not db_url:
+            raise KeyError("db_url")
+        db = DatabaseAdapter(db_url)
         leaf_nodes = db.get_leaf_nodes()
         print(f"   📊 知识树现有 {len(leaf_nodes)} 个叶子节点")
 
@@ -451,7 +455,7 @@ def cmd_move(node_id: int, to: int, config_path: str, dry_run: bool) -> None:
                 )
                 new_row = cursor.fetchone()
                 if new_row:
-                    new_k = np.array(new_row[0], dtype=np.float32) if new_row[0] else np.zeros(1024, dtype=np.float32)
+                    new_k = np.array(new_row[0], dtype=np.float32) if new_row[0] else np.zeros(EMBEDDING_DIM, dtype=np.float32)
                     node_k = np.array(node_k_vector, dtype=np.float32)
                     new_count = new_row[1] + 1
                     alpha = min(1.0 / new_count, 0.1)

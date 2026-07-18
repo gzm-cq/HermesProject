@@ -189,27 +189,25 @@ class Manifest:
         bar_len = 20
         filled = (done + written) * bar_len // max(total, 1)
         bar = "█" * filled + "░" * (bar_len - filled)
-        print(
-            "\r  进度: |%s| %d/%d (%d%%) 已提取=%d 已写入=%d 失败=%d      "
-            % (bar, done + written, total, pct, done, written,
-               sum(1 for i in self.items if i.status == STATUS_FAILED)),
-            end="", flush=True,
+        logger.info(
+            "进度: |%s| %d/%d (%d%%) 已提取=%d 已写入=%d 失败=%d",
+            bar, done + written, total, pct, done, written,
+            sum(1 for i in self.items if i.status == STATUS_FAILED),
         )
 
     def summary(self) -> None:
-        print()
         written = self.written_count
         failed = [i for i in self.items if i.status == STATUS_FAILED]
-        print("  ─────────────────────────────────────")
-        print("  已写入: %d  失败: %d  总计: %d" % (written, len(failed), self.total))
+        logger.info("  ─────────────────────────────────────")
+        logger.info("已写入: %d  失败: %d  总计: %d", written, len(failed), self.total)
         if failed:
-            print("  失败:")
+            logger.warning("失败:")
             for item in failed:
-                print("    ❌ %s: %s" % (item.title[:40], item.error[:80]))
+                logger.warning("❌ %s: %s", item.title[:40], item.error[:80])
         if self._atomics_dir and os.path.exists(self._atomics_dir):
             remaining = os.listdir(self._atomics_dir)
             if remaining:
-                print("  残留 atomics 文件: %d" % len(remaining))
+                logger.warning("残留 atomics 文件: %d", len(remaining))
 
     # ========== 内部 ==========
 

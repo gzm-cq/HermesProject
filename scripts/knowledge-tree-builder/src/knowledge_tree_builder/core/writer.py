@@ -1,4 +1,7 @@
-"""Step 5: 树写入 PG + 去重 + 矛盾检测"""
+"""Step 5: 树写入 PG + 去重 + 矛盾检测
+
+⚠️ 已弃用：被 place.py 的 _write_to_db 替代
+"""
 
 from __future__ import annotations
 

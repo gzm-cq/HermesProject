@@ -17,6 +17,7 @@ from knowledge_tree_builder.models import (
     SplitResult,
     adjust_claims_count,
 )
+from knowledge_tree_builder.phase.admit import DOMAIN_ABBREVIATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -44,25 +45,6 @@ _META_REFERENCE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"文章(介绍|讨论|分析|提出|概述|总结)"),
     re.compile(r"本研究(介绍|讨论|分析|提出|概述|总结)"),
 ]
-
-# 域内通用缩写白名单
-_DOMAIN_ABBREVIATIONS: frozenset[str] = frozenset({
-    # 聚类/ML
-    "HDBSCAN", "DBSCAN", "KNN", "SVM", "AUC", "F1", "ROC", "PCA",
-    "CNN", "RNN", "LSTM", "GRU", "GAN", "VAE", "RL", "DL", "ML", "NLP", "CV",
-    # Transformer
-    "GPT", "BERT", "T5", "LLM", "RAG", "LLMs",
-    # 数学/算法
-    "ANN", "HNSW", "BM25", "TF", "IDF", "SGD", "Adam",
-    "ReLU", "GELU", "softmax", "cosine",
-    # 工程
-    "API", "CLI", "JSON", "YAML", "HTTP", "HTTPS", "REST", "SQL", "PG",
-    "GPU", "CPU", "TPU", "SDK", "IDE", "CI", "CD",
-    # 向量/embedding
-    "embedding", "token", "tokens",
-    # 注意力机制
-    "Q", "K", "V",
-})
 
 
 def check_self_explanatory(text: str) -> tuple[bool, str]:
@@ -112,7 +94,7 @@ def _check_undefined_abbreviations(text: str) -> str | None:
     # 匹配 2+ 大写字母的缩写（如 SE、KT）
     abbrevs = re.findall(r"\b([A-Z]{2,})\b", text)
     for abbr in abbrevs:
-        if abbr not in _DOMAIN_ABBREVIATIONS and abbr.upper() not in _DOMAIN_ABBREVIATIONS:
+        if abbr not in DOMAIN_ABBREVIATIONS and abbr.upper() not in DOMAIN_ABBREVIATIONS:
             return abbr
     return None
 

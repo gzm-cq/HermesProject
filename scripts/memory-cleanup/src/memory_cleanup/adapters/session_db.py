@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from memory_cleanup.config import AppConfig, CONFIG
+from memory_cleanup.core.utils import KEYWORD_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,9 @@ _STOP_WORDS = {
     "very", "just", "more", "some", "such", "not", "its", "was", "are", "can",
     "for", "and", "but", "has", "had",
 }
+
+# FTS 查询使用的关键词数量上限（P2-MC-032）
+_FTS_KEYWORD_LIMIT = 3
 
 
 class SessionDB:
@@ -36,15 +40,15 @@ class SessionDB:
         if not self._db_path.exists():
             return {"found": False, "confidence": 0.0}
 
-        kw = re.findall(r"[\u4e00-\u9fff]{4,}|[a-zA-Z_]{4,}", text)
+        kw = KEYWORD_PATTERN.findall(text)
         kw = [w for w in kw if w.lower() not in _STOP_WORDS]
         if not kw:
             return {"found": False, "confidence": 0.0}
 
         # 先 AND 精准匹配，搜不到则 OR 降级（应对关键词不全匹配的情况）
-        queries = [" AND ".join(kw[:3])]
+        queries = [" AND ".join(kw[:_FTS_KEYWORD_LIMIT])]
         if len(kw) > 1:
-            queries.append(" OR ".join(kw[:3]))
+            queries.append(" OR ".join(kw[:_FTS_KEYWORD_LIMIT]))
         try:
             conn = sqlite3.connect(str(self._db_path))
             try:

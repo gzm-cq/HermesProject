@@ -3,6 +3,8 @@
 对每个非叶子簇，判断子簇之间的关系：
 - 平行结构（各自独立，保留多叉）
 - 上下位关系（走二分校验）
+
+⚠️ 已弃用：被 phase/merged.py 内联校验替代
 """
 
 from __future__ import annotations

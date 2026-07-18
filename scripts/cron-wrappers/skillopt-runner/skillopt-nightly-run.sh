@@ -22,8 +22,8 @@ fi
 cron_init "skillopt-nightly-run"
 
 # ===== 执行技能优化 =====
-SKILLOPT_DIR="/root/.hermes/skillopt-runner"
-PYTHON_BIN="/root/.hermes/hermes-agent/venv/bin/python"
+SKILLOPT_DIR="${HERMES_HOME:-/root/.hermes}/skillopt-runner"
+PYTHON_BIN="${HERMES_HOME:-/root/.hermes}/hermes-agent/venv/bin/python"
 
 cron_section "SkillOpt 增量优化"
 if cd "$SKILLOPT_DIR" && "$PYTHON_BIN" skillopt_runner.py; then

@@ -20,11 +20,20 @@ from knowledge_navigation.config import CONFIG
 
 logger = logging.getLogger(__name__)
 
+# 模块级文件锁：保护共享 JSON 文件的读-改-写原子性，
+# 防止 _hindsight_cb 与 _sag_cb 并发 _save_state/_load_state 导致 lost-update
+_file_lock = threading.Lock()
+
 
 class CircuitBreaker:
     """命名空间化的熔断器，每路召回独立一个实例。
 
     状态持久化到 JSON 文件，服务重启后可恢复。
+
+    线程安全设计：
+    - self._lock：保护单实例的内存状态（_failures/_open_until 等）
+    - _file_lock（模块级）：保护共享 JSON 文件的读-改-写原子性，
+      防止 hindsight_cb 与 sag_cb 并发 _save_state 导致 lost-update
     """
 
     def __init__(self, name: str, threshold: int, cooldown: int, state_file: str = ""):
@@ -51,8 +60,9 @@ class CircuitBreaker:
             path = self._state_file_path()
             if not Path(path).exists():
                 return
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with _file_lock:  # 与 _save_state 共享文件锁，防止并发读写冲突
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
             cb_data = data.get(self.name, {})
             self._failures = int(cb_data.get("consecutive_failures", 0))
             self._open_until = float(cb_data.get("open_until", 0.0))
@@ -64,29 +74,31 @@ class CircuitBreaker:
             logger.debug("[%s] 加载熔断器状态失败: %s", self.name, e)
 
     def _save_state(self) -> None:
-        """持久化熔断器状态到 JSON 文件。"""
+        """持久化熔断器状态到 JSON 文件（文件锁保护读-改-写原子性）。"""
         try:
             path = self._state_file_path()
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-            data: dict[str, Any] = {}
-            try:
-                if Path(path).exists():
-                    with open(path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-            except Exception:
-                pass
-            data[self.name] = {
-                "state": "open" if self._open_until > time.time() else "closed",
-                "consecutive_failures": self._failures,
-                "open_until": self._open_until,
-                "total_failures": self._total_failures,
-                "failure_types": dict(self._failure_types),
-                "last_updated": time.time(),
-            }
-            tmp_path = path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            Path(tmp_path).replace(path)
+            # 文件锁保证读-改-写原子性，防止 hindsight_cb 与 sag_cb 并发写入丢失更新
+            with _file_lock:
+                data: dict[str, Any] = {}
+                try:
+                    if Path(path).exists():
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                except Exception:
+                    pass
+                data[self.name] = {
+                    "state": "open" if self._open_until > time.time() else "closed",
+                    "consecutive_failures": self._failures,
+                    "open_until": self._open_until,
+                    "total_failures": self._total_failures,
+                    "failure_types": dict(self._failure_types),
+                    "last_updated": time.time(),
+                }
+                tmp_path = path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                Path(tmp_path).replace(path)
         except Exception as e:
             logger.debug("[%s] 保存熔断器状态失败: %s", self.name, e)
 
@@ -99,7 +111,8 @@ class CircuitBreaker:
             self._failures = 0
             self._open_until = 0.0
             self._failure_types.clear()
-        self._save_state()
+            # 在锁内调用 _save_state，确保状态转换与持久化原子
+            self._save_state()
         return False
 
     def record_failure(self, category: str = "unknown") -> bool:
@@ -119,7 +132,8 @@ class CircuitBreaker:
                 _should_notify = True
                 _failure_snapshot = dict(self._failure_types)
                 self._failure_types.clear()
-        self._save_state()
+            # 在锁内调用 _save_state，确保状态转换与持久化原子
+            self._save_state()
         if _should_notify:
             _notify_feishu_circuit_open(self.name, _failure_snapshot)
         return _should_notify
@@ -129,7 +143,8 @@ class CircuitBreaker:
             self._failures = 0
             self._open_until = 0.0
             self._failure_types.clear()
-        self._save_state()
+            # 在锁内调用 _save_state，确保状态转换与持久化原子
+            self._save_state()
 
 
 _hindsight_cb = CircuitBreaker(

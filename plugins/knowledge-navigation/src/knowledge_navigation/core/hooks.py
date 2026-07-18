@@ -157,6 +157,7 @@ from knowledge_navigation.core.filtering import (
     estimate_tokens,
     exclude_marked,
     extract_rerank_scores,
+    extract_score,
     filter_by_score,
 )
 from knowledge_navigation.core.recall_logger import RecallLogger
@@ -281,30 +282,34 @@ def _get_use_logger() -> UseLogger | None:
 # Turn-to-turn 去重：session 隔离的 LRU，记录本轮已注入的 memory node_id
 # 结构：{session_id: OrderedDict{node_id: timestamp}}
 # OrderedDict 保证插入顺序，超限时淘汰最早的一半
+# 线程安全：被 4-worker ThreadPoolExecutor 并发读写，必须加锁保护，
+# 否则 defaultdict 自动建 key 与 OrderedDict.popitem 并发会破坏内部状态。
 from collections import OrderedDict as _OrderedDict
 _injected_ids: dict[str, _OrderedDict] = defaultdict(_OrderedDict)
 _injected_session_ts: dict[str, float] = {}  # session 最后活动时间，用于 TTL 淘汰
+_injected_lock = threading.Lock()  # 保护 _injected_ids 和 _injected_session_ts 的并发访问
 _INJECTED_LRU_MAX = 256  # 每个 session 最多保存 256 条
 _INJECTED_SESSION_TTL = 86400  # session 24h 未活动则整个删除，防网关常驻进程内存泄漏
 _INJECTED_SESSION_HARD_CAP = 2000  # session 总数硬上限，极端情况下触发清理
 
 
 def _touch_injected_session(session_id: str) -> None:
-    """记录 session 活动，并惰性清理过期/超限 session。"""
+    """记录 session 活动，并惰性清理过期/超限 session（线程安全）。"""
     now = time.time()
-    _injected_session_ts[session_id] = now
-    # 惰性清理：session 数量较多时才扫描，避免每轮都遍历
-    if len(_injected_ids) <= _INJECTED_SESSION_HARD_CAP:
-        return
-    stale = [sid for sid, ts in _injected_session_ts.items() if now - ts > _INJECTED_SESSION_TTL]
-    for sid in stale:
-        _injected_ids.pop(sid, None)
-        _injected_session_ts.pop(sid, None)
-    # TTL 清理后仍超硬上限：按最后活动时间淘汰最早的一半
-    if len(_injected_ids) > _INJECTED_SESSION_HARD_CAP:
-        for sid, _ in sorted(_injected_session_ts.items(), key=lambda kv: kv[1])[: len(_injected_ids) // 2]:
+    with _injected_lock:
+        _injected_session_ts[session_id] = now
+        # 惰性清理：session 数量较多时才扫描，避免每轮都遍历
+        if len(_injected_ids) <= _INJECTED_SESSION_HARD_CAP:
+            return
+        stale = [sid for sid, ts in _injected_session_ts.items() if now - ts > _INJECTED_SESSION_TTL]
+        for sid in stale:
             _injected_ids.pop(sid, None)
             _injected_session_ts.pop(sid, None)
+        # TTL 清理后仍超硬上限：按最后活动时间淘汰最早的一半
+        if len(_injected_ids) > _INJECTED_SESSION_HARD_CAP:
+            for sid, _ in sorted(_injected_session_ts.items(), key=lambda kv: kv[1])[: len(_injected_ids) // 2]:
+                _injected_ids.pop(sid, None)
+                _injected_session_ts.pop(sid, None)
 
 
 from knowledge_navigation.core.circuit_breaker import (
@@ -795,15 +800,8 @@ def _build_knowledge_tree_candidate(kp: dict[str, Any]) -> dict[str, Any] | None
 
 
 def _candidate_score(result: dict[str, Any]) -> float:
-    """统一读取候选最终分数。"""
-    for key in ("final_score", "rerank_score", "base_score", "score"):
-        value = result.get(key)
-        if value is not None:
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                continue
-    return 0.0
+    """统一读取候选最终分数（委托给 filtering.extract_score，避免重复实现）。"""
+    return extract_score(result)
 
 
 def _pass_gates(session_id: str, user_message: str, platform: str, is_first_turn: bool) -> tuple[bool, dict | None]:
@@ -1125,37 +1123,38 @@ def _dedup_and_budget(
     skill_context: str,
 ) -> tuple[list[dict[str, Any]], str]:
     """Turn-to-turn 去重 + 文本去重 + Token 预算守门。"""
-    # Turn-to-turn 去重：session 级 LRU
+    # Turn-to-turn 去重：session 级 LRU（线程安全：所有 _injected_ids 访问需持有 _injected_lock）
     _touch_injected_session(session_id)
-    _session_history = _injected_ids[session_id]
-    _turn_dedup_count = 0
-    if CONFIG.turn_to_turn_dedup_mode == "demote":
-        demoted = 0
+    with _injected_lock:
+        _session_history = _injected_ids[session_id]
+        _turn_dedup_count = 0
+        if CONFIG.turn_to_turn_dedup_mode == "demote":
+            demoted = 0
+            for r in kept:
+                nid = str(r.get("id", ""))
+                if nid and nid in _session_history:
+                    demoted_score = _candidate_score(r) * 0.1
+                    r["final_score"] = demoted_score
+                    r["rerank_score"] = demoted_score
+                    demoted += 1
+            if demoted:
+                logger.info("turn-to-turn 降权: %d 条已注入记忆分数降至 0.1x", demoted)
+            kept.sort(key=_candidate_score, reverse=True)
+        else:
+            for r in list(kept):
+                nid = str(r.get("id", ""))
+                if nid and nid in _session_history:
+                    kept.remove(r)
+                    _turn_dedup_count += 1
+            if _turn_dedup_count:
+                logger.info("turn-to-turn 去重: 移除 %d 条已注入记忆", _turn_dedup_count)
         for r in kept:
             nid = str(r.get("id", ""))
-            if nid and nid in _session_history:
-                demoted_score = _candidate_score(r) * 0.1
-                r["final_score"] = demoted_score
-                r["rerank_score"] = demoted_score
-                demoted += 1
-        if demoted:
-            logger.info("turn-to-turn 降权: %d 条已注入记忆分数降至 0.1x", demoted)
-        kept.sort(key=_candidate_score, reverse=True)
-    else:
-        for r in list(kept):
-            nid = str(r.get("id", ""))
-            if nid and nid in _session_history:
-                kept.remove(r)
-                _turn_dedup_count += 1
-        if _turn_dedup_count:
-            logger.info("turn-to-turn 去重: 移除 %d 条已注入记忆", _turn_dedup_count)
-    for r in kept:
-        nid = str(r.get("id", ""))
-        if nid:
-            _session_history[nid] = time.time()
-    if len(_session_history) > _INJECTED_LRU_MAX:
-        for _ in range(_INJECTED_LRU_MAX // 2):
-            _session_history.popitem(last=False)
+            if nid:
+                _session_history[nid] = time.time()
+        if len(_session_history) > _INJECTED_LRU_MAX:
+            for _ in range(_INJECTED_LRU_MAX // 2):
+                _session_history.popitem(last=False)
 
     from knowledge_navigation.core.filtering import dedup_by_text as _dedup_by_text
     kept = _dedup_by_text(kept)

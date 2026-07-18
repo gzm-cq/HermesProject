@@ -3,10 +3,12 @@
 import json
 import logging
 import os
+import random
 import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -35,11 +37,18 @@ from clustering_analysis.core.clustering import (
 )
 from clustering_analysis.core.dedup import HAS_DATASKETCH, dedup_memories as _dedup_memories_core
 from clustering_analysis.core.embeddings import batch_embed
-from clustering_analysis.core.quality import batch_score_memories, estimate_quality_keywords
+from clustering_analysis.core.quality import batch_score_memories
 
 # Entity merge thresholds
 _MERGE_SIMILAR_THRESHOLD = 0.88  # 新实体间合并阈值
 _MERGE_EXISTING_THRESHOLD = 0.85  # 新实体匹配已有实体阈值
+
+# CLI 显示/采样阈值
+_LOW_QUALITY_PREVIEW_LIMIT = 10
+_MAX_BAR_LEN = 20
+_ENTITY_MATCH_THRESHOLD = 0.75
+_MAX_FULL_MEMBERS_FOR_CAUSAL = 50
+_MAX_SAMPLE_OLD_FOR_CAUSAL = 30
 
 # ========== JSON Logger ==========
 
@@ -179,11 +188,8 @@ def dedup_memories(
     保留最早创建的那条，其余标记为 redundant（设置 text = "[redundant]"）。
     治本方案：一次性的数据清洗，后续聚类时自动避免重复。
     """
-    import os as _os
-    import time as _time
-
     if not db_url:
-        db_url = _os.environ.get('CLUSTERING_DB_URL', '')
+        db_url = os.environ.get('CLUSTERING_DB_URL', '')
         if not db_url:
             print('❌ 请设置 CLUSTERING_DB_URL 环境变量或传入 --db-url')
             raise typer.Exit(1)
@@ -222,13 +228,13 @@ def dedup_memories(
                 for r in rows
             ]
 
-            t0 = _time.time()
+            t0 = time.time()
             deduped, removed_count, method = _dedup_memories_core(
                 memories,
                 threshold=threshold,
                 use_minhash=use_minhash,
             )
-            batch_time = _time.time() - t0
+            batch_time = time.time() - t0
             total_time += batch_time
 
             deduped_ids = {str(m['id']) for m in deduped}
@@ -271,6 +277,7 @@ def quality_score(
     dry_run: bool = typer.Option(False, '--dry-run', help='仅生成报告，不写入数据库'),
     use_llm: bool = typer.Option(False, '--use-llm/--heuristic', help='使用 LLM 评分（默认启发式）'),
     db_url: str = typer.Option('', help='PG 连接串（默认从 CLUSTERING_DB_URL 读取）'),
+    bank_id: str = typer.Option('hermes', '--bank-id', help='记忆库 ID'),
     config_path: str = typer.Option('config/default.yaml', '--config', help='配置文件路径'),
 ) -> None:
     """全库记忆语义质量评分，生成质量分布报告。
@@ -279,8 +286,6 @@ def quality_score(
     Feature Flag 关闭时输出提示并退出。
     默认使用启发式快速估算；开启 --use-llm 可调用 LLM 精确评分。
     """
-    import os as _os
-    import time as _time
     from collections import Counter
 
     # 加载配置
@@ -301,7 +306,7 @@ def quality_score(
     cfg = AppConfig.from_dict(config)
 
     if not db_url:
-        db_url = _os.environ.get('CLUSTERING_DB_URL', '')
+        db_url = os.environ.get('CLUSTERING_DB_URL', '')
         if not db_url:
             print('❌ 请设置 CLUSTERING_DB_URL 环境变量或传入 --db-url')
             raise typer.Exit(1)
@@ -318,9 +323,9 @@ def quality_score(
 
     try:
         adapter = DatabaseAdapter(db_url)
-        units = adapter.fetch_memory_units(sample_size)
+        units = adapter.fetch_memory_units(sample_size, bank_id=bank_id)
         total = len(units)
-        print(f'   待评分记忆数: {total}')
+        print(f'   待评分记忆数: {total} (bank={bank_id})')
 
         if total == 0:
             print('   ⚠️  没有可评分的记忆')
@@ -332,7 +337,7 @@ def quality_score(
             for u in units
         ]
 
-        t0 = _time.time()
+        t0 = time.time()
         scored = batch_score_memories(
             memories,
             batch_size=batch_size,
@@ -341,7 +346,7 @@ def quality_score(
             model=llm_model,
             use_llm=use_llm,
         )
-        duration = _time.time() - t0
+        duration = time.time() - t0
 
         scores = [m['quality_score'] for m in scored]
         avg_score = sum(scores) / len(scores) if scores else 0.0
@@ -367,18 +372,18 @@ def quality_score(
         for label, _, _ in buckets:
             count = bucket_counts[label]
             pct = count / total * 100 if total > 0 else 0
-            bar = '█' * int(pct / 5)
+            bar = '█' * int(pct * _MAX_BAR_LEN / 100)
             print(f'     {label}: {count:5d} ({pct:5.1f}%) {bar}')
 
         low_quality = [m for m in scored if m['quality_score'] < min_score] if min_score > 0 else []
         if min_score > 0:
             print(f'\n🔻 低质量记忆（< {min_score}）: {len(low_quality)} 条')
-            for i, mem in enumerate(low_quality[:10]):
+            for i, mem in enumerate(low_quality[:_LOW_QUALITY_PREVIEW_LIMIT]):
                 text_preview = mem['text'][:80].replace('\n', ' ')
                 print(f'   [{i+1}] id={mem["id"]}, score={mem["quality_score"]:.3f}')
                 print(f'        {text_preview}...')
-            if len(low_quality) > 10:
-                print(f'   ... 还有 {len(low_quality) - 10} 条')
+            if len(low_quality) > _LOW_QUALITY_PREVIEW_LIMIT:
+                print(f'   ... 还有 {len(low_quality) - _LOW_QUALITY_PREVIEW_LIMIT} 条')
 
         if not dry_run:
             updates = [
@@ -437,7 +442,6 @@ def run(
     # Embedding 配置
     embed_base_url, embed_model, embed_api_key = _load_embedding_config(config)
     embed_batch_size = config.get("embed_batch_size", cfg.embed_batch_size)
-    from functools import partial
     _embed_fn = partial(
         batch_embed,
         base_url=embed_base_url,
@@ -458,9 +462,9 @@ def run(
     print("📥 Phase 1: 拉取数据...")
 
     adapter = DatabaseAdapter(db_url)
-    units = adapter.fetch_memory_units(sample_size)
+    units = adapter.fetch_memory_units(sample_size, bank_id=bank_id)
     n = len(units)
-    print(f"   采样记忆数：{n}")
+    print(f"   采样记忆数：{n} (bank={bank_id})")
 
     # 拉取实体关联
     unit_ids_list = [str(u[0]) for u in units]
@@ -523,8 +527,7 @@ def run(
     # ----------------------------------------------------------
     # Round 1: 无实体记忆 → 挂靠已有实体（embeddings 余弦相似度）
     # ----------------------------------------------------------
-    print("\n--- Round 1/4: 挂靠已有实体 ---")
-    ENTITY_MATCH_THRESHOLD = 0.75
+    print("\n--- Round 1/2: 挂靠已有实体 ---")
 
     existing_entities = adapter.fetch_existing_entities()
     has_existing = len(existing_entities) > 0
@@ -566,7 +569,7 @@ def run(
             round1_plans = []
             matched_count = 0
             for k, sim in enumerate(best_sim):
-                if sim >= ENTITY_MATCH_THRESHOLD:
+                if sim >= _ENTITY_MATCH_THRESHOLD:
                     global_idx = unassociated_idx[k]
                     match_eid = centroid_ids[best_entity_idx[k]]
                     round1_plans.append({
@@ -747,8 +750,6 @@ def run(
         causal_enhance_start = time.time()
 
         # 大型实体只对新增成员 + 采样旧成员做因果检测，避免 n² 爆炸
-        MAX_FULL_MEMBERS = 50
-        MAX_SAMPLE_OLD = 30
 
         for eid in entities_with_new_members:
             old_members = existing_entities.get(eid, [])
@@ -760,22 +761,20 @@ def run(
             # 确定参与因果检测的成员范围
             if not causal_incremental or not causal_new_only:
                 # 非增量模式 或 全量模式：全量 old + new（小实体）或 new + 采样 old（大实体）
-                if len(old_members) <= MAX_FULL_MEMBERS:
+                if len(old_members) <= _MAX_FULL_MEMBERS_FOR_CAUSAL:
                     all_members = old_members + new_members
                     sampled_old_for_log = old_members
                 else:
-                    import random
-                    sampled_old = random.sample(old_members, min(MAX_SAMPLE_OLD, len(old_members)))
+                    sampled_old = random.sample(old_members, min(_MAX_SAMPLE_OLD_FOR_CAUSAL, len(old_members)))
                     all_members = sampled_old + new_members
                     sampled_old_for_log = sampled_old
             else:
                 # 增量 + 仅新成员相关：检测 new×new + new×old
                 # 小实体：用全部 old；大实体：用采样 old
-                if len(old_members) <= MAX_FULL_MEMBERS:
+                if len(old_members) <= _MAX_FULL_MEMBERS_FOR_CAUSAL:
                     sampled_old_for_log = old_members
                 else:
-                    import random
-                    sampled_old_for_log = random.sample(old_members, min(MAX_SAMPLE_OLD, len(old_members)))
+                    sampled_old_for_log = random.sample(old_members, min(_MAX_SAMPLE_OLD_FOR_CAUSAL, len(old_members)))
                 all_members = sampled_old_for_log + new_members
 
             if len(all_members) < 2:
@@ -784,7 +783,7 @@ def run(
             # 统计检测对数（用于日志）
             if causal_incremental and causal_new_only:
                 n_new = len(new_members)
-                n_old_eff = min(len(old_members), MAX_SAMPLE_OLD if len(old_members) > MAX_FULL_MEMBERS else len(old_members))
+                n_old_eff = min(len(old_members), _MAX_SAMPLE_OLD_FOR_CAUSAL if len(old_members) > _MAX_FULL_MEMBERS_FOR_CAUSAL else len(old_members))
                 total_pairs_checked += n_new * (n_new - 1) // 2 + n_new * n_old_eff
             else:
                 n_all = len(all_members)

@@ -57,6 +57,14 @@ TH = {
     "unknown_dim_pct": 50,         # >50% -> P1
     # 任务可靠性
     "elapsed_deviation_sigma": 2.0, # >2 sigma from mean -> P1
+    "elapsed_significant_pct": 50,  # 变化幅度 >50% 才报告
+    # Router 分析
+    "eval_window_sec": 5.0,         # 5 秒内的后继 mask 视为 eval 触发
+    # 聚类趋势
+    "trend_window_size": 3,         # 趋势基线滚动窗口大小
+    "noise_outlier_pp": 2.0,        # 噪声率离群阈值（pp）
+    # 报告类型检测
+    "boot_catchup_window_hours": 12,  # boot 后 12h 内视为 catch-up
     # 数据可信度 (标注不报警)
     "baseline_stale_hours": 48,
     "min_sample_size": 50,
@@ -72,6 +80,43 @@ TH = {
     # 记忆清理
     "memory_char_usage_high_pct": 90,
     "memory_cleanup_stale_hours": 48,
+}
+
+# === 推荐生成阈值（generate_recommendations 专用，与告警 TH 区分） ===
+REC_TH = {
+    # Router
+    "router_full_off_high_pct": 15,
+    "router_empty_high_pct": 10,
+    "router_latency_high_ms": 8000,
+    "router_score_low": 0.4,
+    # SAG
+    "sag_on_low_pct": 10,
+    "sag_on_high_pct": 30,
+    "sag_latency_high_ms": 3000,
+    "sag_merge_zero_high_pct": 50,
+    # Token
+    "token_avg_usage_high_ratio": 0.8,
+    "token_exhaust_ratio": 0.95,
+    # Skill
+    "skill_f1_moderate": 0.6,
+    "skill_pr_imbalance_ratio": 0.7,
+    # KN
+    "kn_unknown_dim_high_pct": 20,
+    "kn_dim_min_sample": 3,
+    # 知识树
+    "kt_orphan_high_pct": 50,
+    "kt_fragment_high_count": 10,
+    "kt_confidence_low": 0.8,
+    # 聚类
+    "cluster_noise_high_pct": 30,
+    "cluster_min_count": 3,
+    "cluster_links_min_count": 50,
+    # 记忆
+    "memory_usage_high_pct": 80,
+    "memory_no_output_usage_pct": 50,
+    # 系统错误
+    "error_high_count": 50,
+    "error_concentration_ratio": 0.5,
 }
 
 # === Test query filter ===
@@ -347,7 +392,7 @@ def analyze_cron_jobs(states: dict[str, dict],
         if stdev_t > 0 and abs(latest - mean_t) > TH["elapsed_deviation_sigma"] * stdev_t:
             direction = "↑ 变慢" if latest > mean_t else "↓ 变快"
             pct = ((latest - mean_t) / mean_t) * 100
-            if abs(pct) > 50:  # only report significant changes
+            if abs(pct) > TH["elapsed_significant_pct"]:  # only report significant changes
                 issues.append({
                     "severity": "P1",
                     "flywheel": _CRON_TO_FLYWHEEL.get(name, name),
@@ -401,7 +446,6 @@ def analyze_router(trace: dict[str, list[dict]],
 
     # 区分 eval 查询和真实用户消息的 mask
     # router_mask 事件紧跟 eval_query_bypass 则认为是 eval 查询
-    _EVAL_WINDOW = 5.0  # 5 秒内的后继 mask 视为 eval 触发
     eval_mask_flags: set[int] = set()
     if eval_bypasses:
         for eb in eval_bypasses:
@@ -411,7 +455,7 @@ def analyze_router(trace: dict[str, list[dict]],
                 if eb_ts <= m_ts:
                     try:
                         delta = (datetime.fromisoformat(m_ts) - datetime.fromisoformat(eb_ts)).total_seconds()
-                        if 0 <= delta <= _EVAL_WINDOW:
+                        if 0 <= delta <= TH["eval_window_sec"]:
                             eval_mask_flags.add(i)
                     except (ValueError, TypeError):
                         continue
@@ -740,7 +784,7 @@ def analyze_token_budget(trace: dict) -> tuple[list[dict], dict, dict]:
         # 排除全关场景（total_after=0 时没有召回，不存在预算耗尽）
         if total_after <= 0:
             continue
-        if total_budget and total_used / total_budget > 0.95:
+        if total_budget and total_used / total_budget > REC_TH["token_exhaust_ratio"]:
             exhaust_count += 1
 
     def _stats(lst):
@@ -1173,8 +1217,7 @@ def analyze_clustering(data_flywheel: Path) -> tuple[list[dict], dict, dict]:
 
     # Noise rate trend — 用前 3 次滚动均值作基线，避免单次离群值误判趋势
     trend = {}
-    WINDOW = 3
-    window = runs[-(WINDOW + 1):-1] if len(runs) > WINDOW else (runs[:-1] if len(runs) > 1 else [])
+    window = runs[-(TH["trend_window_size"] + 1):-1] if len(runs) > TH["trend_window_size"] else (runs[:-1] if len(runs) > 1 else [])
     if window:
         window_rates = []
         for r in window:
@@ -1190,7 +1233,7 @@ def analyze_clustering(data_flywheel: Path) -> tuple[list[dict], dict, dict]:
             result["noise_rate_baseline_window"] = len(window)
             trend["噪声率"] = f"{baseline_rate:.1f}%（{len(window)}次均值）→ {noise_rate:.1f}% ({delta:+.1f}%)"
             # 离群标注：当前相对窗口均值偏离 >2pp，提示趋势可能是异常波动
-            if abs(delta) > 2.0:
+            if abs(delta) > TH["noise_outlier_pp"]:
                 trend["噪声率_离群"] = (
                     "⚠️ 单次偏离均值 >2pp，趋势可能为异常波动而非真恶化/改善"
                 )
@@ -1497,7 +1540,7 @@ def detect_report_type(cron_state_dir: Path, now_utc: datetime) -> str:
                 if boot_dt.tzinfo is None:
                     boot_dt = boot_dt.replace(tzinfo=timezone(timedelta(hours=8)))
                 hours_ago = (now_utc - boot_dt.astimezone(timezone.utc)).total_seconds() / 3600
-                if 0 <= hours_ago <= 12:
+                if 0 <= hours_ago <= TH["boot_catchup_window_hours"]:
                     return "boot-catch-up"
             except (ValueError, TypeError):
                 pass
@@ -1959,26 +2002,29 @@ def generate_recommendations(
         if n > 0 and n < TH["min_sample_size"]:
             recs.append({"flywheel": "Router", "desc": f"样本量不足（真实消息 {n} 次 < {TH['min_sample_size']}），建议增加日常路由量或降低最小样本阈值"})
         full_off = router_m.get("full_off_pct", 0)
-        if full_off > 15:
+        if full_off > REC_TH["router_full_off_high_pct"]:
             recs.append({"flywheel": "Router", "desc": f"全关率 {full_off}% 偏高，建议检查 Router prompt 是否过度保守或模型超时频发"})
         empty = router_m.get("empty_rate", 0)
-        if empty > 10:
+        if empty > REC_TH["router_empty_high_pct"]:
             recs.append({"flywheel": "Router", "desc": f"空结果率 {empty}% 偏高，建议检查 Hindsight/知识树召回链路或降低 min_score 阈值"})
         avg_lat = router_m.get("avg_latency_ms", 0)
-        if avg_lat > 8000:
+        if avg_lat > REC_TH["router_latency_high_ms"]:
             recs.append({"flywheel": "Router", "desc": f"平均延迟 {avg_lat}ms 偏高，建议排查 Hindsight daemon 连接池或 Reranker 超时"})
         avg_score = router_m.get("avg_score", 0)
-        if 0 < avg_score < 0.4:
+        if 0 < avg_score < REC_TH["router_score_low"]:
             recs.append({"flywheel": "Router", "desc": f"平均得分 {avg_score} 偏低，召回结果相关性不足，建议调整 embedding 或 reranker 模型"})
+        err_rate = router_m.get("error_rate", 0)
+        if err_rate > TH["error_rate_high_pct"]:
+            recs.append({"flywheel": "Router", "desc": f"路由错误率 {err_rate}% 偏高（阈值 {TH['error_rate_high_pct']}%），建议检查 Router LLM 调用稳定性或外部召回服务健康状态"})
 
         sag_on = router_m.get("sag_on_pct", 0)
-        if sag_on < 10 and n > 0:
+        if sag_on < REC_TH["sag_on_low_pct"] and n > 0:
             recs.append({"flywheel": "SAG", "desc": f"SAG 开启率仅 {sag_on}%，Router 极少触发 SAG 召回，建议检查 Router prompt 或 SAG 触发条件"})
         sag_kept = router_m.get("sag_total_kept", 0)
-        if sag_on > 30 and sag_kept == 0:
+        if sag_on > REC_TH["sag_on_high_pct"] and sag_kept == 0:
             recs.append({"flywheel": "SAG", "desc": f"SAG 开启率 {sag_on}% 但召回量为 0，可能 SAG 服务异常或索引为空，建议排查 SAG 健康状态"})
         sag_lat = router_m.get("sag_avg_latency_ms", 0)
-        if sag_lat > 3000:
+        if sag_lat > REC_TH["sag_latency_high_ms"]:
             recs.append({"flywheel": "SAG", "desc": f"SAG 平均延迟 {sag_lat}ms 偏高，建议排查 SAG 服务性能或网络连接"})
 
         # SAG 贡献度
@@ -1990,7 +2036,7 @@ def generate_recommendations(
             # 全部成功召回为 0 section 的极端情况（排除 error 场景）
             if recall_success_count > 0 and recall_zero == recall_success_count:
                 recs.append({"flywheel": "SAG", "desc": f"SAG 全部 {recall_success_count} 次成功召回均为 0 section，索引可能为空或搜索条件过严，建议检查 SAG 索引完整性和 query 构造逻辑"})
-            elif merge_zero > 50 and sag_on > 10:
+            elif merge_zero > REC_TH["sag_merge_zero_high_pct"] and sag_on > REC_TH["sag_on_low_pct"]:
                 recs.append({"flywheel": "SAG", "desc": f"SAG 合并零结果率 {merge_zero}%，召回内容未通过去重/打分，建议降低 SAG 阈值或优化 SAG 索引质量"})
             if recall_error_count > 0:
                 recs.append({"flywheel": "SAG", "desc": f"SAG 召回异常 {recall_error_count} 次，建议检查 SAG 服务健康状态和熔断器日志"})
@@ -2002,7 +2048,7 @@ def generate_recommendations(
             recs.append({"flywheel": "Token", "desc": f"Token 预算耗尽率 {exhaust}%，可能导致召回截断，建议增加 total_budget 或优化各源 token 占用"})
         total_avg = token_m.get("total_stats", {}).get("avg", 0)
         budget = token_m.get("total_budget", 4000)
-        if budget and total_avg / budget > 0.8:
+        if budget and total_avg / budget > REC_TH["token_avg_usage_high_ratio"]:
             recs.append({"flywheel": "Token", "desc": f"Token 平均使用率 {total_avg/budget*100:.0f}% 偏高，建议关注高峰期耗尽风险"})
 
     # --- Skill ---
@@ -2010,24 +2056,24 @@ def generate_recommendations(
         f1 = skill_m.get("avg_f1", 0)
         if 0 < f1 < TH["skill_f1_low"]:
             recs.append({"flywheel": "Skill", "desc": f"F1={f1} 低于阈值，建议检查 skillopt-nightly-run 训练数据质量或调整评估基准"})
-        elif 0 < f1 < 0.6:
+        elif 0 < f1 < REC_TH["skill_f1_moderate"]:
             recs.append({"flywheel": "Skill", "desc": f"F1={f1} 有提升空间，建议关注 Precision/Recall 差异，优化 skill_matcher 关键词扩展"})
         precision = skill_m.get("avg_precision", 0)
         recall = skill_m.get("avg_recall", 0)
         if precision > 0 and recall > 0:
-            if recall < precision * 0.7:
+            if recall < precision * REC_TH["skill_pr_imbalance_ratio"]:
                 recs.append({"flywheel": "Skill", "desc": f"Recall ({recall}) 远低于 Precision ({precision})，建议扩充同义词库或增加中英文双向匹配"})
-            elif precision < recall * 0.7:
+            elif precision < recall * REC_TH["skill_pr_imbalance_ratio"]:
                 recs.append({"flywheel": "Skill", "desc": f"Precision ({precision}) 远低于 Recall ({recall})，建议收紧匹配规则或增加负样本"})
 
     # --- KN Baseline ---
     if kn_m.get("status") != "no_data":
         unknown_pct = kn_m.get("unknown_dim_pct", 0)
-        if unknown_pct > 20:
+        if unknown_pct > REC_TH["kn_unknown_dim_high_pct"]:
             recs.append({"flywheel": "KN", "desc": f"unknown 维度占比 {unknown_pct}%，建议优化维度分类器或扩充基线查询覆盖"})
         dim_summary = kn_m.get("dim_summary", {})
         for dim, s in dim_summary.items():
-            if dim == "unknown" or s.get("count", 0) < 3:
+            if dim == "unknown" or s.get("count", 0) < REC_TH["kn_dim_min_sample"]:
                 continue
             if s.get("avg_score", 1) < TH["kn_avg_score_low"]:
                 recs.append({"flywheel": "KN", "desc": f"dimension={dim} 均分 {s['avg_score']} 偏低，建议针对性增加该维度召回源或调整权重"})
@@ -2035,38 +2081,38 @@ def generate_recommendations(
     # --- 知识树 ---
     if kt_m.get("status") != "no_data":
         orphan = kt_m.get("orphan_pct", 0)
-        if orphan > 50:
+        if orphan > REC_TH["kt_orphan_high_pct"]:
             recs.append({"flywheel": "知识树", "desc": f"孤立知识点 {orphan}%，建议运行 consolidate 补齐 knowledge_tree_edges 或检查 k_vector 兜底"})
         frag = kt_m.get("fragment_domains", 0)
-        if frag > 10:
+        if frag > REC_TH["kt_fragment_high_count"]:
             recs.append({"flywheel": "知识树", "desc": f"碎片域 {frag} 个，建议合并相似域或调整 HDBSCAN min_cluster_size"})
         conf = kt_m.get("avg_confidence", 0)
-        if 0 < conf < 0.8:
+        if 0 < conf < REC_TH["kt_confidence_low"]:
             recs.append({"flywheel": "知识树", "desc": f"平均置信度 {conf} 偏低，建议检查知识点提取 prompt 或增加准入校验"})
 
     # --- 聚类 ---
     if cluster_m.get("status") != "no_data":
         noise = cluster_m.get("noise_rate", 0)
-        if noise > 30:
+        if noise > REC_TH["cluster_noise_high_pct"]:
             recs.append({"flywheel": "聚类", "desc": f"噪声率 {noise}% 偏高，建议调整 HDBSCAN min_cluster_size 或增加 min_llm_size"})
         n_clusters = cluster_m.get("cluster_count", 0)
-        if n_clusters > 0 and n_clusters < 3:
+        if n_clusters > 0 and n_clusters < REC_TH["cluster_min_count"]:
             recs.append({"flywheel": "聚类", "desc": f"聚类数仅 {n_clusters}，可能过粗，建议降低 min_cluster_size 或增加样本量"})
         links = cluster_m.get("memory_links", 0)
-        if 0 < links < 50:
+        if 0 < links < REC_TH["cluster_links_min_count"]:
             recs.append({"flywheel": "聚类", "desc": f"Memory Links 仅 {links}，聚类间关联稀疏，建议检查 memory_links 写入逻辑"})
 
     # --- 记忆清理 ---
     if memory_m and memory_m.get("status") != "no_data":
         mem_usage = memory_m.get("memory_usage_pct", 0)
         user_usage = memory_m.get("user_usage_pct", 0)
-        if mem_usage > 80:
+        if mem_usage > REC_TH["memory_usage_high_pct"]:
             recs.append({"flywheel": "记忆", "desc": f"MEMORY.md 占用 {mem_usage}%，接近上限，建议增加清理力度或提高 compress/hindsight 迁移比例"})
-        if user_usage > 80:
+        if user_usage > REC_TH["memory_usage_high_pct"]:
             recs.append({"flywheel": "记忆", "desc": f"USER.md 占用 {user_usage}%，接近上限，建议精简用户偏好和个人信息"})
         hindsight = memory_m.get("total_hindsight", 0)
         compress = memory_m.get("total_compress", 0)
-        if hindsight == 0 and compress == 0 and mem_usage > 50:
+        if hindsight == 0 and compress == 0 and mem_usage > REC_TH["memory_no_output_usage_pct"]:
             recs.append({"flywheel": "记忆", "desc": f"连续无 hindsight/compress 产出（占用 {mem_usage}%），建议检查分类 prompt 是否过于保守"})
 
     # --- 趋势恶化 ---
@@ -2087,13 +2133,13 @@ def generate_recommendations(
     # --- 全局错误 ---
     if error_m and error_m.get("status") != "no_data":
         err_count = error_m.get("error_count", 0)
-        if err_count > 50:
+        if err_count > REC_TH["error_high_count"]:
             recs.append({"flywheel": "系统", "desc": f"当日 ERROR 日志 {err_count} 条偏多，建议排查 top 错误模块"})
         top_mods = error_m.get("top_modules", [])
         if top_mods:
             top1 = top_mods[0]
             total = error_m.get("date_logs", 1)
-            if total and top1["count"] / total > 0.5:
+            if total and top1["count"] / total > REC_TH["error_concentration_ratio"]:
                 recs.append({"flywheel": "系统", "desc": f"错误集中在 {top1['module']} ({top1['count']}/{total}, {top1['count']/total*100:.0f}%)，建议优先排查"})
 
     # --- 僵尸文件 ---

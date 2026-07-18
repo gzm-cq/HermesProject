@@ -3,7 +3,6 @@
 Extracts reusable components, matches them semantically (word-level + LLM hybrid),
 and synthesizes an optimal combination.
 """
-import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -14,6 +13,16 @@ from self_evolving.adapters.llm_client import LLMClient
 from self_evolving.prompt_loader import get_prompt
 
 logger = logging.getLogger(__name__)
+
+# ── 质量评分常量（P2-SE-025） ─────────────────────────────────────────────
+_QUALITY_BASE_SCORE = 0.4
+_QUALITY_STRUCTURED_BONUS = 0.15
+_QUALITY_DOC_BONUS = 0.1
+_QUALITY_KEYWORD_BONUS_PER = 0.03
+_QUALITY_KEYWORD_BONUS_MAX = 0.15
+_QUALITY_LENGTH_MIN = 100
+_QUALITY_LENGTH_MAX = 5000
+_QUALITY_LENGTH_BONUS = 0.1
 
 # ── Prompts (硬编码 fallback，若 prompts.yaml 加载失败使用) ─────────────────
 
@@ -156,7 +165,6 @@ class RecombinationOperator:
         self._llm = llm_client or self._default_llm()
 
     def _default_llm(self) -> LLMClient:
-        import os
         key = self.config.llm_api_key or os.environ.get("LITELLM_MASTER_KEY", "")
         return LLMClient(
             api_url=self.config.llm_api_url,
@@ -207,7 +215,9 @@ class RecombinationOperator:
                     if comp_a.source_index != comp_b.source_index:
                         similarity = self._calculate_similarity(comp_a, comp_b)
                         is_complementary = self._is_complementary(comp_a, comp_b)
-                        is_conflicting, conflict_data = self._is_conflicting(comp_a, comp_b)
+                        # 计算一次 Jaccard 并传入 _is_conflicting，避免重复计算（P2-SE-009）
+                        jaccard_sim = self._jaccard_similarity(comp_a.content, comp_b.content)
+                        is_conflicting, conflict_data = self._is_conflicting(comp_a, comp_b, jaccard_sim=jaccard_sim)
                         conflict_severity = self._assess_conflict_severity(comp_a, comp_b, is_conflicting, conflict_data)
                         matches.append(ComponentMatch(
                             component_a=comp_a, component_b=comp_b,
@@ -246,8 +256,9 @@ class RecombinationOperator:
             content_segments.append(comp.content)
             component_map[comp.component_id] = f"candidate_{comp.source_index}"
 
+        preserved_set = set(id(c) for c in preserved)
         for comp in components:
-            if comp not in preserved:
+            if id(comp) not in preserved_set:
                 replaced.append(comp)
 
         recombined_content = self._assemble_content(content_segments, task_context)
@@ -326,21 +337,21 @@ class RecombinationOperator:
             return 0.1
         if len(content) > 10000:
             return 0.3
-        score = 0.4
+        score = _QUALITY_BASE_SCORE
         # 结构化特征：含函数/类定义
         if "def " in content or "class " in content:
-            score += 0.15
+            score += _QUALITY_STRUCTURED_BONUS
         # 文档特征
         if '"""' in content or "'''" in content or content.strip().startswith("#"):
-            score += 0.1
+            score += _QUALITY_DOC_BONUS
         # 代码密度：关键字占比
         code_kw = ["if ", "for ", "return", "import", "while", "try", "with "]
         cl = content.lower()
         kw_count = sum(1 for kw in code_kw if kw in cl)
-        score += min(0.15, kw_count * 0.03)
+        score += min(_QUALITY_KEYWORD_BONUS_MAX, kw_count * _QUALITY_KEYWORD_BONUS_PER)
         # 长度合理性：100-5000 字符最佳
-        if 100 <= len(content) <= 5000:
-            score += 0.1
+        if _QUALITY_LENGTH_MIN <= len(content) <= _QUALITY_LENGTH_MAX:
+            score += _QUALITY_LENGTH_BONUS
         return min(1.0, score)
 
     def _is_failure_pattern(self, section: str) -> bool:
@@ -380,11 +391,12 @@ class RecombinationOperator:
     def _is_complementary(self, comp_a: Component, comp_b: Component) -> bool:
         return comp_a.component_type != comp_b.component_type
 
-    def _is_conflicting(self, comp_a: Component, comp_b: Component) -> Tuple[bool, dict]:
+    def _is_conflicting(self, comp_a: Component, comp_b: Component,
+                        jaccard_sim: float = 0.0) -> Tuple[bool, dict]:
         if comp_a.component_type != comp_b.component_type:
             return False, {}
-        # Word-level fallback
-        if self._jaccard_similarity(comp_a.content, comp_b.content) > self.config.jaccard_threshold_low:
+        # Word-level fallback：使用传入的 jaccard_sim，避免重复计算（P2-SE-009）
+        if jaccard_sim > self.config.jaccard_threshold_low:
             prompt = CONFLICT_DETECT_PROMPT().format(
                 type_a=comp_a.component_type, content_a=comp_a.content[:1000],
                 type_b=comp_b.component_type, content_b=comp_b.content[:1000],

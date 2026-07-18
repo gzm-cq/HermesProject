@@ -8,13 +8,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import time
 from typing import Any, Callable
 
 from knowledge_tree_builder.adapters.database import DatabaseAdapter
 from knowledge_tree_builder.core.embeddings import batch_embed, cosine_similarity
-from knowledge_tree_builder.models import AtomicKnowledge
+from knowledge_tree_builder.models import AtomicKnowledge, EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,6 @@ def _match_domain_via_llm(
 def _derive_domain_from_title(title: str) -> str:
     """从标题推领域（LLM 不可用时的兜底）。"""
     # 简单提取：取标题前 2-3 个有意义的词转小写
-    import re
     words = re.findall(r"[a-zA-Z\-]+|[\u4e00-\u9fff]+", title)
     if not words:
         return "general"
@@ -199,11 +200,10 @@ def place_knowledge(
     if embedding_error:
         logger.warning("batch_embed 三次重试均失败，使用文本哈希降级向量: %s", embedding_error)
         # 降级：用文本的确定性哈希作为向量，确保 k_vector 不为 NULL
-        import hashlib
         for i, text in enumerate(all_texts):
             h = hashlib.md5(text.encode("utf-8")).digest()
-            # 将 16 字节 md5 展开为 1024 维伪向量（与 BGE-M3 对齐）
-            vec = [(b / 255.0) * 2 - 1 for b in h * 64]  # 1024 维
+            # 将 16 字节 md5 展开为 EMBEDDING_DIM 维伪向量（与 BGE-M3 对齐）
+            vec = [(b / 255.0) * 2 - 1 for b in h * (EMBEDDING_DIM // len(h))]
             norm = (sum(x * x for x in vec) ** 0.5) or 1.0
             all_k_vectors[i] = [x / norm for x in vec]
 

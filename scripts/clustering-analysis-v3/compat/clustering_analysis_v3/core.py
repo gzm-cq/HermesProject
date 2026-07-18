@@ -8,6 +8,10 @@ from clustering_analysis.core.clustering import (
     enrich_text,
     merge_similar_entities,
     process_clusters,
-    run_dbscan_clustering,
+    run_hdbscan_clustering,
 )
+
+# 旧名别名：run_dbscan_clustering 已被 run_hdbscan_clustering 替代
+run_dbscan_clustering = run_hdbscan_clustering
+
 from clustering_analysis.core.embeddings import batch_embed, call_llm_for_entity

@@ -3,11 +3,10 @@
 Performs multi-level reflection on failed trajectories to diagnose root causes
 and generate alternative solutions.
 """
-import json
 import logging
 import os
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
+from typing import Optional, List, Dict
 from pathlib import Path
 
 from self_evolving.models.failure_diagnosis import (
@@ -19,6 +18,17 @@ from self_evolving.adapters.llm_client import LLMClient
 from self_evolving.prompt_loader import get_prompt
 
 logger = logging.getLogger(__name__)
+
+# ── 长度切片常量（P2-SE-018） ─────────────────────────────────────────────
+_CONTEXT_SLICE_LEN = 1000
+_CAUSE_SLICE_LEN = 500
+
+# ── 置信度常量（P2-SE-019） ───────────────────────────────────────────────
+_CONFIDENCE_BASE_KNOWN = 0.5
+_CONFIDENCE_BASE_UNKNOWN = 0.3
+_CONFIDENCE_BONUS_PER_EVIDENCE = 0.05
+_CONFIDENCE_BONUS_MAX = 0.3
+_CONFIDENCE_CEILING = 0.95
 
 # ── Prompts (硬编码 fallback，若 prompts.yaml 加载失败使用) ─────────────────
 
@@ -208,7 +218,6 @@ class RevisionOperator:
         self._llm = llm_client or self._default_llm()
 
     def _default_llm(self) -> LLMClient:
-        import os
         key = self.config.llm_api_key or os.environ.get("LITELLM_MASTER_KEY", "")
         return LLMClient(
             api_url=self.config.llm_api_url,
@@ -252,10 +261,12 @@ class RevisionOperator:
 
         evidence = self._extract_evidence(failed_content, context, failure_type)
         direct_cause = self._reflect_direct(failed_content, context, failure_type, evidence)
-        root_cause = self._reflect_root(failed_content, context, failure_type, direct_cause)
+        root_cause = None
+        if self.config.reflection_depth >= 2:
+            root_cause = self._reflect_root(failed_content, context, failure_type, direct_cause)
         deep_analysis = None
         if self.config.reflection_depth >= 3:
-            deep_analysis = self._reflect_deep(failed_content, context, failure_type, direct_cause, root_cause)
+            deep_analysis = self._reflect_deep(failed_content, context, failure_type, direct_cause, root_cause or direct_cause)
 
         recommended_fix = self._recommend_fix_type(failure_type, root_cause)
         confidence = self._calculate_diagnosis_confidence(evidence, failure_type)
@@ -335,7 +346,7 @@ class RevisionOperator:
     def _auto_detect_failure_type(self, content: str, context: str) -> FailureType:
         prompt = AUTO_DETECT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
-            context=context[:1000],
+            context=context[:_CONTEXT_SLICE_LEN],
         )
         data = self._call_llm_json([
             {"role": "system", "content": "你是失败类型分析专家，输出结构化 JSON。"},
@@ -352,7 +363,7 @@ class RevisionOperator:
                         evidence: List[str]) -> str:
         prompt = REFLECT_DIRECT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
-            context=context[:1000],
+            context=context[:_CONTEXT_SLICE_LEN],
             failure_type=failure_type.value,
         )
         data = self._call_llm_json([
@@ -365,9 +376,9 @@ class RevisionOperator:
                       failure_type: FailureType, direct_cause: str) -> str:
         prompt = REFLECT_ROOT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
-            context=context[:1000],
+            context=context[:_CONTEXT_SLICE_LEN],
             failure_type=failure_type.value,
-            direct_cause=direct_cause[:500],
+            direct_cause=direct_cause[:_CAUSE_SLICE_LEN],
         )
         data = self._call_llm_json([
             {"role": "system", "content": "你是根因分析专家，输出根本原因。"},
@@ -380,10 +391,10 @@ class RevisionOperator:
                       root_cause: str) -> str:
         prompt = REFLECT_DEEP_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
-            context=context[:1000],
+            context=context[:_CONTEXT_SLICE_LEN],
             failure_type=failure_type.value,
-            direct_cause=direct_cause[:500],
-            root_cause=root_cause[:500],
+            direct_cause=direct_cause[:_CAUSE_SLICE_LEN],
+            root_cause=root_cause[:_CAUSE_SLICE_LEN],
         )
         data = self._call_llm_json([
             {"role": "system", "content": "你是系统性思维专家，输出深度分析。"},
@@ -397,8 +408,8 @@ class RevisionOperator:
         prompt = REVISE_CONTENT_PROMPT().format(
             failed_content=content[:self.config.max_input_length],
             failure_type=diagnosis.failure_type.value,
-            direct_cause=diagnosis.direct_cause[:500],
-            root_cause=diagnosis.root_cause[:500],
+            direct_cause=diagnosis.direct_cause[:_CAUSE_SLICE_LEN],
+            root_cause=diagnosis.root_cause[:_CAUSE_SLICE_LEN],
         )
         return self._call_llm_text([
             {"role": "system", "content": "你根据诊断结果修正代码或内容。"},
@@ -408,7 +419,7 @@ class RevisionOperator:
     def _recommend_fix_type(self, failure_type: FailureType, root_cause: str) -> str:
         prompt = FIX_TYPE_PROMPT().format(
             failure_type=failure_type.value,
-            root_cause=root_cause[:500],
+            root_cause=root_cause[:_CAUSE_SLICE_LEN],
         )
         data = self._call_llm_json([
             {"role": "system", "content": "输出推荐修复类型。"},
@@ -422,15 +433,16 @@ class RevisionOperator:
                           failure_type: FailureType) -> List[str]:
         evidence = []
         evidence.append(f"Failure type: {failure_type.value}")
-        evidence.append(f"Context: {context[:200]}...")
+        context_slice = context[:200]
+        evidence.append(f"Context: {context_slice}{'...' if len(context) > 200 else ''}")
         evidence.append(f"Failed content length: {len(content)} chars")
         return evidence
 
     def _calculate_diagnosis_confidence(self, evidence: List[str],
                                         failure_type: FailureType) -> float:
-        base = 0.5 if failure_type != FailureType.UNKNOWN else 0.3
-        bonus = min(0.3, len(evidence) * 0.05)
-        return min(0.95, base + bonus)
+        base = _CONFIDENCE_BASE_KNOWN if failure_type != FailureType.UNKNOWN else _CONFIDENCE_BASE_UNKNOWN
+        bonus = min(_CONFIDENCE_BONUS_MAX, len(evidence) * _CONFIDENCE_BONUS_PER_EVIDENCE)
+        return min(_CONFIDENCE_CEILING, base + bonus)
 
 
 # Convenience function

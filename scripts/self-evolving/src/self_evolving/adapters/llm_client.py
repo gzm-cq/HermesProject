@@ -64,7 +64,7 @@ class LLMClient:
             try:
                 with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
-            except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as e:
+            except (urllib.error.HTTPError, urllib.error.URLError) as e:
                 last_exc = e
                 # 仅对可重试错误重试：5xx、网络错误、URLError；4xx 不重试（业务错误）
                 if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500:
@@ -79,14 +79,16 @@ class LLMClient:
                     )
                     time.sleep(delay)
                 # else: 达到最大重试次数，下方统一抛错
-        # 重试耗尽
+            except json.JSONDecodeError as e:
+                # JSON 解析失败是 LLM 返回内容问题，重试无效，直接抛错
+                logger.error("LLM 响应 JSON 解析失败（不重试）: %s", e)
+                raise ValueError(f"LLM 响应 JSON 解析失败: {e}") from e
+        # 重试耗尽（仅 HTTPError/URLError 会走到这里）
         logger.error("LLM 调用重试 %d 次后仍失败: %s", self._max_retries, last_exc)
         if isinstance(last_exc, urllib.error.HTTPError):
             raise ConnectionError(f"LLM API HTTP {last_exc.code}") from last_exc
         if isinstance(last_exc, urllib.error.URLError):
             raise ConnectionError(f"LLM API 不可达: {last_exc.reason}") from last_exc
-        if isinstance(last_exc, json.JSONDecodeError):
-            raise ValueError(f"LLM 响应 JSON 解析失败: {last_exc}") from last_exc
         raise ConnectionError(f"LLM 调用失败: {last_exc}") from last_exc
 
     def extract_content(self, response: dict[str, Any]) -> str:

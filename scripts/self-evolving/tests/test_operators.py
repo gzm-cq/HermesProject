@@ -18,8 +18,6 @@ class TestTrajectoryModels:
     """Test trajectory data models."""
     
     def test_tool_call_creation(self):
-        from datetime import datetime
-        
         tc = ToolCall(
             tool_type=ToolType.TERMINAL,
             tool_name="ls",

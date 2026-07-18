@@ -11,8 +11,12 @@
 
 set -euo pipefail
 
+# ===== 配置区 =====
+HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
+REGRESSION_THRESHOLD_PCT=-10
+
 # ===== 加载公共库 =====
-_CRON_LIB="${CRON_LIB:-/root/.hermes/lib/cron_common.sh}"
+_CRON_LIB="${CRON_LIB:-${HERMES_HOME}/lib/cron_common.sh}"
 if [[ -f "$_CRON_LIB" ]]; then
     source "$_CRON_LIB"
 else
@@ -22,15 +26,19 @@ fi
 
 cron_init "run-skill-eval"
 
-PLUGIN_DIR="/root/.hermes/plugins/knowledge-navigation"
+PLUGIN_DIR="${HERMES_HOME}/plugins/knowledge-navigation"
 EVAL_SCRIPT="$PLUGIN_DIR/scripts/run_skill_eval.py"
-PREV_BASELINE="/root/.hermes/data/flywheel/skill_eval_prev.json"
+PREV_BASELINE="${HERMES_HOME}/data/flywheel/skill_eval_prev.json"
 FLYWHEEL_DIR="$(dirname "$PREV_BASELINE")"
 mkdir -p "$FLYWHEEL_DIR"
 
+# 安全临时文件（脚本退出时自动清理）
+EVAL_RESULT_FILE=$(mktemp /tmp/skill_eval_result-XXXXXX.json)
+trap 'rm -f "$EVAL_RESULT_FILE"' EXIT
+
 # ===== 1. 跑评估 =====
 cron_section "Skill Matcher 评估"
-if ! python3 "$EVAL_SCRIPT" --json > /tmp/skill_eval_result.json 2>/dev/null; then
+if ! python3 "$EVAL_SCRIPT" --json > "$EVAL_RESULT_FILE" 2>/dev/null; then
     cron_warn "评估脚本执行失败"
     _STEP_RESULTS+=("⚠️ Skill Eval: 脚本执行失败")
     CRON_SKIP_FINISH_NOTIFY=false
@@ -38,7 +46,7 @@ if ! python3 "$EVAL_SCRIPT" --json > /tmp/skill_eval_result.json 2>/dev/null; th
     exit 0
 fi
 
-CUR_RESULT=$(cat /tmp/skill_eval_result.json)
+CUR_RESULT=$(cat "$EVAL_RESULT_FILE")
 CUR_F1=$(echo "$CUR_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['meta']['avg_f1'])" 2>/dev/null || echo "N/A")
 
 if [[ "$CUR_F1" == "N/A" ]]; then
@@ -56,7 +64,7 @@ import json
 try:
     d=json.load(open('$PREV_BASELINE'))
     print(d['meta']['avg_f1'])
-except: print('N/A')
+except (json.JSONDecodeError, KeyError, ValueError): print('N/A')
 " 2>/dev/null)
 
     if [[ "$PREV_F1" != "N/A" ]]; then
@@ -69,7 +77,7 @@ print(f'{(cur-prev)/prev*100:.1f}' if prev > 0 else '0.0')
         IS_REGRESSED=$(python3 -c "
 try:
     d = float('$DELTA')
-    print('1' if d < -10 else '0')
+    print('1' if d < ${REGRESSION_THRESHOLD_PCT} else '0')
 except: print('0')
 " 2>/dev/null)
         if [[ "$IS_REGRESSED" == "1" ]]; then
@@ -83,6 +91,6 @@ except: print('0')
 fi
 
 # 保存当前为之后对比用
-cp /tmp/skill_eval_result.json "$PREV_BASELINE"
+cp "$EVAL_RESULT_FILE" "$PREV_BASELINE"
 
 cron_finish

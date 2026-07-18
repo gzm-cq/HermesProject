@@ -125,7 +125,7 @@ for i in $(seq 0 $((TOTAL - 1))); do
 
     # 方式 2: 直接执行脚本（仅 no_agent）
     if [[ "$JOB_NO_AGENT" == "true" && -n "$JOB_SCRIPT" ]]; then
-        script_path="/root/.hermes/scripts/${JOB_SCRIPT}"
+        script_path="${HERMES_HOME:-/root/.hermes}/scripts/${JOB_SCRIPT}"
         cd_cmd=""
         [[ -n "$JOB_WORKDIR" ]] && cd_cmd="cd $JOB_WORKDIR && "
 

@@ -67,7 +67,7 @@ def jaccard_dedup(
                 bigram_cache[id_j] = _bigrams(sorted_mems[j].get("text", ""))
             set_j = bigram_cache[id_j]
 
-            if _jaccard(set_i, set_j) > threshold:
+            if _jaccard(set_i, set_j) >= threshold:
                 removed.add(id_j)
 
     result = [m for m in sorted_mems if str(m["id"]) not in removed]
@@ -123,7 +123,7 @@ def minhash_dedup(
         for s in shingles:
             mh.update(s.encode("utf-8"))
 
-        if len(minhash_map) > 0:
+        if minhash_map:
             candidates = lsh.query(mh)
             is_dup = False
             for cand_id in candidates:
