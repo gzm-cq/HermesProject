@@ -881,14 +881,17 @@ def analyze_global_errors(error_log_path: Path, filter_date: str) -> tuple[list[
         if module == "asyncio":
             if "unclosed client session" in low or "unclosed connector" in low:
                 return True
-            if "task exception was never retrieved" in low and "connectionclosedok" in low:
+            # Task exception 通常由连接关闭触发，无需额外匹配 connectionclosedok
+            if "task exception was never retrieved" in low:
                 return True
         if module == "lark":
-            if "receive message loop exit" in low and "code=1000" in line:
+            # 实际日志格式: "receive message loop exit, err: sent 1000 (OK)"
+            if "receive message loop exit" in low and "1000" in line:
                 return True
         if module.startswith("gateway.platforms.weixin") and "rate limited" in low:
             return True
-        if module.startswith("mcp") and "sse" in low and ("connection" in low or "disconnect" in low or "closed" in low):
+        # MCP SSE reader 错误（网关重启时连接中断）
+        if module.startswith("mcp") and ("sse" in low or "sse_reader" in low):
             return True
         if "hindsight" in low and ("daemon" in low or "not ready" in low or "unavailable" in low):
             return True

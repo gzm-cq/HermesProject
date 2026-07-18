@@ -366,13 +366,14 @@ class TestAnalyzeGlobalErrors:
             # asyncio 未关闭连接 - 应被过滤
             "2026-07-10 07:37:00 ERROR asyncio: Unclosed client session\n"
             "2026-07-10 07:37:01 ERROR asyncio: Unclosed connector\n"
-            "2026-07-10 07:37:02 ERROR asyncio: Task exception was never retrieved: ConnectionClosedOK\n"
-            # Lark WS 正常关闭 - 应被过滤
-            "2026-07-10 07:38:00 ERROR lark: Receive message loop exit, code=1000\n"
+            # asyncio Task exception（实际日志不含 ConnectionClosedOK）- 应被过滤
+            "2026-07-10 07:37:02 ERROR asyncio: Task exception was never retrieved\n"
+            # Lark WS 正常关闭（实际格式 sent 1000 (OK)）- 应被过滤
+            "2026-07-10 07:38:00 ERROR lark: receive message loop exit, err: sent 1000 (OK); then received 1000 (OK) bye\n"
             # Weixin 限流 - 应被过滤
             "2026-07-10 07:39:00 ERROR gateway.platforms.weixin: rate limited\n"
-            # MCP SSE 断连 - 应被过滤
-            "2026-07-10 07:40:00 ERROR mcp.sse: SSE connection closed\n"
+            # MCP SSE reader 错误（实际格式 Error in sse_reader）- 应被过滤
+            "2026-07-10 07:40:00 ERROR mcp.client.sse: Error in sse_reader\n"
             # Hindsight daemon 未就绪 - 应被过滤
             "2026-07-10 07:41:00 ERROR knowledge_navigation: Hindsight daemon not ready\n"
             # 真正的 ERROR - 不应被过滤
