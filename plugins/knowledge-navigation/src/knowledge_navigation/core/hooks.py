@@ -984,7 +984,7 @@ def _execute_recall(
             if sk_future is not None:
                 _sk_t0 = time.time()
                 try:
-                    skill_context = sk_future.result(timeout=10)
+                    skill_context = sk_future.result(timeout=CONFIG.timeout_seconds)
                     _sk_latency = (time.time() - _sk_t0) * 1000
                     _sk_results = [{"id": "skill_context", "score": 1.0}] if skill_context else []
                     recall_logger.record(
