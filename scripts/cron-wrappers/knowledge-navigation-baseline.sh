@@ -3,7 +3,7 @@
 #
 # 部署路径: /root/.hermes/scripts/knowledge-navigation-baseline.sh
 # 依赖公共库: /root/.hermes/lib/cron_common.sh（由 cron-common 项目部署）
-# 调度建议:   0 11 * * 1 (每周一 11:00)
+# 调度建议:   0 12 * * * (每天 12:00)
 #
 # 功能:
 #   - 调用 collect_baseline.py --delta --trigger
