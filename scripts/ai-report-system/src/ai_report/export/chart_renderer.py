@@ -27,10 +27,10 @@ import matplotlib.font_manager as fm
 
 # ── 中文字体 ──────────────────────────────────────────────
 
-_UNSET = object()
+# 三态标记：None=未初始化, str=找到的字体路径, ""=查找过但没找到
+_ZH_FONT: Any = None
+_ZH_FONT_INITIALIZED: bool = False
 
-# 尝试加载系统中的中文字体
-_ZH_FONT: str | None = _UNSET  # type: ignore[assignment]
 _CANDIDATES = [
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttf",
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttf",
@@ -60,11 +60,12 @@ def _find_zh_font() -> str | None:
 
 
 def _setup_zh() -> None:
-    """配置 matplotlib 中文字体。"""
-    global _ZH_FONT
-    if _ZH_FONT is not _UNSET:
+    """配置 matplotlib 中文字体（幂等，多次调用安全）。"""
+    global _ZH_FONT, _ZH_FONT_INITIALIZED
+    if _ZH_FONT_INITIALIZED:
         return
     _ZH_FONT = _find_zh_font()
+    _ZH_FONT_INITIALIZED = True
     if _ZH_FONT:
         font_prop = fm.FontProperties(fname=_ZH_FONT)
         plt.rcParams["font.family"] = font_prop.get_name()
@@ -229,12 +230,18 @@ def _render_comparison(
 
 
 # ── 去重 ──────────────────────────────────────────────────
+# 模块级缓存：用于同一次 render_all_charts 调用中按内容去重。
+# 注意：直接调用 render_chart（而非 render_all_charts）会累积缓存，
+# 如需独立调用，应先手动调用 _reset_dedup()。
 
 _DEDUP_CACHE: set[str] = set()
 
 
 def _reset_dedup() -> None:
-    """重置去重缓存（每次批次渲染前调用）。"""
+    """重置去重缓存。
+
+    render_all_charts 会自动调用；直接使用 render_chart 时需手动调用。
+    """
     _DEDUP_CACHE.clear()
 
 

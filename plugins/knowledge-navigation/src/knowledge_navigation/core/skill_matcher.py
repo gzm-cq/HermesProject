@@ -320,6 +320,9 @@ def _load_skill_file(fp: Path) -> dict[str, Any] | None:
     if not name or not desc:
         return None
 
+    if meta.get("archived", "").strip().lower() in ("true", "yes", "1"):
+        return None
+
     category = fp.parent.parent.name if fp.parent.parent != SKILLS_HOME else ""
 
     return {
@@ -497,7 +500,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
     body = text[3:end]
     import re as _re
     for line in body.strip().split("\n"):
-        m = _re.match(r"^(name|description):\s*(.+)$", line)
+        m = _re.match(r"^(name|description|archived):\s*(.+)$", line)
         if m:
             meta[m.group(1)] = m.group(2).strip()
     return meta
@@ -719,6 +722,8 @@ def _llm_match(
         "## 输出(仅 JSON 数组 不要其他文字)\n"
     )
 
+    # max_tokens=2048：避免 LiteLLM 降级到 sensenova 等推理模型时，reasoning_content
+    # 耗尽 token 配额导致 content 字段为空（512 在长 prompt 下经常不够用）
     for attempt in range(2):
         try:
             import httpx
@@ -729,7 +734,7 @@ def _llm_match(
                 json={
                     "model": "s-deepseek-v4-flash",
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 512,
+                    "max_tokens": 2048,
                     "temperature": 0.1,
                     "thinking": {"type": "disabled"},
                 },
@@ -737,7 +742,31 @@ def _llm_match(
             )
             resp.raise_for_status()
             body = resp.json()
-            raw = (body["choices"][0]["message"]["content"] or "").strip()
+            choice = body["choices"][0]
+            msg = choice.get("message", {})
+            finish_reason = choice.get("finish_reason", "")
+            raw = (msg.get("content") or "").strip()
+
+            # 兜底：content 空但 reasoning_content 非空时，从 reasoning 末尾提取 JSON 数组。
+            # 触发场景：LiteLLM 降级到不支持 thinking:disabled 的推理模型（如 sensenova），
+            # reasoning_content 占满 token 后 content 为空。reasoning 末尾通常会给出最终答案。
+            if not raw:
+                reasoning = (msg.get("reasoning_content") or "").strip()
+                if reasoning:
+                    # 匹配 reasoning 末尾的 JSON 数组（支持多行、带引号变体）
+                    m = re.search(r'\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]\s*$', reasoning, re.MULTILINE)
+                    if m:
+                        raw = m.group(0)
+                        logger.info(
+                            "Skill match LLM: content 空，从 reasoning_content 兜底提取 %s", raw
+                        )
+                # 记录 length 截断告警，便于监控 LiteLLM 路由异常
+                if finish_reason == "length":
+                    logger.warning(
+                        "Skill match LLM: finish_reason=length, content 空 (model=%s, prompt=%d chars)",
+                        resp.headers.get("x-litellm-model-group", "unknown"),
+                        len(prompt),
+                    )
 
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             names = json.loads(raw)

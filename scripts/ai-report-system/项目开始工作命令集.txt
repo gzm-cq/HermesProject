@@ -1,3 +1,0 @@
-启动项目强化记忆系统：memory-start.sh
-启动规则：需要加载编程规则
-记录项目工程文档：在bash中执行python3 scripts/gen_engineering_map.py

@@ -121,6 +121,12 @@ def _parse_chapter_indices(md_text: str) -> list[tuple[int, str]]:
     - level = len(stripped) - len(stripped.lstrip('#'))
     - 仅 level <= 2 时计数
     - 去除首尾 #（Bug12 修复同步）
+
+    注意：docx_exporter._process_markdown_line 在流式渲染时同样维护章节计数，
+    本函数用于一次性预扫描（build_chart_images / _build_title_index_map）。
+    如果修改章节计数逻辑（如新增 H3 计数、忽略特定前缀），必须同步修改
+    docx_exporter._process_markdown_line 中 "# 标题行" 分支，否则会导致
+    chart_images 的 chapter_idx 与渲染时实际计数不一致（Bug18 类问题）。
     """
     lines = md_text.split("\n")
     chapters: list[tuple[int, str]] = []
@@ -365,13 +371,22 @@ def _generate_with_retry(
             if save_path.exists():
                 save_path.unlink()
         else:
-            # 审核错误（超时/返回非 JSON 等），不删除图片，继续重试
+            # 审核错误（超时/返回非 JSON 等）：删除图片并立即标记失败，不再重试。
+            # VLM 自身出错时重试无意义，且残留图片会被 render_mermaid_images
+            # 中的 "if save_path.exists()" 直接复用，绕过审核。
             logger.warning(
-                "  ⚠️  Review error round %d, retrying: %s",
+                "  ⚠️  Review error round %d, marking as failed: %s",
                 round_num,
                 review_result["reasoning"][:80] if review_result["reasoning"] else "",
             )
+            if save_path.exists():
+                save_path.unlink()
+            break
 
+    # 兜底清理：所有轮次耗尽仍失败时，确保 save_path 不残留
+    # （防止下次 render_mermaid_images 误用未验证图片）
+    if save_path.exists():
+        save_path.unlink()
     logger.warning("  ❌ %s failed after %d rounds", label, max_rounds)
     return None
 

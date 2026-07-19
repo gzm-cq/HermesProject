@@ -113,31 +113,10 @@ STABILITY_OK=true
 STABILITY_TOTAL=5
 STABILITY_PASS=0
 
+_ROUTER_CHECK_PY="${PLUGIN_DIR:-${HERMES_HOME}/plugins/knowledge-navigation}/scripts/_router_stability_check.py"
 if [[ -n "${KN_ROUTER_API_KEY:-}" ]]; then
     for i in $(seq 1 $STABILITY_TOTAL); do
-        RESP=$(python3 -c "
-import os, httpx
-key = os.environ.get('KN_ROUTER_API_KEY', '')
-resp = httpx.post(
-    'http://127.0.0.1:4142/v1/chat/completions',
-    json={
-        'model': 's-deepseek-v4-flash',
-        'temperature': 0.1,
-        'max_tokens': 512,
-        'messages': [
-            {'role': 'system', 'content': '你是一个注入路由判断器。输出 JSON: {\"h\": bool, \"kt\": bool, \"s\": bool, \"sag\": bool}'},
-            {'role': 'user', 'content': '消息：测试\n\nJSON 输出：'}
-        ],
-    },
-    headers={'Authorization': f'Bearer {key}'},
-    timeout=10,
-)
-data = resp.json()
-content = data['choices'][0]['message'].get('content', '') or ''
-if not content.strip():
-    content = data['choices'][0]['message'].get('reasoning_content', '') or ''
-print('OK' if content and 'sag' in content else 'FAIL')
-" 2>/dev/null || echo "FAIL")
+        RESP=$(python3 "$_ROUTER_CHECK_PY" 2>/dev/null || echo "FAIL")
         if [[ "$RESP" == "OK" ]]; then
             STABILITY_PASS=$((STABILITY_PASS + 1))
         fi
@@ -164,7 +143,9 @@ SAG_OK=true
 SAG_DETAILS=()
 
 # 4.1 检查 SAG 熔断器状态（从 circuit_breaker.json 读取）
-SAG_CB_FILE="${PLUGIN_DIR}/circuit_breaker.json"
+# 文件路径：plugins/knowledge-navigation/src/circuit_breaker.json
+# （circuit_breaker.py 在 src/knowledge_navigation/core/，往上三层 = src/）
+SAG_CB_FILE="${PLUGIN_DIR}/src/circuit_breaker.json"
 if [[ -f "$SAG_CB_FILE" ]]; then
     SAG_CB_STATE=$(python3 -c "
 import json
@@ -185,23 +166,26 @@ except Exception:
 
     if [[ "$SAG_CB_STATE_NAME" == "closed" ]]; then
         cron_ok "SAG 熔断器: closed (连续失败: ${SAG_CB_FAILS}, 累计: ${SAG_CB_TOTAL_FAILS})"
-        SAG_DETAILS+=("✅ SAG 熔断器: closed")
+        SAG_DETAILS+=("✅ SAG 熔断器: closed (累计失败 ${SAG_CB_TOTAL_FAILS})")
     else
-        cron_warn "SAG 熔断器: ${SAG_CB_STATE_NAME} (连续失败: ${SAG_CB_FAILS})"
-        SAG_DETAILS+=("⚠️ SAG 熔断器: ${SAG_CB_STATE_NAME}")
+        cron_warn "SAG 熔断器: ${SAG_CB_STATE_NAME} (连续失败: ${SAG_CB_FAILS}, 累计: ${SAG_CB_TOTAL_FAILS})"
+        SAG_DETAILS+=("⚠️ SAG 熔断器: ${SAG_CB_STATE_NAME} (累计 ${SAG_CB_TOTAL_FAILS})")
         SAG_OK=false
     fi
 else
-    cron_ok "SAG 熔断器文件不存在（可能未触发过失败，属正常）"
-    SAG_DETAILS+=("ℹ️ SAG 熔断器: 无失败记录")
+    cron_warn "SAG 熔断器文件不存在: ${SAG_CB_FILE}"
+    SAG_DETAILS+=("⚠️ SAG 熔断器: 状态文件缺失")
+    SAG_OK=false
 fi
 
 # 4.2 检查 SAG 服务可连通性
+# 用 /health 端点做存活检查（轻量，不消耗检索资源）。
+# 注意：曾用 /search 探测，但 SAG /search 要求 sourceIds 必填且非空数组，
+# cron 探测漏了该字段会稳定返回 400 "请求参数无效"，造成误报。
+# 检索功能已由第2步 trace.log 的 SAG 召回统计间接验证。
 SAG_API_URL="${SAG_API_URL:-http://127.0.0.1:4173}"
 if command -v curl &>/dev/null; then
-    SAG_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${SAG_API_URL}/search" \
-        -H "Content-Type: application/json" \
-        -d '{"query":"test","topK":1,"searchMode":"fast"}' \
+    SAG_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${SAG_API_URL}/health" \
         --max-time 5 2>/dev/null || echo "000")
     if [[ "$SAG_HTTP" == "200" ]]; then
         cron_ok "SAG 服务可连通 (HTTP 200)"

@@ -64,6 +64,8 @@ BASELINE_FILE = BASELINE_DIR / "baseline_latest.json"
 BASELINE_PREV_FILE = BASELINE_DIR / "baseline_prev.json"
 DELTA_THRESHOLD = float(os.environ.get("BASELINE_DELTA_THRESHOLD", "0.10"))
 MIN_DELTA_SAMPLES = 4      # 参与退化检测的最小请求数（防小样本假阳性）
+ROLLING_BASELINE_DAYS = int(os.environ.get("ROLLING_BASELINE_DAYS", "7"))  # 滑动窗口基线天数
+MAX_SCORE_CI_WIDTH = float(os.environ.get("BASELINE_MAX_SCORE_CI_WIDTH", "0.30"))  # score CI 宽度超过此值视为样本不稳定，跳过告警
 JUDGE_PARALLEL = int(os.environ.get("JUDGE_PARALLEL", "5"))
 
 DIMENSIONS = [
@@ -263,7 +265,7 @@ def find_log_file() -> str:
     return ""
 
 
-def collect_baseline(log_file: str = "", since: str = "") -> dict:
+def collect_baseline(log_file: str = "", since: str = "", until: str = "") -> dict:
     """从 trace.log 中提取评估基线数据（支持精确 + 模糊 eval 匹配）。
 
     改动说明（2026-06-29）：
@@ -274,10 +276,14 @@ def collect_baseline(log_file: str = "", since: str = "") -> dict:
     改动说明（2026-07-12）：
     - 增加 since 参数，支持按自然天过滤，只汇总指定日期之后的记录
 
+    改动说明（2026-07-19）：
+    - 增加 until 参数，支持上界过滤（不含），用于滑动窗口基线排除当天数据
+
     Args:
         log_file: 日志文件路径，为空时自动查找
         since: ISO 格式日期或时间戳（如 "2026-07-11" 或 "2026-07-11T23:00:00"），
                 为空时不过滤（全量汇总）
+        until: ISO 格式日期或时间戳，为空时无上界；非空时只汇总该时间之前的记录（不含）
 
 
     Returns:
@@ -303,11 +309,12 @@ def collect_baseline(log_file: str = "", since: str = "") -> dict:
             except (json.JSONDecodeError, TypeError):
                 continue
 
-            # ── 时间过滤：since 参数，只汇总指定日期之后的记录 ──
-            if since:
-                ts = data.get("timestamp", "")
-                if ts and ts < since:
-                    continue
+            # ── 时间过滤：since/until 参数 ──
+            ts = data.get("timestamp", "")
+            if since and ts and ts < since:
+                continue
+            if until and ts and ts >= until:
+                continue
 
             event = data.get("event", "")
 
@@ -539,6 +546,26 @@ def load_previous_baseline() -> dict:
     return {}
 
 
+def load_rolling_baseline(days: int = ROLLING_BASELINE_DAYS, log_file: str = "", exclude_since: str = "") -> dict:
+    """从 trace.log 采集过去 N 天的累积数据作为滑动窗口基线。
+
+    相比 load_previous_baseline（单日快照），滑动窗口样本量更大，
+    能有效避免单日小样本波动导致的假阳性告警。
+
+    Args:
+        days: 滑动窗口天数，默认 7
+        log_file: 日志文件路径，为空时自动查找
+        exclude_since: 排除该时间点之后的数据（避免与当前基线重叠），
+                       传入当前 --since 值即可，如 "2026-07-19T00:00:00"
+
+    Returns:
+        与 collect_baseline 相同结构的 {qid: {metrics}} 字典
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+    return collect_baseline(log_file=log_file, since=cutoff, until=exclude_since)
+
+
 def save_baseline(current: dict) -> None:
     """原子保存基线：先轮转 prev，再写 .tmp 再 rename，避免中断丢失。"""
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
@@ -566,7 +593,11 @@ def _check_regression(cur_val: float, prev_val: float, metric: str) -> dict | No
 
 
 def detect_delta(current: dict, previous: dict) -> dict:
-    """检测三个指标的退化：kept_results、score、latency_ms。"""
+    """检测三个指标的退化：kept_results、score、latency_ms。
+
+    CI 宽度兜底：当 cur 或 prev 的 score_ci_95 宽度超过 MAX_SCORE_CI_WIDTH 时，
+    视为样本不稳定，跳过该查询的告警（避免小样本假阳性）。
+    """
     if not previous:
         return {}
     regressions: dict[str, dict] = {}
@@ -578,6 +609,14 @@ def detect_delta(current: dict, previous: dict) -> dict:
         if cur.get("total_requests", 0) < MIN_DELTA_SAMPLES:
             continue
         if prev.get("total_requests", 0) < MIN_DELTA_SAMPLES:
+            continue
+
+        # CI 宽度兜底：样本不稳定时跳过告警
+        cur_ci = cur.get("score_ci_95", [0, 0])
+        prev_ci = prev.get("score_ci_95", [0, 0])
+        if len(cur_ci) == 2 and (cur_ci[1] - cur_ci[0]) > MAX_SCORE_CI_WIDTH:
+            continue
+        if len(prev_ci) == 2 and (prev_ci[1] - prev_ci[0]) > MAX_SCORE_CI_WIDTH:
             continue
 
         cur_k = cur.get("avg_kept_results", 0)
@@ -970,7 +1009,9 @@ def main() -> None:
         print_report(baseline, stats, log_file)
 
     if args["delta"]:
-        previous = load_previous_baseline()
+        # 使用滑动窗口基线（过去 N 天累积）替代单日快照，避免小样本假阳性
+        # exclude_since=当前 --since 值，确保 prev 和 cur 数据不重叠
+        previous = load_rolling_baseline(days=ROLLING_BASELINE_DAYS, log_file=log_file, exclude_since=args["since"])
         regressions = detect_delta(baseline, previous)
         if regressions:
             if args["json"]:

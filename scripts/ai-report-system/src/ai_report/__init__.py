@@ -1,78 +1,35 @@
-"""AI报告生成系统 - 基于Hermes工具集
+"""AI 报告导出工具 — Markdown 转精美 DOCX。
 
-提供AI驱动的自动报告生成功能，集成Hermes工具进行搜索、文档解析、图表生成和内容生成。
-支持多种报告类型和技术内容分析。
-
-主要模块:
-- core: 核心数据结构和配置（base, exceptions, planner, generator, evaluator, orchestrator）
-- adapters: 外部集成适配层（hermes, ai_client, web_search, document）
-- export: 报告导出模块（docx, chart_renderer）
-- graph: StateGraph报告生成管线
+提供高质量的 Markdown 到 DOCX 转换，支持图表渲染、自定义样式、封面目录等。
 """
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "AI报告团队"
 __license__ = "MIT"
 
-from ai_report.config import (
-    ConfigManager,
-    ReportConfig,
-    SearchConfig,
-    SystemConfig,
-    get_config,
-)
-from ai_report.core.base import (
-    BaseComponent,
-    HermesToolComponent,
-    StatefulComponent,
-)
-from ai_report.core.exceptions import (
-    ConfigError,
-    DiagramError,
-    DocumentError,
-    MemoryError,
-    QualityError,
-    ReportAgentError,
-    SearchError,
-    ValidationError,
-    handle_error,
-)
+from ai_report.export.docx_exporter import export_to_docx
 
 __all__ = [
     "__version__",
     "__author__",
     "__license__",
-    # config
-    "ConfigManager",
-    "ReportConfig",
-    "SearchConfig",
-    "SystemConfig",
-    "get_config",
-    # core.base
-    "BaseComponent",
-    "HermesToolComponent",
-    "StatefulComponent",
-    # core.exceptions
-    "ReportAgentError",
-    "ConfigError",
-    "SearchError",
-    "DocumentError",
-    "DiagramError",
-    "QualityError",
-    "MemoryError",
-    "ValidationError",
-    "handle_error",
+    "export_to_docx",
+    "render_chart",
+    "render_all_charts",
+    "register",
 ]
 
 
-def register(ctx) -> None:
-    """Hermes 插件注册入口。
+def __getattr__(name):
+    if name in ("render_chart", "render_all_charts"):
+        from ai_report.export.chart_renderer import render_all_charts, render_chart
+        if name == "render_chart":
+            return render_chart
+        return render_all_charts
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    Args:
-        ctx: Hermes 插件上下文对象，提供以下方法：
-            - register_hook(hook_name: str, callback: Callable)
-            - logger: 插件日志器
-    """
+
+def register(ctx) -> None:
     ctx.logger.info("ai-report plugin registered v%s", __version__)

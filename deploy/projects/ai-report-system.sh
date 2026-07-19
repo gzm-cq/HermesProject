@@ -12,7 +12,6 @@ PROJECT_TGT="/root/.hermes/scripts/ai-report-system"
 PROJECT_SVC=""
 
 LEGACY_FILES=(
-  "/root/.hermes/scripts/md2docx.py"
   "/root/.hermes/scripts/error_search.py"
 )
 
