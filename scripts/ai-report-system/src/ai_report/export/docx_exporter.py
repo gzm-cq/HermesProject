@@ -160,24 +160,26 @@ def _download_image(url: str, dest_dir: Path) -> Path | None:
 
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
-        resp = _requests.get(url, timeout=30, stream=True,
-                             headers={"User-Agent": "Mozilla/5.0"})
-        # 检查重定向次数
-        if len(resp.history) >= _MAX_REDIRECTS:
-            logger.warning("重定向次数过多 (%d)，放弃: %s",
-                           len(resp.history), url[:80])
-            return None
-        resp.raise_for_status()
-        # 流式下载，限制最大字节数
-        data = b""
-        for chunk in resp.iter_content(chunk_size=65536):
-            if chunk:
-                data += chunk
-                if len(data) > _MAX_DOWNLOAD_BYTES:
-                    logger.warning("图片过大，已超过 %d 字节，放弃: %s",
-                                   _MAX_DOWNLOAD_BYTES, url[:80])
-                    return None
-        dest_path.write_bytes(data)
+        # 用 with 包裹 response 确保连接释放（stream=True 下尤其重要）
+        with _requests.get(url, timeout=30, stream=True,
+                           headers={"User-Agent": "Mozilla/5.0"}) as resp:
+            # 检查重定向次数：history 长度 > _MAX_REDIRECTS 才算超限
+            # （history 记录的是中间跳转，5 次跳转后到达终点的仍允许）
+            if len(resp.history) > _MAX_REDIRECTS:
+                logger.warning("重定向次数过多 (%d)，放弃: %s",
+                               len(resp.history), url[:80])
+                return None
+            resp.raise_for_status()
+            # 流式下载，限制最大字节数
+            data = b""
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    data += chunk
+                    if len(data) > _MAX_DOWNLOAD_BYTES:
+                        logger.warning("图片过大，已超过 %d 字节，放弃: %s",
+                                       _MAX_DOWNLOAD_BYTES, url[:80])
+                        return None
+            dest_path.write_bytes(data)
         logger.info("下载图片: %s → %s", url[:80], dest_path.name)
         return dest_path
     except (_requests.RequestException, OSError) as e:
