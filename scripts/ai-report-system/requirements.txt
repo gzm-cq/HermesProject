@@ -1,8 +1,3 @@
-# AI 报告生成系统依赖包 - Hermes工具集适配版
-# 核心依赖（最简）
-PyYAML>=6.0
-jinja2>=3.1.0
-
-# 开发工具
-pytest>=7.0.0
-pytest-cov>=4.0.0
+python-docx>=1.1.0
+matplotlib>=3.7.0
+requests>=2.31.0
