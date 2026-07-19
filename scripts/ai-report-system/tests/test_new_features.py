@@ -1,19 +1,12 @@
 """测试新增功能：mermaid 缓存、未闭合块、图片尺寸自适应、表格校验。"""
 from __future__ import annotations
 
-import base64
-import json
-import struct
-import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
-TESTS_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = TESTS_DIR.parent
-sys.path.insert(0, str(PROJECT_DIR / "src"))
-sys.path.insert(0, str(PROJECT_DIR / "scripts"))
+from tests.helpers import _make_minimal_png
 
 from ai_report.export.docx_exporter import (
     _fit_image_size,
@@ -29,33 +22,9 @@ from export_docx import (
 )
 
 
-def _make_minimal_png(width: int,  height: int) -> bytes:
-    """生成最小有效 PNG 文件（指定宽高）。"""
-    # PNG signature
-    sig = b"\x89PNG\r\n\x1a\n"
-    # IHDR chunk
-    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    ihdr_len = struct.pack(">I", len(ihdr_data))
-    ihdr_type = b"IHDR"
-    import zlib
-    ihdr_crc = struct.pack(">I", zlib.crc32(ihdr_type + ihdr_data) & 0xFFFFFFFF)
-    ihdr = ihdr_len + ihdr_type + ihdr_data + ihdr_crc
-    # IDAT chunk (minimal raw image data)
-    raw = b""
-    for _ in range(height):
-        raw += b"\x00" + b"\x00" * (width * 3)
-    compressed = zlib.compress(raw)
-    idat_len = struct.pack(">I", len(compressed))
-    idat_type = b"IDAT"
-    idat_crc = struct.pack(">I", zlib.crc32(idat_type + compressed) & 0xFFFFFFFF)
-    idat = idat_len + idat_type + compressed + idat_crc
-    # IEND chunk
-    iend = b"\x00\x00\x00\x00IEND\xaeB`\x82"
-    return sig + ihdr + idat + iend
-
-
 # ── Mermaid 未闭合块 ────────────────────────────────────────
 
+@pytest.mark.integration
 class TestMermaidUnclosedBlock:
     def test_unclosed_block_marked(self):
         """未闭合的 mermaid 块应被标记为 closed=False。"""
@@ -95,6 +64,7 @@ graph TD
 
 # ── Mermaid 缓存 ────────────────────────────────────────────
 
+@pytest.mark.unit
 class TestMermaidCache:
     def test_hash_deterministic(self):
         assert _mermaid_code_hash("graph TD\n  A->B") == _mermaid_code_hash("graph TD\n  A->B")
@@ -121,6 +91,7 @@ class TestMermaidCache:
 
 # ── 图片尺寸自适应 ─────────────────────────────────────────
 
+@pytest.mark.integration
 class TestImageSizeAdaptive:
     def test_read_png_size(self, tmp_path):
         png = _make_minimal_png(800, 600)
@@ -181,6 +152,7 @@ class TestImageSizeAdaptive:
 
 # ── 表格识别双行校验 ──────────────────────────────────────
 
+@pytest.mark.integration
 class TestTableDoubleLineCheck:
     def test_single_pipe_line_not_table(self, tmp_path):
         """单行 |xxx| 不应被识别为表格。"""
@@ -206,6 +178,7 @@ class TestTableDoubleLineCheck:
 
 # ── docx 保存失败原子写入 ─────────────────────────────────
 
+@pytest.mark.integration
 class TestAtomicSave:
     def test_permission_error_when_file_locked(self, tmp_path):
         """模拟文件被占用时抛出 PermissionError。"""
@@ -220,6 +193,7 @@ class TestAtomicSave:
 
 # ── Bug3 回归：markdown 图片插入失败时清理空段落 ─────────
 
+@pytest.mark.integration
 class TestMarkdownImageInsertFailureCleanup:
     def test_invalid_image_no_caption_orphan(self, tmp_path):
         """图片文件存在但内容无效时：
@@ -277,6 +251,7 @@ class TestMarkdownImageInsertFailureCleanup:
 
 # ── Bug9 回归：单行表格内容不丢失 ───────────────────────
 
+@pytest.mark.integration
 class TestSingleHeaderTablePreserved:
     """只有表头+分隔行（无数据行）的表格也应当被渲染，
     内容（表头单元格）不能被丢弃。"""
@@ -317,6 +292,7 @@ class TestSingleHeaderTablePreserved:
 
 # ── Bug11 回归：代码块空行保留为真空行 ───────────────────
 
+@pytest.mark.integration
 class TestCodeBlockEmptyLinePreserved:
     """代码块中的空行应保持为真空段落，不应被替换为空格。"""
     def test_empty_line_in_code_block_is_blank(self, tmp_path):
@@ -374,6 +350,7 @@ class TestCodeBlockEmptyLinePreserved:
 
 # ── Bug12 回归：标题末尾 # 被正确去除 ────────────────────
 
+@pytest.mark.integration
 class TestHeadingTrailingHashes:
     """`## 标题 ##` 这种 atx 风格的标题应去除末尾 #。"""
     def test_heading_with_trailing_hash(self, tmp_path):
@@ -423,6 +400,7 @@ class TestHeadingTrailingHashes:
 
 # ── Bug15 回归：URL 含嵌套括号的链接 ────────────────────
 
+@pytest.mark.integration
 class TestLinkWithNestedParens:
     """[text](url) URL 中包含一层嵌套括号时应被正确解析。"""
     def test_link_text_preserved(self, tmp_path):
@@ -477,6 +455,7 @@ class TestLinkWithNestedParens:
 
 # ── Bug16 回归：图片 URL 支持嵌套括号 ───────────────────
 
+@pytest.mark.integration
 class TestImageMarkdownNestedParens:
     """![alt](url) URL 含一层嵌套括号时也应被正确识别为图片行，
     而不是被当作正文渲染（与 Bug15 的 link 修复保持一致）。"""
@@ -520,6 +499,7 @@ class TestImageMarkdownNestedParens:
 
 # ── Bug17 回归：表格行无尾部 | 不丢失单元格 ──────────────
 
+@pytest.mark.integration
 class TestTableRowWithoutTrailingPipe:
     """GFM 规范允许表格行省略尾部 |，单元格不能丢失。"""
     def test_data_row_without_trailing_pipe(self, tmp_path):
@@ -576,6 +556,7 @@ class TestTableRowWithoutTrailingPipe:
 
 # ── Bug18 + Bug19 回归：build_chart_images 与 _process_markdown_line 一致 ─
 
+@pytest.mark.integration
 class TestBuildChartImagesHeadingConsistency:
     """build_chart_images 的章节计数和标题解析必须与
     docx_exporter._process_markdown_line 保持一致。"""
@@ -688,6 +669,7 @@ class TestBuildChartImagesHeadingConsistency:
 
 # ── P0 回归：_generate_with_retry 失败时不残留 save_path ──
 
+@pytest.mark.integration
 class TestGenerateWithRetryCleanupOnFailure:
     """VLM review 失败/错误后所有轮次耗尽时，save_path 不应残留。
     否则下次调用 render_mermaid_images 会因 "if save_path.exists()"

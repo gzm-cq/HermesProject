@@ -14,8 +14,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ import matplotlib.font_manager as fm
 # ── 中文字体 ──────────────────────────────────────────────
 
 # 三态标记：None=未初始化, str=找到的字体路径, ""=查找过但没找到
-_ZH_FONT: Any = None
+_ZH_FONT: Optional[str] = None
 _ZH_FONT_INITIALIZED: bool = False
 
 _CANDIDATES = [
@@ -79,6 +80,15 @@ def _setup_zh() -> None:
 
 _COLORS = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#3B1F2B"]
 _COLORS_LIGHT = ["#7FB3D8", "#C87B9D", "#F5B342", "#D97A5C", "#6F4F5E"]
+
+
+# ── 辅助函数 ──────────────────────────────────────────────
+
+
+def _save_and_close(fig: Any, output_path: Path, dpi: int = 200) -> None:
+    """Save figure and close it cleanly."""
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight", pad_inches=0.3)
+    plt.close(fig)
 
 
 # ── 渲染函数 ──────────────────────────────────────────────
@@ -136,8 +146,7 @@ def _render_architecture(
         # 分隔线
         ax.axhline(y - 0.8, xmin=0.02, xmax=0.98, color="#DDDDDD", linewidth=0.5)
 
-    fig.savefig(output_path, dpi=200, bbox_inches="tight", pad_inches=0.3)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
     logger.info("  architecture_chart saved: %s", output_path)
     return True
 
@@ -183,8 +192,7 @@ def _render_timeline(
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    fig.savefig(output_path, dpi=200, bbox_inches="tight", pad_inches=0.3)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
     logger.info("  timeline chart saved: %s", output_path)
     return True
 
@@ -223,8 +231,7 @@ def _render_comparison(
         ax.set_title(title, fontsize=14, fontweight="bold", color="#333333",
                       pad=12, loc="left")
 
-    fig.savefig(output_path, dpi=200, bbox_inches="tight", pad_inches=0.3)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
     logger.info("  comparison chart saved: %s", output_path)
     return True
 
@@ -235,6 +242,7 @@ def _render_comparison(
 # 如需独立调用，应先手动调用 _reset_dedup()。
 
 _DEDUP_CACHE: set[str] = set()
+_DEDUP_LOCK = threading.Lock()
 
 
 def _reset_dedup() -> None:
@@ -242,13 +250,15 @@ def _reset_dedup() -> None:
 
     render_all_charts 会自动调用；直接使用 render_chart 时需手动调用。
     """
-    _DEDUP_CACHE.clear()
+    with _DEDUP_LOCK:
+        _DEDUP_CACHE.clear()
 
 
 def _data_hash(data: dict[str, Any]) -> str:
     """对 chart data 内容做哈希，用于去重。"""
-    raw = json.dumps(data, sort_keys=True)
-    return hashlib.md5(raw.encode()).hexdigest()
+    with _DEDUP_LOCK:
+        raw = json.dumps(data, sort_keys=True)
+        return hashlib.md5(raw.encode()).hexdigest()
 
 
 # ── 统一入口 ──────────────────────────────────────────────

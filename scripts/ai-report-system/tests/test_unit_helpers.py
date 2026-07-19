@@ -5,17 +5,11 @@ _download_image / _detect_mermaid_type），不经过 export_to_docx 全链路�
 """
 from __future__ import annotations
 
-import sys
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-TESTS_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = TESTS_DIR.parent
-sys.path.insert(0, str(PROJECT_DIR / "src"))
-sys.path.insert(0, str(PROJECT_DIR / "scripts"))
 
 from ai_report.export.docx_exporter import (
     _add_formatted_run,
@@ -29,6 +23,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 # ── _parse_alignment_row ────────────────────────────────
 
 
+@pytest.mark.unit
 class TestParseAlignmentRow:
     def test_left_align(self):
         aligns = _parse_alignment_row("|---|---|")
@@ -99,6 +94,7 @@ class TestParseAlignmentRow:
 # ── _add_formatted_run ──────────────────────────────────
 
 
+@pytest.mark.unit
 class TestAddFormattedRun:
     """直接调用 _add_formatted_run 验证各标记类型。"""
 
@@ -234,6 +230,7 @@ class TestAddFormattedRun:
 # ── _download_image ─────────────────────────────────────
 
 
+@pytest.mark.integration
 class TestDownloadImage:
     def test_invalid_url_returns_none(self, tmp_path):
         """无效 URL 应返回 None，不抛异常。"""
@@ -385,6 +382,7 @@ class TestDownloadImage:
 # ── _detect_mermaid_type（边界场景补充） ──────────────────
 
 
+@pytest.mark.unit
 class TestDetectMermaidTypeBoundary:
     def test_empty_string(self):
         from export_docx import _detect_mermaid_type

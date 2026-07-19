@@ -55,7 +55,7 @@ def extract_comments(docx_path: Path) -> list[dict[str, Any]]:
                 texts = comment_elem.findall(".//w:t", NS)
                 text = "".join(t.text or "" for t in texts).strip()
                 comments.append({"id": cid, "author": author, "text": text})
-    except Exception as e:
+    except (KeyError, zipfile.BadZipFile, ET.ParseError) as e:
         logger.warning("读取批注失败: %s", e)
     return comments
 

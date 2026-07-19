@@ -1,17 +1,12 @@
 """测试 docx 导出功能完备性：行内标记、链接、表格对齐、引用块、嵌套列表、任务列表、元数据。"""
 from __future__ import annotations
 
-import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
 python_docx = pytest.importorskip("docx")
-
-TESTS_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = TESTS_DIR.parent
-sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from ai_report.export.docx_exporter import export_to_docx
 
@@ -30,6 +25,7 @@ def _read_core_xml(docx_path: Path) -> str:
 
 # ── 行内代码 ────────────────────────────────────────────
 
+@pytest.mark.integration
 class TestInlineCode:
     def test_inline_code_uses_consolas(self, tmp_path):
         """行内代码 `code` 应使用 Consolas 字体。"""
@@ -56,6 +52,7 @@ class TestInlineCode:
 
 # ── 超链接 ──────────────────────────────────────────────
 
+@pytest.mark.integration
 class TestHyperlink:
     def test_link_preserves_url(self, tmp_path):
         """[text](url) 应保留为超链接。"""
@@ -96,6 +93,7 @@ class TestHyperlink:
 
 # ── 表格列对齐 ─────────────────────────────────────────
 
+@pytest.mark.integration
 class TestTableAlignment:
     def test_right_alignment(self, tmp_path):
         """|---:| 应右对齐。"""
@@ -116,6 +114,7 @@ class TestTableAlignment:
 
 # ── 引用块多行合并 ─────────────────────────────────────
 
+@pytest.mark.integration
 class TestBlockquoteMerge:
     def test_multiline_quote_merged(self, tmp_path):
         """连续的 > 行应合并为一段。"""
@@ -148,6 +147,7 @@ class TestBlockquoteMerge:
 
 # ── 嵌套列表 ──────────────────────────────────────────
 
+@pytest.mark.integration
 class TestNestedList:
     def test_nested_bullet_indent(self, tmp_path):
         """子列表应缩进。"""
@@ -181,6 +181,7 @@ class TestNestedList:
 
 # ── 任务列表 ──────────────────────────────────────────
 
+@pytest.mark.integration
 class TestTaskList:
     def test_unchecked_task(self, tmp_path):
         """- [ ] 应渲染为 ☐。"""
@@ -208,6 +209,7 @@ class TestTaskList:
 
 # ── HTML <br> ────────────────────────────────────────
 
+@pytest.mark.integration
 class TestHtmlBr:
     def test_br_converts_to_break(self, tmp_path):
         """<br> 应转换为换行。"""
@@ -225,6 +227,7 @@ class TestHtmlBr:
 
 # ── 文档元数据 ────────────────────────────────────────
 
+@pytest.mark.integration
 class TestCoreProperties:
     def test_title_in_core(self, tmp_path):
         output = tmp_path / "out.docx"
@@ -299,11 +302,12 @@ class TestCoreProperties:
 
 # ── 图片 caption 统一编号 ─────────────────────────────
 
+@pytest.mark.integration
 class TestImageCaptionNumbering:
     def test_md_image_numbered(self, tmp_path):
         """markdown 图片应有统一编号。"""
         # 创建一个最小 PNG
-        from tests.test_new_features import _make_minimal_png
+        from tests.helpers import _make_minimal_png
 
         img_path = tmp_path / "test.png"
         img_path.write_bytes(_make_minimal_png(100, 100))
@@ -322,6 +326,7 @@ class TestImageCaptionNumbering:
 
 # ── 删除线 ───────────────────────────────────────────
 
+@pytest.mark.integration
 class TestStrikethrough:
     def test_strikethrough_rendered(self, tmp_path):
         """~~text~~ 应有删除线。"""
@@ -338,6 +343,7 @@ class TestStrikethrough:
 
 # ── 斜体 ─────────────────────────────────────────────
 
+@pytest.mark.integration
 class TestItalic:
     def test_italic_rendered(self, tmp_path):
         """*text* 应有斜体。"""

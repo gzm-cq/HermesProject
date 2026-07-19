@@ -8,15 +8,9 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-import sys
-
-TESTS_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = TESTS_DIR.parent
-sys.path.insert(0, str(PROJECT_DIR / "src"))
-sys.path.insert(0, str(PROJECT_DIR / "scripts"))
-
 from ai_report.export.docx_exporter import export_to_docx
 
+TESTS_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = TESTS_DIR / "fixtures"
 SAMPLE_MD = FIXTURES_DIR / "sample_report.md"
 
@@ -64,6 +58,7 @@ def _count_page_breaks(docx_path: Path) -> int:
     return xml.count("w:br w:type=\"page\"") + xml.count("<w:br w:type=\"page\"/>")
 
 
+@pytest.mark.integration
 class TestCleanInlineMarkers:
     """测试行内标记被正确解析（通过 _add_formatted_run 间接验证）。
 
@@ -140,6 +135,7 @@ class TestCleanInlineMarkers:
         assert "`" not in text
 
 
+@pytest.mark.integration
 class TestExportToDocxBasic:
     """基础导出功能。"""
 
@@ -204,6 +200,7 @@ class TestExportToDocxBasic:
         assert "加粗文本" in text
 
 
+@pytest.mark.integration
 class TestExportSubtitleAndToc:
     """测试封面副标题和目录控制。"""
 
@@ -259,6 +256,7 @@ class TestExportSubtitleAndToc:
         assert "目录" not in _read_docx_text(output) or "TOC" not in xml
 
 
+@pytest.mark.integration
 class TestExportHorizontalRule:
     """测试水平分隔线。"""
 
@@ -275,6 +273,7 @@ class TestExportHorizontalRule:
         assert _count_page_breaks(output) >= 1
 
 
+@pytest.mark.integration
 class TestExportOrderedList:
     """测试有序列表。"""
 
@@ -309,6 +308,7 @@ class TestExportOrderedList:
         assert "第二项" in text
 
 
+@pytest.mark.integration
 class TestExportInlineMarkers:
     """测试行内标记清理。"""
 
@@ -353,6 +353,7 @@ class TestExportInlineMarkers:
         assert "https://example.com" not in text
 
 
+@pytest.mark.integration
 class TestExportCodeBlock:
     """测试代码块支持。"""
 
@@ -411,6 +412,7 @@ class TestExportCodeBlock:
         assert "comment" in text
 
 
+@pytest.mark.integration
 class TestExportImageMarkdown:
     """测试 Markdown 图片语法支持。"""
 
@@ -451,6 +453,7 @@ class TestExportImageMarkdown:
         assert "不存在的图" in text
 
 
+@pytest.mark.integration
 class TestMermaidExtraction:
     """测试 Mermaid 代码块提取和替换。"""
 
@@ -559,6 +562,7 @@ graph TD
         assert "graph TD" in result
 
 
+@pytest.mark.integration
 class TestExportEdgeCases:
     """边缘情况。"""
 

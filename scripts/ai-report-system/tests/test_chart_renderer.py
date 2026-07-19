@@ -4,14 +4,9 @@
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
-
-TESTS_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = TESTS_DIR.parent
-sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 matplotlib = pytest.importorskip("matplotlib")  # 跳过整个模块若不可用
 
@@ -24,6 +19,7 @@ from ai_report.export.chart_renderer import (
 )
 
 
+@pytest.mark.unit
 class TestDataHash:
     def test_same_data_same_hash(self):
         d1 = {"layers": [{"name": "a"}]}
@@ -41,6 +37,7 @@ class TestDataHash:
         assert _data_hash(d1) == _data_hash(d2)
 
 
+@pytest.mark.integration
 class TestRenderChart:
     def setup_method(self):
         _reset_dedup()
@@ -122,6 +119,7 @@ class TestRenderChart:
         assert path1 != path2
 
 
+@pytest.mark.integration
 class TestRenderAllCharts:
     def test_empty_input(self, tmp_path):
         result = render_all_charts([], tmp_path)
@@ -157,6 +155,7 @@ class TestRenderAllCharts:
             assert path.exists()
 
 
+@pytest.mark.unit
 class TestFindZhFont:
     def test_returns_str_or_none(self):
         """_find_zh_font 应返回 str 或 None（取决于系统字体是否安装）。"""

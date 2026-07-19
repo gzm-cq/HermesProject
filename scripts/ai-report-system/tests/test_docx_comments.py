@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import io
-import sys
 import zipfile
 from pathlib import Path
 
@@ -14,11 +13,6 @@ import pytest
 
 python_docx = pytest.importorskip("docx")
 lxml_etree = pytest.importorskip("lxml.etree")
-
-TESTS_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = TESTS_DIR.parent
-sys.path.insert(0, str(PROJECT_DIR / "src"))
-sys.path.insert(0, str(PROJECT_DIR / "scripts"))
 
 from docx_comments import extract_chapter_comments, extract_comments
 
@@ -110,6 +104,7 @@ def _build_docx_with_comments(
     return out_buf.getvalue()
 
 
+@pytest.mark.integration
 class TestExtractComments:
     def test_no_comments_returns_empty(self, tmp_path):
         """无批注的 docx 返回空列表。"""
@@ -132,6 +127,7 @@ class TestExtractComments:
         assert "批注1" in comments[0]["text"]
 
 
+@pytest.mark.integration
 class TestExtractChapterComments:
     def test_empty_docx(self, tmp_path):
         from docx import Document

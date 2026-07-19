@@ -14,7 +14,10 @@ import struct
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from docx.text.paragraph import Paragraph
 
 import hashlib
 
@@ -26,6 +29,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml, OxmlElement
 from docx.shared import Inches, Pt, RGBColor
+from docx.image.exceptions import UnrecognizedImageError
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +245,7 @@ def _add_blockquote(doc: Document, text: str) -> None:
     pPr.append(pBdr)
 
 
-def _add_inline_code_run(p: Any, code: str) -> None:
+def _add_inline_code_run(p: "Paragraph", code: str) -> None:
     """添加行内代码 run：Consolas 字体 + 浅灰背景。"""
     run = p.add_run(code)
     run.font.size = Pt(10)
@@ -256,7 +260,7 @@ def _add_inline_code_run(p: Any, code: str) -> None:
     rPr.append(shd)
 
 
-def _add_hyperlink_run(p: Any, text: str, url: str) -> None:
+def _add_hyperlink_run(p: "Paragraph", text: str, url: str) -> None:
     """添加超链接 run（蓝色 + 下划线 + 可点击）。"""
     part = p.part
     r_id = part.relate_to(
@@ -291,7 +295,7 @@ def _add_hyperlink_run(p: Any, text: str, url: str) -> None:
     p._element.append(hyperlink)
 
 
-def _add_formatted_run(p: Any, text: str) -> None:
+def _add_formatted_run(p: "Paragraph", text: str) -> None:
     """向段落添加文本，解析行内标记：
 
     - **bold** / __bold__ → 加粗 run
@@ -374,7 +378,7 @@ def _add_formatted_run(p: Any, text: str) -> None:
             _add_plain_run(p, plain)
 
 
-def _add_plain_run(p: Any, text: str) -> None:
+def _add_plain_run(p: "Paragraph", text: str) -> None:
     """添加普通文本 run。"""
     if not text:
         return
@@ -662,7 +666,7 @@ def _embed_image_with_caption(
         pic_w, pic_h = _fit_image_size(img_path)
         run.add_picture(str(img_path), width=pic_w, height=pic_h)
         inserted = True
-    except Exception as e:
+    except (OSError, ValueError, UnrecognizedImageError) as e:
         logger.warning("insert image failed: %s", e)
     if inserted:
         state.image_counter += 1
@@ -674,7 +678,7 @@ def _embed_image_with_caption(
         # 插入失败：移除已创建的空段落，避免文档出现空白行
         try:
             p._element.getparent().remove(p._element)
-        except Exception:
+        except (AttributeError, OSError):
             pass
 
 
@@ -692,12 +696,12 @@ def _embed_chart_with_caption(doc: Document, img_path: Path, title: str, state: 
         run.add_picture(str(img_path), width=pic_w, height=pic_h)
         state.image_counter += 1
         _add_caption(doc, f"图 {state.image_counter}: {title}")
-    except Exception as e:
+    except (OSError, ValueError, UnrecognizedImageError) as e:
         logger.warning("  embed chart failed: %s", e)
         if caption is not None:
             try:
                 caption._element.getparent().remove(caption._element)
-            except Exception:
+            except (AttributeError, OSError):
                 pass
 
 
@@ -850,13 +854,13 @@ def _save_docx_atomic(doc: Document, output_path: Path) -> None:
     try:
         doc.save(str(tmp_path))
         tmp_path.replace(output_path)
-    except PermissionError:
+    except PermissionError as e:
         if tmp_path.exists():
             tmp_path.unlink()
         raise PermissionError(
             f"无法写入 {output_path}：文件可能被 Word 或其他程序占用。"
             f"请关闭后重试。"
-        ) from None
+        ) from e
 
 
 def export_to_docx(

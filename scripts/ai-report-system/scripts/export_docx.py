@@ -53,6 +53,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
+from ai_report import __version__
 from ai_report.export.docx_exporter import export_to_docx
 
 DEFAULT_CHART_MAP: dict[str, str] = {
@@ -104,7 +105,15 @@ def _find_sn_skill_dir() -> Path | None:
     return None
 
 
-SN_AGENT_RUNNER = _find_sn_agent_runner()
+_SN_AGENT_RUNNER_CACHE: Path | None = None
+
+
+def _get_sn_agent_runner() -> Path | None:
+    """Lazy-initialize and memoize the SN Agent Runner path."""
+    global _SN_AGENT_RUNNER_CACHE
+    if _SN_AGENT_RUNNER_CACHE is None:
+        _SN_AGENT_RUNNER_CACHE = _find_sn_agent_runner()
+    return _SN_AGENT_RUNNER_CACHE
 
 
 def load_chart_map(chart_map_path: Path | None) -> dict[str, str]:
@@ -334,7 +343,7 @@ def _generate_with_retry(
         logger.info("  [Round %d/%d] %s → %s", round_num, max_rounds, label, save_path.name)
 
         if not generate_image(
-            SN_AGENT_RUNNER,
+            _get_sn_agent_runner(),
             prompt=prompt,
             save_path=save_path,
             image_size=image_size,
@@ -351,7 +360,7 @@ def _generate_with_retry(
             return save_path
 
         review_result = review_image(
-            SN_AGENT_RUNNER,
+            _get_sn_agent_runner(),
             save_path,
             system_prompt_path=critic_path,
             api_key=api_key,
@@ -414,7 +423,8 @@ def render_mermaid_images(
     Args:
         force: True 时忽略缓存，强制重新生成所有 mermaid 图片
     """
-    if not SN_AGENT_RUNNER or not SN_AGENT_RUNNER.exists():
+    runner = _get_sn_agent_runner()
+    if not runner or not runner.exists():
         logger.warning(
             "sn_agent_runner.py not found. Skipping mermaid rendering."
         )
@@ -794,7 +804,8 @@ def generate_missing_charts(
     timeout: float = 300.0,
     md_text: str | None = None,
 ) -> list[tuple[int, Path]]:
-    if not SN_AGENT_RUNNER or not SN_AGENT_RUNNER.exists():
+    runner = _get_sn_agent_runner()
+    if not runner or not runner.exists():
         logger.warning(
             "sn_agent_runner.py not found.\n"
             "  Install sn-image-base skill to enable chart generation.\n"
@@ -942,7 +953,7 @@ def main() -> None:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"export_docx {__import__('ai_report').__version__}",
+        version=f"export_docx {__version__}",
     )
 
     args = parser.parse_args()
