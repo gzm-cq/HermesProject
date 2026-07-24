@@ -264,12 +264,11 @@ def parse_cron_states(cron_state_dir: Path) -> dict[str, dict]:
 
 
 def parse_trace_log(trace_path: Path,
-                    filter_date: str | None = None) -> dict[str, list[dict]]:
-    """Parse trace.log, optionally filtered to entries matching filter_date (e.g. '2026-07-07').
+                    filter_dates: list[str] | None = None) -> dict[str, list[dict]]:
+    """Parse trace.log, optionally filtered to entries matching filter_dates (e.g. ['2026-07-23', '2026-07-22']).
 
-    When filter_date is provided, only entries whose timestamp starts with that date
-    are included. This ensures each daily report reflects only the current day's data,
-    not cumulative history.
+    When filter_dates is provided, only entries whose timestamp starts with any of those dates
+    are included. This supports multi-day windows (e.g. 2-day rolling) for Router sample size.
     """
     events: dict[str, list[dict]] = {
         "router_mask": [],
@@ -295,9 +294,9 @@ def parse_trace_log(trace_path: Path,
             continue
         try:
             d = json.loads(line)
-            if filter_date:
+            if filter_dates is not None:
                 ts = d.get("timestamp", "")
-                if not ts.startswith(filter_date):
+                if not any(ts.startswith(d) for d in filter_dates):
                     continue
             evt = d.get("event", "")
             if evt in events:
@@ -1603,9 +1602,11 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     now = datetime.now(timezone.utc)
     now_str = now.strftime("%Y-%m-%d %H:%M UTC")
     # 报告在 CN 08:00（UTC 00:00）生成，此时 UTC 前一天的完整 24h 数据已就绪。
-    # 数据窗口 = UTC 昨天，对应 CN 用户视角的"昨天"（晚间已完成的改动）。
-    # 例：CN 7/16 08:00 生成报告 → 数据窗口 = UTC 7/15 = CN 7/15（含用户 7/15 晚间改动）
+    # 数据窗口 = UTC 昨天 + 前天（2 天滚动），保证 Router 样本量 ≥ 50。
+    # 例：CN 7/24 08:00 生成报告 → 数据窗口 = [UTC 7/23, UTC 7/22]
     data_window = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    data_window_prev = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    data_windows = [data_window, data_window_prev]
 
     cron_state_dir = home / CRON_STATE_SUBPATH
     cron_log_dir = home / CRON_LOG_SUBPATH
@@ -1617,7 +1618,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
 
     # Parse all data
     cron_states = parse_cron_states(cron_state_dir)
-    trace = parse_trace_log(trace_path, filter_date=data_window)
+    trace = parse_trace_log(trace_path, filter_dates=data_windows)
 
     # Analyze
     cron_issues, cron_table, elapsed_ann = analyze_cron_jobs(cron_states, cron_log_dir, now)

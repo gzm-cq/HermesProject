@@ -368,12 +368,13 @@ else
 import json, sys
 try:
     d = json.load(sys.stdin)
-    print(d.get('silhouette', 'N/A'))
+    val = d.get('silhouette')
+    print('N/A' if val is None else val)
 except: print('N/A')
 " 2>/dev/null)
 
         if [[ "$LAST_SILHOUETTE" == "N/A" ]]; then
-            warn "无法提取 silhouette，跳过对比"
+            warn "silhouette 为 null（可能是 HDBSCAN 0 个簇），跳过对比"
         elif [[ ! -f "$PREV_AUDIT" ]]; then
             cp "$AUDIT_LOG" "$PREV_AUDIT"
             ok "首次运行，基线已保存 (silhouette=${LAST_SILHOUETTE})"
@@ -384,36 +385,44 @@ import json
 try:
     lines = open('$PREV_AUDIT').readlines()
     last = json.loads(lines[-1].strip())
-    print(last.get('silhouette', 'N/A'))
+    val = last.get('silhouette')
+    print('N/A' if val is None else val)
 except: print('N/A')
 " 2>/dev/null)
 
-            if [[ "$PREV_SILHOUETTE" != "N/A" ]]; then
+            if [[ "$PREV_SILHOUETTE" == "N/A" ]]; then
+                warn "上次 silhouette 为 null，跳过对比"
+            elif [[ "$LAST_SILHOUETTE" == "N/A" ]]; then
+                warn "本次 silhouette 为 null，跳过对比"
+            else
                 DIFF=$(python3 -c "
 cur, prev = float('$LAST_SILHOUETTE'), float('$PREV_SILHOUETTE')
 print(f'{cur - prev:.4f}')
 " 2>/dev/null)
 
-                # silhouette 绝对值下降 > 0.05 → 告警
-                if (( $(echo "$DIFF < -0.05" | bc -l 2>/dev/null || echo 0) )); then
-                    ALERT_MSG="🔴 聚类质量下降 ${DIFF} (prev=${PREV_SILHOUETTE} → cur=${LAST_SILHOUETTE})"
-                    warn "$ALERT_MSG"
-                    _STEP_RESULTS+=("⚠️ Phase 6: $ALERT_MSG")
-
-                    DECLINE_FILE="$FLYWHEEL_DIR/clustering_decline_count"
-                    CUR_DECLINE=$(cat "$DECLINE_FILE" 2>/dev/null || echo "0")
-                    CUR_DECLINE=$((CUR_DECLINE + 1))
-                    echo "$CUR_DECLINE" > "$DECLINE_FILE"
-
-                    if [[ "$CUR_DECLINE" -ge 3 ]]; then
-                        ESCALATED_MSG="🔥 聚类参数可能需要调整（连续 ${CUR_DECLINE} 周下降）"
-                        err "$ESCALATED_MSG"
-                        _STEP_RESULTS+=("🔥 Phase 6: $ESCALATED_MSG")
-                    fi
+                if [[ "$DIFF" == "" ]]; then
+                    warn "silhouette 对比计算失败"
                 else
-                    ok "基线对比: silhouette ${LAST_SILHOUETTE} vs prev ${PREV_SILHOUETTE} (Δ${DIFF})"
-                    _STEP_RESULTS+=("✅ Phase 6: 基线稳定 (Δ${DIFF})")
-                    echo "0" > "$FLYWHEEL_DIR/clustering_decline_count" 2>/dev/null
+                    if (( $(echo "$DIFF < -0.05" | bc -l 2>/dev/null || echo 0) )); then
+                        ALERT_MSG="🔴 聚类质量下降 ${DIFF} (prev=${PREV_SILHOUETTE} → cur=${LAST_SILHOUETTE})"
+                        warn "$ALERT_MSG"
+                        _STEP_RESULTS+=("⚠️ Phase 6: $ALERT_MSG")
+
+                        DECLINE_FILE="$FLYWHEEL_DIR/clustering_decline_count"
+                        CUR_DECLINE=$(cat "$DECLINE_FILE" 2>/dev/null || echo "0")
+                        CUR_DECLINE=$((CUR_DECLINE + 1))
+                        echo "$CUR_DECLINE" > "$DECLINE_FILE"
+
+                        if [[ "$CUR_DECLINE" -ge 3 ]]; then
+                            ESCALATED_MSG="🔥 聚类参数可能需要调整（连续 ${CUR_DECLINE} 周下降）"
+                            err "$ESCALATED_MSG"
+                            _STEP_RESULTS+=("🔥 Phase 6: $ESCALATED_MSG")
+                        fi
+                    else
+                        ok "基线对比: silhouette ${LAST_SILHOUETTE} vs prev ${PREV_SILHOUETTE} (Δ${DIFF})"
+                        _STEP_RESULTS+=("✅ Phase 6: 基线稳定 (Δ${DIFF})")
+                        echo "0" > "$FLYWHEEL_DIR/clustering_decline_count" 2>/dev/null
+                    fi
                 fi
             fi
             cp "$AUDIT_LOG" "$PREV_AUDIT"

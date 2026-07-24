@@ -788,3 +788,109 @@ class TestGenerateWithRetryCleanupOnFailure:
 
         assert result == save_path
         assert save_path.exists()
+
+
+# ── 目录生成逻辑：无标题时不生成目录 ────────────────────
+
+class TestTocGenerationConditional:
+    """只有文档包含标题时才生成目录页，避免无标题文档出现空目录。"""
+    def test_no_heading_no_toc_page(self, tmp_path):
+        """无标题文档不生成目录页。"""
+        output = tmp_path / "out.docx"
+        content = "纯正文内容\n没有任何标题\n继续正文"
+        export_to_docx(
+            title="测试", full_content=content,
+            chart_images=[], output_path=output,
+            toc=True,
+        )
+        from docx import Document
+        doc = Document(str(output))
+        toc_headings = [p for p in doc.paragraphs if p.text.strip() == "目录"]
+        assert len(toc_headings) == 0, "无标题文档不应生成目录页"
+
+    def test_has_heading_toc_page_generated(self, tmp_path):
+        """有标题文档正常生成目录页。"""
+        output = tmp_path / "out.docx"
+        content = "# 第一章\n正文内容"
+        export_to_docx(
+            title="测试", full_content=content,
+            chart_images=[], output_path=output,
+            toc=True,
+        )
+        from docx import Document
+        doc = Document(str(output))
+        toc_headings = [p for p in doc.paragraphs if p.text.strip() == "目录"]
+        assert len(toc_headings) >= 1, "有标题文档应生成目录页"
+
+    def test_toc_explicit_false_no_toc(self, tmp_path):
+        """toc=False 时无论是否有标题都不生成目录页。"""
+        output = tmp_path / "out.docx"
+        content = "# 第一章\n正文内容"
+        export_to_docx(
+            title="测试", full_content=content,
+            chart_images=[], output_path=output,
+            toc=False,
+        )
+        from docx import Document
+        doc = Document(str(output))
+        toc_headings = [p for p in doc.paragraphs if p.text.strip() == "目录"]
+        assert len(toc_headings) == 0, "toc=False 不应生成目录页"
+
+    def test_has_heading_unit(self):
+        """单元测试：_has_heading 函数正确检测标题。"""
+        from ai_report.export.docx_exporter import _has_heading
+        assert _has_heading("# 标题") is True
+        assert _has_heading("## 二级标题") is True
+        assert _has_heading("正文内容") is False
+        assert _has_heading("") is False
+        assert _has_heading("   \n  \n") is False
+        assert _has_heading("正文\n# 标题\n正文") is True
+        assert _has_heading("#") is False  # 只有 # 不算标题
+
+    def test_md_toc_heading_not_duplicated(self, tmp_path):
+        """markdown 源文件中包含 '# 目录' 标题时，不应出现两个目录。
+        自动生成的目录页 + 正文中的 '# 目录' 只保留一个。"""
+        output = tmp_path / "out.docx"
+        content = "# 目录\n## 子标题\n正文内容"
+        export_to_docx(
+            title="测试", full_content=content,
+            chart_images=[], output_path=output,
+            toc=True,
+        )
+        from docx import Document
+        doc = Document(str(output))
+        # 不应有两个"目录"标题
+        toc_headings = [p for p in doc.paragraphs if p.text.strip() == "目录"]
+        assert len(toc_headings) == 1, (
+            f"目录标题重复，应有 1 个，实际 {len(toc_headings)} 个"
+        )
+
+    def test_md_toc_heading_kept_when_toc_false(self, tmp_path):
+        """toc=False 时不自动生成目录页，但正文中的 '# 目录' 标题应保留。"""
+        output = tmp_path / "out.docx"
+        content = "# 目录\n## 子标题\n正文内容"
+        export_to_docx(
+            title="测试", full_content=content,
+            chart_images=[], output_path=output,
+            toc=False,
+        )
+        from docx import Document
+        doc = Document(str(output))
+        toc_headings = [p for p in doc.paragraphs if p.text.strip() == "目录"]
+        assert len(toc_headings) == 1, "toc=False 时正文中的目录标题应保留"
+
+    def test_md_toc_heading_kept_when_no_heading(self, tmp_path):
+        """文档无其他标题（只有 '# 目录'）时，toc=True 仍生成目录页，
+        正文中的 '# 目录' 不重复。"""
+        output = tmp_path / "out.docx"
+        content = "# 目录\n正文没有其他标题"
+        export_to_docx(
+            title="测试", full_content=content,
+            chart_images=[], output_path=output,
+            toc=True,
+        )
+        from docx import Document
+        doc = Document(str(output))
+        toc_headings = [p for p in doc.paragraphs if p.text.strip() == "目录"]
+        # 只应有 1 个：自动生成的目录页（正文中的被跳过）
+        assert len(toc_headings) == 1

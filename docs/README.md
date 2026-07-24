@@ -10,6 +10,7 @@
 | 查看当前待办任务 | [TASKBOARD.md](TASKBOARD.md) |
 | 搭建开发环境 | [setup-guide.md](setup-guide.md) |
 | 了解架构设计 | [architecture/](architecture/) |
+| **深入理解代码（完整百科）** | **[../CODE_WIKI.md](../CODE_WIKI.md)** |
 | 查看 SPEC 计划文档 | [specs/](specs/) |
 | 查看审查报告 | [reviews/](reviews/) |
 | 查看行业调研 | [research/](research/) |
@@ -24,6 +25,7 @@
 5. **[architecture/记忆体系架构设计-当前.md](architecture/记忆体系架构设计-当前.md)** — 5 层记忆体系全景
 6. **[architecture/knowledge-point-definition.md](architecture/knowledge-point-definition.md)** — 知识点模型 v2.3
 7. **[engineering-standards.md](engineering-standards.md)** — 开发规范
+8. **[../CODE_WIKI.md](../CODE_WIKI.md)** — 代码百科全书（架构、模块、依赖、运行方式，按需查阅）
 
 ---
 

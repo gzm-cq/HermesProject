@@ -472,6 +472,9 @@ def adaptive_hdbscan_params(
 ) -> tuple[int, int]:
     """根据数据点数量自适应计算 HDBSCAN 参数。
 
+    对稀疏数据（如系统日志、测试记录）降低 min_cluster_size，
+    避免 100% 噪声导致 silhouette=null 和 0 个簇。
+
     Args:
         n_samples: 数据点数量
         min_samples_min: min_samples 最小值限制
@@ -487,14 +490,14 @@ def adaptive_hdbscan_params(
         min_cluster_size = 3
         min_samples = 3
     elif n_samples < 500:
-        min_cluster_size = 5
-        min_samples = 4
+        min_cluster_size = 3
+        min_samples = 2
     elif n_samples < 2000:
-        min_cluster_size = 8
-        min_samples = 6
+        min_cluster_size = 4
+        min_samples = 3
     else:
-        min_cluster_size = 15
-        min_samples = 10
+        min_cluster_size = 8
+        min_samples = 5
 
     min_samples = max(min_samples_min, min(min_samples_max, min_samples))
     min_cluster_size = max(min_samples_min, min_cluster_size)
@@ -547,6 +550,28 @@ def run_hdbscan_clustering(
     n_clusters = len(set(labels) - {-1})
     n_noise = (labels == -1).sum()
     noise_ratio = n_noise / n if n > 0 else 0.0
+
+    # 自动降级：0 簇时降低 min_cluster_size 重试，避免稀疏数据 100% 噪声
+    fallback_mcs = min_cluster_size
+    if n_clusters == 0 and n > 0:
+        for retry_mcs in [3, 2]:
+            if min_cluster_size <= retry_mcs:
+                continue
+            print(f"   [降级] min_cluster_size {min_cluster_size} → {retry_mcs} 重试...")
+            hdb_kwargs["min_cluster_size"] = retry_mcs
+            if min_samples is not None and min_samples >= retry_mcs:
+                hdb_kwargs["min_samples"] = max(2, retry_mcs - 1)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='The default value of `copy`')
+                hdb = HDBSCANCluster(**hdb_kwargs)
+            labels = hdb.fit_predict(embeddings)
+            probabilities = hdb.probabilities_
+            n_clusters = len(set(labels) - {-1})
+            n_noise = (labels == -1).sum()
+            noise_ratio = n_noise / n if n > 0 else 0.0
+            fallback_mcs = retry_mcs
+            if n_clusters > 0:
+                break
 
     t1 = time.time()
     print(f"   HDBSCAN: {n_clusters} \u7bc7, {n_noise} \u566a\u58f0 ({noise_ratio:.2%})")

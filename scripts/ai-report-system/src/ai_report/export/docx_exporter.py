@@ -222,6 +222,7 @@ def _add_body(doc: Document, text: str) -> None:
         return
     p = doc.add_paragraph()
     _add_formatted_run(p, text.strip())
+    p.paragraph_format.first_line_indent = Pt(22)  # 首行缩进约两个中文字符（11pt * 2）
     p.paragraph_format.space_after = Pt(4)
     p.paragraph_format.line_spacing = Pt(18)
 
@@ -620,6 +621,20 @@ def _render_cover(doc: Document, title: str, subtitle: str | None) -> None:
         p_sub.paragraph_format.space_after = Pt(40)
 
 
+def _has_heading(md_text: str) -> bool:
+    """检测 markdown 文本中是否包含至少一个标题（# 开头且有内容的行）。"""
+    for line in md_text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            if 1 <= level <= 9:
+                # 去除 # 后必须还有内容才算标题
+                content_after_hash = stripped.lstrip("#").strip()
+                if content_after_hash:
+                    return True
+    return False
+
+
 def _render_toc(doc: Document) -> None:
     """渲染目录页：标题 + TOC 字段 + 分页符。"""
     doc.add_paragraph("")  # 空行
@@ -707,10 +722,16 @@ def _embed_chart_with_caption(doc: Document, img_path: Path, title: str, state: 
 
 def _process_markdown_line(
     doc: Document, lines: list[str], i: int, state: _DocState,
+    *,
+    skip_toc_heading: bool = False,
 ) -> int | None:
     """处理单行 markdown，返回下一个 idx；返回 None 表示行未被识别（按正文处理）。
 
     主入口 dispatch：图片、代码块、分隔线、引用、表格、标题、列表、任务列表。
+
+    Args:
+        skip_toc_heading: 如果已自动生成目录页，则跳过正文中 "# 目录" 标题，
+                          避免目录标题重复。
     """
     stripped = lines[i].strip()
 
@@ -777,6 +798,9 @@ def _process_markdown_line(
         level = min(len(stripped) - len(stripped.lstrip("#")), 9)
         # 去除首尾 # 与空白（支持 "## 标题 ##" 这种 atx 风格）
         text = stripped.lstrip("#").rstrip("#").strip()
+        # 如果已自动生成目录页，跳过正文中的 "# 目录" 标题，避免重复
+        if skip_toc_heading and level == 1 and text == "目录":
+            return i + 1
         _add_heading(doc, text, level)
         i += 1
         if level <= 2:
@@ -818,6 +842,8 @@ def _process_markdown_line(
 def _render_body(
     doc: Document, full_content: str, chart_images: list[tuple[int, Path]],
     download_cache_dir: Path,
+    *,
+    skip_toc_heading: bool = False,
 ) -> None:
     """渲染正文：逐行解析 markdown。"""
     chart_map: dict[int, Path] = {idx: path for idx, path in chart_images}
@@ -826,7 +852,8 @@ def _render_body(
     lines = full_content.split("\n")
     i = 0
     while i < len(lines):
-        next_i = _process_markdown_line(doc, lines, i, state)
+        next_i = _process_markdown_line(doc, lines, i, state,
+                                         skip_toc_heading=skip_toc_heading)
         if next_i is not None:
             i = next_i
             continue
@@ -904,12 +931,17 @@ def export_to_docx(
     _render_cover(doc, title, subtitle)
 
     # ── 目录（可选） ──
-    if toc:
+    # 只有 toc=True 且文档包含标题时才生成目录页
+    # 避免无标题文档生成空目录导致"目录重复"
+    toc_rendered = False
+    if toc and _has_heading(full_content):
         _render_toc(doc)
+        toc_rendered = True
 
     # ── 正文 ──
     download_cache_dir = output_path.parent / ".downloaded_images"
-    _render_body(doc, full_content, chart_images, download_cache_dir)
+    _render_body(doc, full_content, chart_images, download_cache_dir,
+                 skip_toc_heading=toc_rendered)
 
     # ── 文档元数据 ──
     _set_core_properties(doc, title, author, subject)

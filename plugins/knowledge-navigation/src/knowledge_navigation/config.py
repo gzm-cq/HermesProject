@@ -187,6 +187,7 @@ class KnowledgeNavigationConfig:
     sag_source_ids: str = field(default="00000000-0000-0000-0000-0000000000ff")
     sag_max_inject: int = field(default=3)  # merge 时最多注入条数（SAG topK 只控 vector 路，multi-hop 不受控）
     sag_pointer_threshold: int = field(default=300)  # content 超过此字符数时改注入指针，LLM 按需查全文
+    sag_min_score: float = field(default=0.35)  # SAG 独立 min_score，与 Hindsight 分开（SAG 原始 pgvector 得分集中在 0.4-0.7，与 cross-encoder 分不同分布）
     enable_token_budget: bool = field(default=True)
     token_budget_total: int = field(default=4000)
     token_budget_hindsight_ratio: float = field(default=0.4)
@@ -309,6 +310,8 @@ class KnowledgeNavigationConfig:
             values["sag_max_inject"] = int(env)
         if env := os.getenv("KN_SAG_POINTER_THRESHOLD"):
             values["sag_pointer_threshold"] = int(env)
+        if env := os.getenv("KN_SAG_MIN_SCORE"):
+            values["sag_min_score"] = float(env)
         if env := os.getenv("KN_ENABLE_USE_LOG"):
             values["enable_use_log"] = env.lower() in ("1", "true", "yes")
         if env := os.getenv("KN_USE_LOG_BATCH_SIZE"):

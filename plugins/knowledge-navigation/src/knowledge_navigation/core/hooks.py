@@ -1680,7 +1680,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
                 "heading": heading,
                 "document_id": sec.get("documentId", ""),
             }
-            if candidate["final_score"] >= CONFIG.min_score:
+            if candidate["final_score"] >= CONFIG.sag_min_score:
                 sag_candidates.append(candidate)
                 sag_count += 1
         # 按分数排序取 top N，防止 multi-hop 20+ 条灌入

@@ -67,7 +67,7 @@ class TestParseTraceLog:
         ]
         log_path.write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
 
-        result = fhr.parse_trace_log(log_path, filter_date="2026-07-10")
+        result = fhr.parse_trace_log(log_path, filter_dates=["2026-07-10"])
 
         # 所有 whitelist 事件应有 1 条
         assert len(result["router_mask"]) == 1
@@ -88,7 +88,7 @@ class TestParseTraceLog:
         assert "unknown_event" not in result
 
     def test_filter_date_excludes_other_days(self, tmp_path: Path) -> None:
-        """filter_date 只保留匹配日期的条目。"""
+        """filter_dates 多日期过滤。"""
         log_path = tmp_path / "trace.log"
         entries = [
             {"timestamp": "2026-07-09T23:59:00Z", "event": "router_mask"},
@@ -98,8 +98,13 @@ class TestParseTraceLog:
         ]
         log_path.write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
 
-        result = fhr.parse_trace_log(log_path, filter_date="2026-07-10")
+        # 单日期过滤
+        result = fhr.parse_trace_log(log_path, filter_dates=["2026-07-10"])
         assert len(result["router_mask"]) == 2  # 只保留 7-10 当天
+
+        # 多日期过滤（2 天窗口）
+        result2 = fhr.parse_trace_log(log_path, filter_dates=["2026-07-10", "2026-07-11"])
+        assert len(result2["router_mask"]) == 3  # 保留 7-10（2 条）+ 7-11（1 条）
 
     def test_skips_blank_and_invalid_lines(self, tmp_path: Path) -> None:
         """空行和无效 JSON 应被跳过。"""
@@ -113,7 +118,7 @@ class TestParseTraceLog:
             ]),
             encoding="utf-8",
         )
-        result = fhr.parse_trace_log(log_path, filter_date="2026-07-10")
+        result = fhr.parse_trace_log(log_path, filter_dates=["2026-07-10"])
         assert len(result["router_mask"]) == 1
 
 

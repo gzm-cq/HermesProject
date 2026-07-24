@@ -24,6 +24,8 @@ HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 10+ 独�
 > Hermes Gateway（消息网关）、SkillOpt-Sleep（优化引擎）、Hindsight RAG（记忆系统）是系统级的常驻服务，其源码独立管理，不在此仓库中。
 >
 > **从零搭建完整环境？请先看 [docs/setup-guide.md](docs/setup-guide.md)** — 包含常驻服务安装、环境变量、验证清单。
+>
+> 📖 **想深入了解架构、模块职责、关键类与函数？请看 [CODE_WIKI.md](CODE_WIKI.md)** — 完整代码百科（项目架构、模块详解、依赖关系、运行方式）。
 
 ## 系统架构
 Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 + 两个插件协同，实现：控制 token 开销 + 最大化记忆有效性 + 技能即时可用。

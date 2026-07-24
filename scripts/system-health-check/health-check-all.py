@@ -404,7 +404,40 @@ def check_mcp():
 
 
 # ============================================
-# 7. Moon Bridge (Responses API converter)
+# 7. Dashboard (Hermes Agent Dashboard, port 9119)
+# ============================================
+def check_dashboard():
+    """Check Hermes Dashboard service via systemd + HTTP port 9119.
+    Dashboard depends on hermes-gateway.service (After=), so it's
+    expected to be down if the gateway is down."""
+    out, _, _ = run("systemctl show -P MainPID hermes-dashboard.service 2>/dev/null || echo 0")
+    db_pid = int(out or 0)
+    db_alive = db_pid > 0
+
+    out, _, _ = run("systemctl is-active hermes-dashboard.service 2>/dev/null || echo inactive")
+    svc_active = out.strip() == "active"
+
+    # HTTP check — dashboard returns HTML on /
+    out, _, _ = run("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9119/ --max-time 5 2>/dev/null || echo '000'")
+    db_http = out.strip() if out else "000"
+    db_reachable = db_http not in ("000", "")
+
+    st = "ok"
+    if not db_alive and not svc_active:
+        st = "fail"
+    elif not db_reachable:
+        st = "warn"
+
+    write_check("dashboard", st, {
+        "process_alive": db_alive,
+        "svc_active": svc_active,
+        "pid": db_pid,
+        "http_endpoint": db_http,
+        "port": 9119,
+    })
+
+# ============================================
+# 8. Moon Bridge (Responses API converter)
 # ============================================
 def check_moonbridge():
     """Check Moon Bridge service via systemd + port 38440."""
@@ -523,6 +556,7 @@ if __name__ == "__main__":
         "sag": check_sag,
         "postgres": check_postgres,
         "mcp": check_mcp,
+        "dashboard": check_dashboard,
         "moonbridge": check_moonbridge,
     }
     
