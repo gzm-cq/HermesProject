@@ -93,4 +93,19 @@ if command -v lark-cli &>/dev/null; then
     fi
 fi
 
+# ===== Auto-Tuner: 参数自优化 =====
+_AUTO_TUNER="${HERMES_HOME}/scripts/auto-tuner.sh"
+if [[ -f "$_AUTO_TUNER" ]]; then
+    cron_section "Auto-Tuner 参数自优化"
+    if bash "$_AUTO_TUNER"; then
+        cron_ok "Auto-Tuner 完成"
+        _STEP_RESULTS+=("✅ Auto-Tuner")
+    else
+        cron_warn "Auto-Tuner 执行异常（不影响飞轮报告）"
+        _STEP_RESULTS+=("⚠️ Auto-Tuner 异常")
+    fi
+else
+    cron_log "Auto-Tuner 脚本不存在，跳过: ${_AUTO_TUNER}"
+fi
+
 cron_finish
