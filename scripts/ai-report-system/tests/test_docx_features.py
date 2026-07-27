@@ -307,7 +307,7 @@ class TestImageCaptionNumbering:
     def test_md_image_numbered(self, tmp_path):
         """markdown 图片应有统一编号。"""
         # 创建一个最小 PNG
-        from tests.helpers import _make_minimal_png
+        from helpers import _make_minimal_png
 
         img_path = tmp_path / "test.png"
         img_path.write_bytes(_make_minimal_png(100, 100))

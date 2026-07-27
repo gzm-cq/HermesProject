@@ -129,34 +129,47 @@ validate_step() {
     return 0
 }
 
-# 重启 hermes-gateway
-restart_gateway() {
+# 飞书通知重启需求（替代自动重启）
+notify_gateway_restart() {
+    local param_name="$1"
+    local old_val="$2"
+    local new_val="$3"
+    local reason="$4"
+
     if [[ "$DRY_RUN" == true ]]; then
-        log_info "[DRY-RUN] 跳过 gateway 重启"
+        log_info "[DRY-RUN] 跳过飞书通知"
         return 0
     fi
-    log_step "重启 hermes-gateway..."
-    if systemctl restart hermes-gateway 2>/dev/null; then
-        log_ok "hermes-gateway 重启成功"
-        sleep 2
-        if systemctl is-active --quiet hermes-gateway 2>/dev/null; then
-            log_ok "hermes-gateway 运行正常"
-            return 0
-        else
-            log_err "hermes-gateway 重启后状态异常"
-            return 1
-        fi
+
+    log_step "发送飞书通知 — 需要重启网关"
+
+    local title="🔧 Auto-Tuner 需要手动重启网关"
+    local msg="参数已修改，需要重启 hermes-gateway 生效：
+
+**参数**: ${param_name}
+**旧值**: ${old_val}
+**新值**: ${new_val}
+**原因**: ${reason}
+
+**操作**: 
+\`\`\`bash
+systemctl restart hermes-gateway
+\`\`\`
+
+**验证**:
+\`\`\`bash
+systemctl status hermes-gateway
+\`\`\`"
+
+    if [[ "$_CRON_LOADED" == true ]]; then
+        cron_notify "$title" "$msg"
     else
-        log_warn "systemctl restart 失败，尝试 systemctl start..."
-        systemctl start hermes-gateway 2>/dev/null || true
-        sleep 2
-        if systemctl is-active --quiet hermes-gateway 2>/dev/null; then
-            log_ok "hermes-gateway 已启动"
-            return 0
-        fi
-        log_err "hermes-gateway 启动失败"
-        return 1
+        # 降级：直接调用 lark-cli
+        lark-cli message send --chat-id "${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}" \
+            --title "$title" --text "$msg" 2>/dev/null || true
     fi
+
+    log_ok "飞书通知已发送"
 }
 
 # 记录调优日志
@@ -876,7 +889,7 @@ print(json.dumps(result))
         echo "  原因:      ${reason}"
         echo "  备份:      ${BACKUP_DIR}/env-*.bak"
         echo "  操作:      修改 ${ENV_FILE} → ${selected_param}=${new_val}"
-        echo "  操作:      systemctl restart hermes-gateway"
+        echo "  操作:      手动重启 hermes-gateway（飞书通知）"
         echo "  日志:      ${LOG_FILE}"
         echo ""
 
@@ -918,45 +931,12 @@ print(json.dumps(entry, ensure_ascii=False))
     write_env_param "$selected_param" "$new_val"
     log_ok ".env 已更新"
 
-    # 15. 重启 gateway
+    # 15. 发送飞书通知（不自动重启，避免杀死 cronjob）
     echo ""
-    log_step "重启 hermes-gateway"
-    if ! restart_gateway; then
-        log_err "gateway 重启失败，回滚参数"
+    log_step "发送飞书通知 — 需要手动重启网关"
+    notify_gateway_restart "$selected_param" "$current_val" "$new_val" "$reason"
 
-        # 回滚
-        write_env_param "$selected_param" "$current_val"
-        log_info "已回滚 ${selected_param} → ${current_val}"
-
-        # 再次尝试重启
-        if ! restart_gateway; then
-            log_err "回滚后 gateway 仍无法启动，需要人工介入"
-        fi
-
-        # 记录失败日志
-        local log_entry
-        log_entry=$(python3 -c "
-import json, datetime
-entry = {
-    'date': '$today',
-    'parameter': '$selected_param',
-    'old_value': float('$current_val'),
-    'new_value': float('$new_val'),
-    'direction': '$direction',
-    'reason': '$reason — 回滚: gateway 重启失败',
-    'dry_run': False,
-    'metrics_before': json.loads('''$metrics_before'''),
-    'metrics_after': None,
-    'status': 'rollback_gateway_fail',
-    'timestamp': datetime.datetime.now().isoformat()
-}
-print(json.dumps(entry, ensure_ascii=False))
-" 2>/dev/null || echo "{}")
-        write_tuner_log "$log_entry"
-        return 1
-    fi
-
-    # 16. 记录成功日志
+    # 16. 记录调优日志（状态: pending_restart）
     log_step "记录调优日志"
     local log_entry
     log_entry=$(python3 -c "
@@ -970,15 +950,15 @@ entry = {
     'reason': '$reason',
     'dry_run': False,
     'metrics_before': json.loads('''$metrics_before'''),
-    'metrics_after': None,  # 明天飞轮报告会记录
-    'status': 'applied',
+    'metrics_after': None,
+    'status': 'pending_restart',
     'backup_file': '${backup_file}',
     'timestamp': datetime.datetime.now().isoformat()
 }
 print(json.dumps(entry, ensure_ascii=False))
 " 2>/dev/null || echo "{}")
     write_tuner_log "$log_entry"
-    log_ok "调优日志已记录"
+    log_ok "调优日志已记录（等待重启生效）"
 
     echo ""
     echo "============================================"

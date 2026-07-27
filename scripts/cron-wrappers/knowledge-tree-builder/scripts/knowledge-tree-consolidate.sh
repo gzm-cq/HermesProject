@@ -3,7 +3,7 @@
 #
 # 部署路径: /root/.hermes/scripts/knowledge-tree-builder/scripts/knowledge-tree-consolidate.sh
 # 依赖公共库: /root/.hermes/lib/cron_common.sh（由 cron-common 项目部署）
-# 调度建议:   30 10 * * 1 (每周一 10:30)
+# 调度建议:   0 11 * * 1 (每周一 11:00)
 
 set -euo pipefail
 

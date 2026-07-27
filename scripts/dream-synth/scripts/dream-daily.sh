@@ -1,5 +1,8 @@
 #!/bin/bash
 # dream-daily.sh — cron wrapper for dream-daily.py
+#
+# 部署路径: /root/.hermes/scripts/dream-synth/scripts/dream-daily.sh
+# 调度建议:   0 16 * * * (每日 16:00)
 # API key from .env, not hardcoded
 set -euo pipefail
 

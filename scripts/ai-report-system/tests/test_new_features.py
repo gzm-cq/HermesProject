@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers import _make_minimal_png
+from helpers import _make_minimal_png
 
 from ai_report.export.docx_exporter import (
     _fit_image_size,

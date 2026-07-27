@@ -3,7 +3,7 @@
 #
 # 部署路径: /root/.hermes/scripts/daily-learn/daily_learn.sh
 # 依赖公共库: /root/.hermes/lib/cron_common.sh（由 cron-common 项目部署）
-# 调度建议:   0 3 * * * (每日 03:00)
+# 调度建议:   0 9 * * 1-5 (工作日 09:00)
 set -euo pipefail
 
 # ===== 加载公共库 =====

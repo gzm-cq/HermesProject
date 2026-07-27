@@ -1,5 +1,5 @@
 #!/bin/bash
-# cron-periodic-detect.sh — Layer 1 周期检测（每 60min）
+# cron-periodic-detect.sh — Layer 1 周期检测（每小时整点）
 # 检测执行失败的 job + 无异常时静默跳过飞书推送
 #
 # 功能：
@@ -8,7 +8,7 @@
 #   - 对从 error 恢复的 job → 恢复通知
 #
 # 部署路径：/root/.hermes/scripts/cron-periodic-detect.sh
-# 调度方式：Hermes cron job, */30 * * * *
+# 调度方式：Hermes cron job, 0 * * * *（每小时整点）
 
 set -euo pipefail
 

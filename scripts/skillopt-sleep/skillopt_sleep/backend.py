@@ -49,6 +49,19 @@ def skill_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
+def _exponential_backoff_sleep(attempt: int, retries: int) -> None:
+    """指数退避睡眠（带随机抖动），用于 LLM 调用重试。
+
+    Args:
+        attempt: 当前尝试次数（0-based）。
+        retries: 最大重试次数。
+    """
+    if attempt < retries - 1:
+        import random as _r
+        import time as _t
+        _t.sleep(min(8.0, (2 ** attempt) * 0.5) + _r.random() * 0.4)
+
+
 # ── Backend protocol ──────────────────────────────────────────────────────────
 
 class Backend:
@@ -895,8 +908,6 @@ class LiteLLMBackend(CliBackend):
         """
         if max_tokens < 512:
             max_tokens = 512
-        import random as _r
-        import time as _t
 
         client = self._get_client()
         last_exc = None
@@ -935,8 +946,7 @@ class LiteLLMBackend(CliBackend):
                 last_exc = e
                 logger.warning("LLM call attempt %d/%d unexpected: %s", attempt + 1, retries, e)
 
-            if attempt < retries - 1:
-                _t.sleep(min(8.0, (2 ** attempt) * 0.5) + _r.random() * 0.4)
+            _exponential_backoff_sleep(attempt, retries)
 
         return ""
 
@@ -1015,9 +1025,7 @@ class AzureOpenAIBackend(CliBackend):
                 last_exc = "empty-response"
             except Exception as e:  # noqa: BLE001
                 last_exc = e
-            # backoff before next try (skip after the final attempt)
-            if attempt < retries - 1:
-                _t.sleep(min(8.0, (2 ** attempt) * 0.5) + _r.random() * 0.4)
+            _exponential_backoff_sleep(attempt, retries)
         return ""
 
 
@@ -1084,8 +1092,6 @@ class AzureResponsesBackend(AzureOpenAIBackend):
         return ep
 
     def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5) -> str:
-        import random as _r
-        import time as _t
         last = None
         base_ep = self._next_endpoint()           # this call's primary endpoint
         base_idx = self.endpoints.index(base_ep)
@@ -1109,8 +1115,7 @@ class AzureResponsesBackend(AzureOpenAIBackend):
                 last = "empty-response"
             except Exception as e:  # noqa: BLE001
                 last = e
-            if attempt < retries - 1:
-                _t.sleep(min(8.0, (2 ** attempt) * 0.5) + _r.random() * 0.4)
+            _exponential_backoff_sleep(attempt, retries)
         return ""
 
 

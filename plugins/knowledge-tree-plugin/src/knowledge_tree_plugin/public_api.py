@@ -83,7 +83,7 @@ def _get_api_config() -> PluginConfig:
     if _api_config is None:
         config_path = os.environ.get(
             "KT_PLUGIN_CONFIG",
-            "/root/.hermes/plugins/knowledge-tree-plugin/config/default.yaml",
+            os.path.expanduser("~/.hermes/plugins/knowledge-tree-plugin/config/default.yaml"),
         )
         _api_config = PluginConfig.load(config_path)
     return _api_config

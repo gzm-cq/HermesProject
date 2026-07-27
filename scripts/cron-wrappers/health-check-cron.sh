@@ -3,7 +3,7 @@
 #
 # 部署路径: /root/.hermes/scripts/health-check-cron.sh
 # 依赖公共库: /root/.hermes/lib/cron_common.sh（由 cron-common 项目部署）
-# 调度建议:   30 2 * * * (每日 02:30)
+# 调度建议:   0 8 * * 1-5 (工作日 08:00)
 #
 # 功能:
 #   - flock 防重入

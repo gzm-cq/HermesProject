@@ -204,6 +204,89 @@ class KnowledgeNavigationConfig:
     skill_index_incremental: bool = field(default=True)
 
     @classmethod
+    def from_kit_config(cls) -> "KnowledgeNavigationConfig | None":
+        """从 ~/.hermes-kit/config.yaml 加载配置。
+
+        返回 None 表示 kit-config 不存在或无法读取，调用方应回退到 .env。
+        """
+        try:
+            import yaml
+            kit_home = os.getenv("HERMES_KIT_HOME", os.path.expanduser("~/.hermes-kit"))
+            kit_config_path = os.path.join(kit_home, "config.yaml")
+            if not os.path.isfile(kit_config_path):
+                return None
+            with open(kit_config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            pc = cfg.get("plugin_config", {})
+            if not pc:
+                return None
+            # 映射 kit-config 键名 → KnowledgeNavigationConfig 字段名
+            # kit-config 使用下划线命名，与 dataclass 字段名一致
+            field_map = {
+                "kn_min_score": "min_score",
+                "kn_max_results": "max_results",
+                "kn_max_text_length": "max_text_length",
+                "kn_timeout_seconds": "timeout_seconds",
+                "kn_max_retries": "max_retries",
+                "kn_debug_mode": "debug_mode",
+                "kn_enable_temporal": "enable_temporal",
+                "kn_temporal_halflife": "temporal_halflife_days",
+                "kn_temporal_floor_weight": "temporal_floor_weight",
+                "kn_router_model": "router_model",
+                "kn_router_timeout": "router_timeout",
+                "kn_skill_embedding_prescreen": "kn_skill_embedding_prescreen",
+                "kn_skill_embedding_top_k": "kn_skill_embedding_top_k",
+                "kn_skill_index_incremental": "skill_index_incremental",
+                "sag_search_top_k": "sag_search_top_k",
+                "sag_search_timeout": "sag_search_timeout",
+                "sag_max_inject": "sag_max_inject",
+                "sag_pointer_threshold": "sag_pointer_threshold",
+                "sag_min_score": "sag_min_score",
+                "token_budget_total": "token_budget_total",
+                "token_budget_hindsight_ratio": "token_budget_hindsight_ratio",
+                "token_budget_kt_ratio": "token_budget_kt_ratio",
+                "token_budget_skill_ratio": "token_budget_skill_ratio",
+                "lambda_mrr": "lambda_mrr",
+                "eval_min_score": "eval_min_score",
+                "eval_match_enabled": "eval_match_enabled",
+                "cross_domain_dedup_mode": "cross_domain_dedup_mode",
+                "cross_domain_dedup_action": "cross_domain_dedup_action",
+                "cross_domain_dedup_demote_factor": "cross_domain_dedup_demote_factor",
+                "turn_to_turn_dedup_mode": "turn_to_turn_dedup_mode",
+                "circuit_breaker_threshold": "circuit_breaker_threshold",
+                "circuit_breaker_cooldown": "circuit_breaker_cooldown",
+                "causal_boost_alpha": "causal_boost_alpha",
+                "causal_boost_cap": "causal_boost_cap",
+                "enable_score_span_compress": "enable_score_span_compress",
+                "score_span_top3_threshold": "score_span_top3_threshold",
+                "score_span_half_threshold": "score_span_half_threshold",
+                "enable_causal_chain": "enable_causal_chain",
+                "enable_token_budget": "enable_token_budget",
+                "enable_use_log": "enable_use_log",
+                "use_log_batch_size": "use_log_batch_size",
+                "use_log_flush_interval_seconds": "use_log_flush_interval_seconds",
+            }
+            values = {}
+            for kit_key, field_name in field_map.items():
+                if kit_key in pc:
+                    raw = pc[kit_key]
+                    # 获取 dataclass 字段类型做类型转换
+                    field_type = cls.__dataclass_fields__[field_name].type
+                    if field_type is bool:
+                        values[field_name] = str(raw).lower() in ("1", "true", "yes")
+                    elif field_type is int:
+                        values[field_name] = int(raw)
+                    elif field_type is float:
+                        values[field_name] = float(raw)
+                    else:
+                        values[field_name] = raw
+            return cls(**values) if values else None
+        except Exception:
+            _logger = logging.getLogger(__name__)
+            _logger.warning("从 kit-config 加载配置失败", exc_info=True)
+            return None
+
+    @classmethod
     def from_env(cls, defaults: dict | None = None) -> "KnowledgeNavigationConfig":
         """从环境变量加载配置，覆盖默认值。
 
@@ -363,11 +446,15 @@ def setup_logging() -> None:
                 kn_logger.setLevel(logging.INFO)
                 fh.setLevel(logging.INFO)
             except Exception:
-                pass
+                kn_logger.exception("设置日志文件处理器失败")
 
 
-# 默认全局配置实例（从环境变量加载）
-CONFIG = KnowledgeNavigationConfig.from_env()
+# 默认全局配置实例（优先级：kit-config > .env > 代码默认值）
+_kit_cfg = KnowledgeNavigationConfig.from_kit_config()
+if _kit_cfg is not None:
+    CONFIG = _kit_cfg
+else:
+    CONFIG = KnowledgeNavigationConfig.from_env()
 
 # 模块加载时自动初始化日志系统（任何进程 import 本模块即生效）
 setup_logging()

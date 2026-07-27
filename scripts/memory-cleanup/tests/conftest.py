@@ -1,8 +1,17 @@
 """全局测试 fixtures"""
 
+from __future__ import annotations
+
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+# 确保源码可导入
+_src = Path(__file__).resolve().parent.parent / "src"
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
 
 from memory_cleanup.config import AppConfig
 

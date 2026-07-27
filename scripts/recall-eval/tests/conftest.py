@@ -1,10 +1,18 @@
 """全局测试 fixtures"""
 
+from __future__ import annotations
+
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+# 确保源码可导入
+_src = Path(__file__).resolve().parent.parent / "src"
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
 
 from recall_eval.config import AppConfig
 from recall_eval.core.dataset import EvalDataset, EvalQuery

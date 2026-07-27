@@ -98,11 +98,47 @@ def get_systemd_pids():
 def log(msg):
     print(f"[health-check-all] {msg}", file=sys.stderr)
 
-def run(cmd, timeout=10, **kwargs):
-    """Run shell command, return (stdout, stderr, rc)."""
+def run(cmd, timeout=10, shell=None, **kwargs):
+    """Run a command, return (stdout, stderr, rc).
+
+    If ``cmd`` is a list, uses ``shell=False`` (secure).
+    If ``cmd`` is a string, uses ``shell=True`` (backward compat for pipes/redirects).
+    Pass ``shell=True`` or ``shell=False`` explicitly to override auto-detection.
+    """
+    if shell is None:
+        shell = isinstance(cmd, str)
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+        r = subprocess.run(cmd, shell=shell, capture_output=True, text=True,
                           timeout=timeout, **kwargs)
+        return r.stdout.strip(), r.stderr.strip(), r.returncode
+    except subprocess.TimeoutExpired:
+        return "", "timeout", -1
+    except Exception as e:
+        return "", str(e), -1
+
+
+def _psql(database: str, query: str, host: str = "127.0.0.1", port: int = 5434,
+          user: str = "postgres", timeout: int = 10) -> tuple[str, str, int]:
+    """Run a psql query with password from env var (or ~/.pgpass), no shell.
+
+    Returns (stdout, stderr, rc).
+    """
+    password = os.environ.get("PGPASSWORD", "")
+    env = os.environ.copy()
+    if password:
+        env["PGPASSWORD"] = password
+    cmd = [
+        "psql",
+        "-h", host,
+        "-p", str(port),
+        "-U", user,
+        "-d", database,
+        "-c", query,
+        "--no-align", "-t",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=timeout, env=env)
         return r.stdout.strip(), r.stderr.strip(), r.returncode
     except subprocess.TimeoutExpired:
         return "", "timeout", -1
@@ -209,10 +245,7 @@ def check_hindsight():
         out, _, _ = run("curl -s http://127.0.0.1:8000/health --max-time 5")
     health_resp = out or "unreachable"
 
-    out, _, _ = run(
-        "PGPASSWORD=postgres psql -h 127.0.0.1 -p 5434 -U postgres -d hindsight "
-        "-c \"SELECT 1 AS alive\" --no-align -t 2>/dev/null || echo 'failed'"
-    )
+    out, _, rc = _psql("hindsight", "SELECT 1 AS alive")
     pg_ok = out == "1"
 
     st = "ok"
@@ -249,10 +282,7 @@ def check_sag():
     sag_reachable = sag_http not in ("000", "")
 
     # DB connectivity (sag_lite database in shared-postgres:5434)
-    out, _, _ = run(
-        "PGPASSWORD=postgres psql -h 127.0.0.1 -p 5434 -U postgres -d sag_lite "
-        "-c \"SELECT 1 AS alive\" --no-align -t 2>/dev/null || echo 'failed'"
-    )
+    out, _, rc = _psql("sag_lite", "SELECT 1 AS alive")
     sag_pg_ok = out.strip() == "1"
 
     st = "ok"
@@ -283,25 +313,13 @@ def check_postgres():
     pg_total = pg5434
     other_port = False
 
-    out, _, _ = run(
-        "PGPASSWORD=postgres psql -h 127.0.0.1 -p 5434 -U postgres "
-        "-t -A -c \"SELECT count(*) FROM pg_stat_activity WHERE state = 'active';\" "
-        "2>/dev/null || echo 0"
-    )
+    out, _, _ = _psql("postgres", "SELECT count(*) FROM pg_stat_activity WHERE state = 'active'")
     active_conn = int(out or 0)
 
-    out, _, _ = run(
-        "PGPASSWORD=postgres psql -h 127.0.0.1 -p 5434 -U postgres "
-        "-t -A -c \"SELECT datname FROM pg_database WHERE datistemplate = false;\" "
-        "2>/dev/null || true"
-    )
+    out, _, _ = _psql("postgres", "SELECT datname FROM pg_database WHERE datistemplate = false")
     dbs = [d.strip() for d in out.split("\n") if d.strip()]
 
-    out, _, _ = run(
-        "PGPASSWORD=postgres psql -h 127.0.0.1 -p 5434 -U postgres -d hindsight "
-        "-t -A -c \"SELECT count(*) FROM pg_extension WHERE extname = 'vector';\" "
-        "2>/dev/null || echo 0"
-    )
+    out, _, _ = _psql("hindsight", "SELECT count(*) FROM pg_extension WHERE extname = 'vector'")
     pgvector = int(out or 0)
 
     out, _, _ = run("df -h / | tail -1 | awk '{print $5}' | tr -d '%' || echo 0")
@@ -342,7 +360,7 @@ def check_mcp():
     gateway_pid = int(out or 0)
 
     out, _, _ = run("grep -c 'mcp_servers:' /root/.hermes/config.yaml 2>/dev/null || echo 0")
-    config_present = int(out.strip().split('\\n')[-1] or 0) > 0
+    config_present = int(out.strip().split('\n')[-1] or 0) > 0
 
     # Count each MCP server separately
     server_counts = {}
@@ -356,7 +374,7 @@ def check_mcp():
     # List all MCP PIDs excluding self & parent
     out, _, _ = run("ps -eo pid=,args= 2>/dev/null || true")
     mcp_pids = []
-    for line in out.strip().split('\\n'):
+    for line in out.strip().split('\n'):
         parts = line.strip().split(None, 1)
         if not parts: continue
         try:

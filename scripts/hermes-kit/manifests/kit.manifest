@@ -1,0 +1,15 @@
+# hermes-kit 文件清单
+# 源:  scripts/hermes-kit/
+# 标:  （原地运行，无需部署到 ~/.hermes）
+# 说明: 所有文件原地运行，不复制到 /root/.hermes/
+
+install.sh
+upgrade.sh
+uninstall.sh
+README.md
+SPEC.md
+config/default.yaml
+templates/.env.append
+scripts/kit-status.sh
+scripts/kit-verify.sh
+plans/config-consolidation-plan.md

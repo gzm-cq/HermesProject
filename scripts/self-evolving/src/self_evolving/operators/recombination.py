@@ -486,6 +486,7 @@ class RecombinationOperator:
             resp = self._llm.chat_completion(messages=messages, temperature=0.2, max_tokens=4096)
             return self._llm.extract_content(resp)
         except Exception:
+            logger.warning("LLM 提取文本失败，返回空字符串", exc_info=True)
             return ""
 
     def _get_source_distribution(self, components: List[Component]) -> Dict[int, int]:

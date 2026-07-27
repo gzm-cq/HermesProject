@@ -18,7 +18,10 @@ from knowledge_tree_builder.config import AppConfig
 
 logger = logging.getLogger(__name__)
 
-_USER_BUDGET_CHARS = 800
+# 预编译正则
+_WHITESPACE_CLEAN = re.compile(r"\s+")
+
+# 信号量：限制并发提取数
 _SMALL_INPUT_CHARS = 1500
 _MEDIUM_INPUT_CHARS = 4000
 _LARGE_INPUT_CHARS = 12000
@@ -150,7 +153,7 @@ def _split_text_chunks(text: str, *, max_chunk_chars: int, max_chunks: int) -> l
 
 def _normalize_text(text: str) -> str:
     """用于去重的文本规范化。"""
-    return re.sub(r"\s+", "", text.strip().lower())
+    return _WHITESPACE_CLEAN.sub("", text.strip().lower())
 
 
 def _jaccard(a: str, b: str) -> float:

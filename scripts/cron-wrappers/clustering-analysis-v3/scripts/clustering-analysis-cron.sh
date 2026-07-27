@@ -3,7 +3,7 @@
 #
 # 部署路径: /root/.hermes/scripts/clustering-analysis-v3/scripts/clustering-analysis-cron.sh
 # 依赖公共库: /root/.hermes/lib/cron_common.sh（由 cron-common 项目部署）
-# 调度建议:   0 4 * * 0 (每周日 04:00)
+# 调度建议:   0 10 * * 1 (每周一 10:00)
 #
 # 功能:
 #   - 外层提供 cron_common 统一能力（flock、日志、飞书、状态跟踪）

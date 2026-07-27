@@ -4,9 +4,12 @@ from collections import defaultdict
 from typing import Any
 
 import json
+import logging
 import numpy as np
 import psycopg2
 import psycopg2.extras
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_BANK_ID = "hermes"
 _DEFAULT_LINK_WEIGHT = 0.5
@@ -462,6 +465,7 @@ class DatabaseAdapter:
             return True
         except Exception:
             self.conn.rollback()
+            logger.warning("更新质量评分失败 (memory_id=%s)", memory_id, exc_info=True)
             return False
 
     def batch_update_quality_scores(
@@ -506,6 +510,7 @@ class DatabaseAdapter:
             return updated
         except Exception:
             self.conn.rollback()
+            logger.warning("批量更新质量评分失败", exc_info=True)
             return 0
 
     def close(self) -> None:
@@ -513,3 +518,9 @@ class DatabaseAdapter:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+
+    def __enter__(self) -> "DatabaseAdapter":
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()

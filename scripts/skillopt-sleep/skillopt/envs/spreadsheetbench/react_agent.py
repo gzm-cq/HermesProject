@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 
 from skillopt.model import chat_target_messages
@@ -252,9 +253,10 @@ def _auto_verify(work_dir: str) -> str:
 
 def _run_bash(cmd: str, work_dir: str, timeout: int = 60) -> str:
     try:
+        cmd_list = shlex.split(cmd)
         proc = subprocess.run(
-            cmd,
-            shell=True,
+            cmd_list,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout,

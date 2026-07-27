@@ -15,3 +15,6 @@ test = ["pytest"]
 
 [project.urls]
 Homepage = "https://github.com/your-org/hermes"
+
+[tool.pytest.ini_options]
+addopts = "-v --ignore=nul --ignore=scripts/skillopt-sleep"

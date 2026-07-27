@@ -106,7 +106,7 @@ class HindsightClient:
                     time.sleep(wait_time)
                     continue
                 else:
-                    logger.error("请求超时，已达到最大重试次数")
+                    logger.error("请求超时，已达到最大重试次数", exc_info=True)
                     return None
             except requests.exceptions.ConnectionError:
                 if attempt < CONFIG.max_retries:
@@ -115,10 +115,10 @@ class HindsightClient:
                     time.sleep(wait_time)
                     continue
                 else:
-                    logger.error("连接失败，已达到最大重试次数")
+                    logger.error("连接失败，已达到最大重试次数", exc_info=True)
                     return None
             except Exception as e:
-                logger.error("请求异常: %s", e)
+                logger.error("请求异常: %s", e, exc_info=True)
                 return None
 
         return None

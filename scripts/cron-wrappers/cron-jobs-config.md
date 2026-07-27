@@ -10,31 +10,57 @@
 
 ## 任务一览
 
-| # | job_id | 名称 | 时间 | 执行日 | 类型 | script | workdir |
-|---|--------|------|------|--------|------|--------|---------|
-| 1 | system-health-check | 系统健康巡检 | 02:30 | * | no_agent | `health-check-cron.sh` | `/root/.hermes/scripts` |
-| 2 | daily-learn | 每日在线学习 | 03:00 | * | no_agent | `daily-learn/daily_learn.sh` | `/root/.hermes/scripts/daily-learn` |
-| 3 | clustering-analysis | 聚类分析每周跑 | 04:00 | 0 | no_agent | `clustering-analysis-v3/scripts/clustering-analysis-cron.sh` | `/root/.hermes/scripts` |
-| 4 | knowledge-tree-consolidate | 知识树维护每周 | 10:30 | 1 | no_agent | `knowledge-tree-builder/scripts/knowledge-tree-consolidate.sh` | `/root/.hermes/scripts/knowledge-tree-builder` |
-| 5 | kn-baseline | 知识导航评估基线 | 12:00 | * | no_agent | `knowledge-navigation-baseline.sh` | `/root/.hermes/plugins/knowledge-navigation` |
-| 6 | skill-eval | Skill Eval 评估 | 12:00 | * | no_agent | `run-skill-eval.sh` | — |
-| 7 | memory-cleanup-daily | memory-cleanup-daily | 13:00 | * | no_agent | `memory-cleanup/daily_dryrun.sh` | `/root/.hermes/scripts/memory-cleanup` |
-| 8 | kn-router-health | 知识导航 Router 健康巡检 | 14:00 | * | no_agent | `kn-router-health-check.sh` | — |
-| 9 | skillopt-nightly | skillopt-nightly-run | 15:00 | * | no_agent | `skillopt-runner/skillopt-nightly-run.sh` | `/root/.hermes/skillopt-runner` |
-| 10 | kvector-maintenance | 知识树k_vector每周兜底维护 | 11:00 | 1 | no_agent | `knowledge-tree-builder/scripts/knowledge-tree-kvector-maintenance.sh` | `/root/.hermes/scripts/knowledge-tree-builder` |
-| 11 | weekly-deep-research | 每周深度研究-知识树学习 | 09:00 | 0 | agent | —（LLM prompt 驱动） | — |
-| 12 | paper-submit-reminder | 论文投稿提醒-改投 | 09:00 | 一次性(2026-08-06) | agent | —（LLM prompt 驱动） | — |
-| 13 | flywheel-health-report | 飞轮健康报告 | 08:00 | * | no_agent | `flywheel-health-report.sh` | — |
+> 真相源：`~/.hermes/cron/jobs.json`。本表与 jobs.json 的 `name` 字段、`schedule.expr` 字段保持一致。共 15 个任务：13 no_agent 脚本 + 2 agent 任务。
+
+| # | name | schedule | 类型 | script | workdir |
+|---|------|----------|------|--------|---------|
+| 1 | system-health-check | `0 8 * * 1-5` | no_agent | `health-check-cron.sh` | `/root/.hermes/scripts` |
+| 2 | flywheel-health-report | `0 8 * * *` | no_agent | `flywheel-health-report.sh` | — |
+| 3 | 每日在线学习 | `0 9 * * 1-5` | no_agent | `daily-learn/daily_learn.sh` | `/root/.hermes/scripts/daily-learn` |
+| 4 | 知识树k_vector每周兜底维护 | `0 9 * * 6` | no_agent | `knowledge-tree-builder/scripts/knowledge-tree-kvector-maintenance.sh` | `/root/.hermes/scripts/knowledge-tree-builder` |
+| 5 | 每周深度研究-知识树学习 | `0 9 * * 0` | agent | —（LLM prompt 驱动） | — |
+| 6 | clustering-analysis | `0 10 * * 1` | no_agent | `clustering-analysis-v3/scripts/clustering-analysis-cron.sh` | `/root/.hermes/scripts` |
+| 7 | 知识树维护每日 | `0 11 * * 1` | no_agent | `knowledge-tree-builder/scripts/knowledge-tree-consolidate.sh` | `/root/.hermes/scripts/knowledge-tree-builder` |
+| 8 | 知识导航评估基线 | `0 12 * * *` | no_agent | `knowledge-navigation-baseline.sh` | `/root/.hermes/plugins/knowledge-navigation` |
+| 9 | Skill Eval 评估 | `0 12 * * *` | no_agent | `run-skill-eval.sh` | — |
+| 10 | memory-cleanup-daily | `0 13 * * *` | no_agent | `memory-cleanup/daily_dryrun.sh` | `/root/.hermes/scripts/memory-cleanup` |
+| 11 | 知识导航 Router 健康巡检 | `0 14 * * *` | no_agent | `kn-router-health-check.sh` | — |
+| 12 | skillopt-nightly-run | `0 15 * * *` | no_agent | `skillopt-runner/skillopt-nightly-run.sh` | `/root/.hermes/skillopt-runner` |
+| 13 | dream-daily | `0 16 * * *` | no_agent | `dream-synth/scripts/dream-daily.sh` | `/root/.hermes/scripts/dream-synth` |
+| 14 | cron-periodic-detect | `0 * * * *` | no_agent | `cron-periodic-detect.sh` | — |
+| 15 | 论文投稿提醒-改投 | once 2026-08-06 09:00 | agent | —（LLM prompt 驱动） | — |
 
 **说明：**
+- `name` 列与 `~/.hermes/cron/jobs.json` 中的 `name` 字段一致，作为 cron job 主键
+- `schedule` 列与 jobs.json 中 `schedule.expr`（cron 类型）或 `schedule.run_at`（once 类型）一致
 - 执行日：`*` = 每日，`1` = 周一，`1-5` = 工作日，`0` = 周日，`6` = 周六
-- 时间字段以各 wrapper 脚本头部 `# 调度建议:` 注释为准（脚本注释是部署契约的源真相）
-- `job_id` 列与 `flywheel-health-report.py` 中 `ACTIVE_CRON_JOBS` 标识一致，作为主键使用
+- 时间字段以各 wrapper 脚本头部 `# 调度建议:` 注释为准（脚本注释是部署契约源真相，jobs.json 是运行时真相，两者必须保持一致）
 - 飞轮健康报告在 CN 08:00 运行，确保 UTC 前一天数据已完整（用户前一天晚间改动可见）
-- system-health-check 在 02:30 运行，daily-learn 在 03:00 运行，均避开工作时段 LLM 任务
-- 周一上午排班：知识树维护(10:30) → k_vector 兜底(11:00，consolidate 之后) → 评估基线(12:00)
+- 工作日 08:00 同时间段两个 job：system-health-check（仅 1-5）+ flywheel-health-report（每日），周末仅 flywheel-health-report
+- 周一上午链式排班：clustering-analysis(10:00) → 知识树维护(11:00) → 评估基线+Skill Eval(12:00)
 - agent 类型任务没有 script，由 Hermes cron 调度 LLM 代理执行 prompt
-- 当前共 13 个任务：11 个 no_agent 脚本 + 2 个 agent 任务
+- cron-periodic-detect 每小时整点运行，独立于飞轮 14 任务，负责失败 job 检测与去重告警
+- 论文投稿提醒-改投是一次性任务（2026-08-06 09:00），到期后由 Hermes 自动归档
+
+---
+
+## 飞轮 state 文件标识对照
+
+`flywheel-health-report.py` 中 `ACTIVE_CRON_JOBS` 用的是 cron state 文件名（部分与 jobs.json 的 `name` 不同），对照如下：
+
+| jobs.json name | ACTIVE_CRON_JOBS state 文件名 |
+|----------------|------------------------------|
+| memory-cleanup-daily | `memory-cleanup` |
+| 知识导航评估基线 | `knowledge-navigation-baseline` |
+| Skill Eval 评估 | `run-skill-eval` |
+| skillopt-nightly-run | `skillopt-nightly-run` |
+| 知识导航 Router 健康巡检 | `kn-router-health-check` |
+| 每日在线学习 | `daily-learn` |
+| clustering-analysis | `clustering-analysis` |
+| 知识树维护每日 | `knowledge-tree-consolidate` |
+| 知识树k_vector每周兜底维护 | `knowledge-tree-kvector` |
+
+未在 ACTIVE_CRON_JOBS 中的 job（system-health-check / flywheel-health-report / dream-daily / cron-periodic-detect / 2 个 agent 任务）不写入飞轮 state 文件，由各自 wrapper 直接落盘日志。
 
 ---
 
@@ -42,6 +68,7 @@
 
 1. **LLM 任务间隔 ≥ 1h** — 避免争抢 LiteLLM 网关
 2. **skillopt 放最后**（15:00）— 该任务可能运行数小时，不影响其他任务
-3. **周一上午 10:30-12:00 知识树密集排班** — 链式执行：consolidate(10:30) → k_vector 兜底(11:00) → 评估基线(12:00)
-4. **凌晨批处理 02:30-04:00** — system-health-check(02:30) → daily-learn(03:00) → 聚类分析(周日04:00)
-5. **周日** — 聚类分析(04:00) + 深度研究(09:00)；**周六** — 无定时任务
+3. **周一上午密集排班 10:00-12:00** — 链式执行：clustering-analysis(10:00) → 知识树维护(11:00) → 评估基线+Skill Eval(12:00)
+4. **08:00 同时间段并行** — system-health-check(1-5) + flywheel-health-report(*) 均为 no_agent 脚本，并行执行无冲突
+5. **12:00 同时间段并行** — kn-baseline + skill-eval 均为 no_agent 脚本，并行执行无冲突
+6. **周末分布** — 周六 kvector 维护(09:00)；周日 深度研究 agent(09:00)；工作日 daily-learn(09:00) 与周末任务时间相同但执行日不重叠

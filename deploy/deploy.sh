@@ -19,10 +19,16 @@
 #   clustering-analysis-v3    聚类分析
 #   drawio-generator          Draw.io/SVG 矢量图生成
 #   daily-learn               每日在线学习脚本
+#   dream-synth               梦境合成流水线
 #   knowledge-navigation      知识导航插件 (重启 hermes-gateway.service)
 #   memory-cleanup            记忆清理
 #   knowledge-tree-builder     知识树建树管线
 #   knowledge-tree-plugin      知识树在线插件 (重启 hermes-gateway.service)
+#   p0-benchmark              P0 基准评估工具 (可选)
+#   recall-eval               召回评估工具 (可选)
+#   self-evolving             自进化飞轮项目
+#   skillopt-runner           SkillOpt 技能优化运行器
+#   skillopt-sleep            SkillOpt-Sleep 技能优化引擎
 #   cron-common               cron 定时任务公共库
 #   cron-wrappers              cron 定时任务 wrapper 脚本（统一部署到 /root/.hermes/scripts/）
 #   system-health-check       系统健康巡检脚本
@@ -49,10 +55,13 @@ declare -A PROJECT_INFO=(
   [clustering-analysis-v3]="聚类分析"
   [drawio-generator]="Draw.io/SVG 矢量图生成"
   [daily-learn]="每日在线学习脚本"
+  [dream-synth]="梦境合成流水线"
   [knowledge-navigation]="知识导航插件 (重启 hermes-gateway.service)"
   [knowledge-tree-builder]="知识树建树管线"
   [knowledge-tree-plugin]="知识树在线插件 (重启 hermes-gateway.service)"
   [memory-cleanup]="记忆清理"
+  [p0-benchmark]="P0 基准评估工具 (可选)"
+  [recall-eval]="召回评估工具 (可选)"
   [self-evolving]="自进化飞轮项目"
   [skillopt-runner]="SkillOpt 技能优化运行器"
   [skillopt-sleep]="SkillOpt-Sleep 技能优化引擎"

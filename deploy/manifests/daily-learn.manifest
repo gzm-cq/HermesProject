@@ -1,9 +1,8 @@
 # daily-learn 部署清单
-# 源: scripts/daily-learn/
+# 源: scripts/cron-wrappers/daily-learn/
 # 标: /root/.hermes/scripts/daily-learn/
 
-*.sh
-README.md
+daily_learn.sh
 
 !**/__pycache__/**
 !**/*.pyc

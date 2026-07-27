@@ -5,7 +5,7 @@ set -euo pipefail
 shopt -s globstar nullglob extglob
 
 PROJECT_NAME="daily-learn"
-PROJECT_SRC_REL="scripts/daily-learn"
+PROJECT_SRC_REL="scripts/cron-wrappers/daily-learn"
 PROJECT_TGT="/root/.hermes/scripts/daily-learn"
 PROJECT_SVC=""
 

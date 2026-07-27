@@ -4,10 +4,19 @@
 eval queries 加载，避免真实 HTTP 请求和网络超时。需要自定义行为可自行 patch。
 """
 
+from __future__ import annotations
+
 import os
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+# 确保源码可导入
+_src = Path(__file__).resolve().parent.parent / "src"
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
 
 # pytest 进程必须写临时 trace，避免污染生产 trace.log。
 os.environ["KN_TRACE_LOG_PATH"] = os.path.join(
@@ -66,13 +75,18 @@ def mock_router_and_eval() -> None:
     需要自定义行为的测试可用自己的 patch.object 覆盖（内层 wins）。
     """
     import knowledge_navigation.core.hooks as nav_hooks
+    from knowledge_navigation.core.hooks import router as kn_router
 
-    with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": True, "s": True}), \
+    def _fake_router(*args, **kwargs):
+        return {"h": True, "kt": True, "s": True}
+
+    with patch.object(nav_hooks, "_router_route", side_effect=_fake_router), \
          patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True), \
          patch.object(nav_hooks, "_eval_queries", []), \
          patch.object(nav_hooks, "_do_hindsight_recall", return_value=None), \
          patch.object(nav_hooks, "_do_kt_recall", return_value=[]), \
-         patch.object(nav_hooks, "_do_skill_match", return_value=""):
+         patch.object(nav_hooks, "_do_skill_match", return_value=""), \
+         patch.object(kn_router, "_router_route", side_effect=_fake_router):
         yield
 
 

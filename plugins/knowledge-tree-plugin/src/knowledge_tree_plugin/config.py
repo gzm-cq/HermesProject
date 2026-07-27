@@ -10,6 +10,11 @@ from typing import Any
 import yaml
 
 
+class ConfigurationError(ValueError):
+    """配置错误 — API key 或必要参数缺失。"""
+    pass
+
+
 @dataclass
 class PluginConfig:
     """插件配置 — 支持 YAML + 环境变量覆盖。"""
@@ -31,7 +36,11 @@ class PluginConfig:
     extract_llm_retries: int = 1          # 在线提取失败不重试，避免阻塞后台队列
 
     # LLM（post_llm_call 提取用）
-    llm_api_url: str = "http://127.0.0.1:4142/v1/chat/completions"
+    llm_api_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "KT_LLM_API_URL", "http://127.0.0.1:4142/v1/chat/completions"
+        )
+    )
     llm_api_key: str = ""
     llm_model: str = "s-deepseek-v4-flash"
 
@@ -95,6 +104,17 @@ class PluginConfig:
                     setattr(self, field_name, float(os.environ[env_var]))
                 except ValueError:
                     pass
+
+        # P0-7: 启动时验证 API key 非空
+        if self.extract_enabled:
+            if not self.llm_api_key:
+                raise ConfigurationError(
+                    "llm_api_key 不能为空 — 请设置 LITELLM_MASTER_KEY 环境变量或配置文件中指定"
+                )
+            if not self.embed_api_key:
+                raise ConfigurationError(
+                    "embed_api_key 不能为空 — 请设置 HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY 环境变量或配置文件中指定"
+                )
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> "PluginConfig":

@@ -3,7 +3,7 @@
 #
 # 部署路径: /root/.hermes/scripts/knowledge-tree-builder/scripts/knowledge-tree-kvector-maintenance.sh
 # 依赖公共库: /root/.hermes/lib/cron_common.sh（由 cron-common 项目部署）
-# 调度建议:   0 11 * * 1 (每周一 11:00，在 consolidate 之后)
+# 调度建议:   0 9 * * 6 (每周六 09:00)
 #
 # 行为:
 #   - 统计 knowledge_point + subject 的 k_vector 缺失数量

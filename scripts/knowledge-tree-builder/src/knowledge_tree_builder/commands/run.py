@@ -198,7 +198,7 @@ def _run_pipeline(
                     _manifest.mark_written(item)
             _manifest.summary()
         except Exception:
-            pass
+            logger.exception("无法标记已提取条目")
 
     if not dry_run:
         _cleanup_cache(input_dir)
@@ -567,7 +567,7 @@ def _run_place_phase(
                     "records": _p4_records,
                 }, _f, ensure_ascii=False, indent=2)
         except Exception:
-            pass
+            logger.exception("保存 Phase 4 缓存失败: %s", _p4_cache_path)
 
     def _llm_domain(title_summary: str, existing_domains: list[str]) -> str:
         prompt = f"判断以下文章最合适的知识领域。已有领域：{existing_domains or '无'}。文章：{title_summary[:500]}"
@@ -756,7 +756,7 @@ def _run_place_phase(
         try:
             os.remove(_p4_cache_path)
         except Exception:
-            pass
+            logger.exception("清理 Phase 4 缓存文件失败: %s", _p4_cache_path)
 
     _new_subjects = len({r.get("subject", "") for r in _p4_records})
     print(f"   📊 定位 {len(_p4_records)} 条, {_new_subjects} 个科目")
@@ -774,14 +774,14 @@ def _cleanup_cache(input_dir: str) -> None:
             try:
                 _cp.unlink()
             except Exception:
-                pass
+                logger.exception("清除缓存文件失败: %s", _cp)
 
     _atomics_dir = Path(f".kb_manifest_{_input_dir_name}_atomics")
     if _atomics_dir.is_dir():
         try:
             shutil.rmtree(_atomics_dir)
         except Exception:
-            pass
+            logger.exception("清理原子目录失败: %s", _atomics_dir)
 
 
 __all__ = [
