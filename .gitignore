@@ -108,3 +108,4 @@ mnt/
 nul
 .workbuddy/
 .codegraph/
+.aider*

@@ -35,7 +35,7 @@ def format_summary(data: dict) -> str:
     ts = meta.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     local_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    services = ["hermes", "litellm", "hindsight", "sag", "postgres", "mcp", "moonbridge", "orphan_scan", "memory_files"]
+    services = ["hermes", "bifrost", "hindsight", "sag", "postgres", "mcp", "moonbridge", "orphan_scan", "memory_files"]
     lines = [f"# 🏥 系统健康巡检报告", f"**时间**: {local_time}", ""]
 
     results = {}
@@ -65,12 +65,12 @@ def format_summary(data: dict) -> str:
             alive = '✅' if checks.get('process_alive') else '❌'
             api = '✅' if str(checks.get('api_endpoint','')).startswith('200') else '❌'
             detail = f"进程 {checks.get('process_count', '?')} 个 {alive} | API {api}"
-        elif svc == "litellm":
+        elif svc == "bifrost":
             alive = '✅' if checks.get('process_alive') else '❌'
-            liveliness_raw = str(checks.get('liveliness',''))
-            lively = '✅' if 'alive' in liveliness_raw.lower() else '❌'
+            container = str(checks.get('container_status',''))
+            cok = '✅' if container == 'healthy' else '❌'
             models = checks.get('models_online', '?')
-            detail = f"进程 {checks.get('process_count', '?')} 个 {alive} | 健康 {lively} | 模型 {models} 个在线"
+            detail = f"容器 {alive} | 健康 {cok} | 模型 {models} 个在线"
         elif svc == "hindsight":
             alive = '✅' if checks.get('process_alive') else '❌'
             health_raw = str(checks.get('health_endpoint',''))

@@ -80,7 +80,7 @@ def get_systemd_pids():
     if _SYSTEMD_PIDS is not None:
         return _SYSTEMD_PIDS
     out, _, _ = run(
-        "for svc in hermes-gateway hindsight-daemon litellm axiom-wiki-mcp-sse "
+        "for svc in hermes-gateway hindsight-daemon axiom-wiki-mcp-sse "
         "codegraph-mcp postgres-mcp sag sag-mcp moonbridge; do "
         "systemctl show -P MainPID \"$svc\" 2>/dev/null; done || true"
     )
@@ -180,54 +180,53 @@ def check_hermes():
     })
 
 # ============================================
-# 2. LiteLLM
+# 2. Bifrost（替代 LiteLLM，2026-08-02 迁移）
 # ============================================
-def check_litellm():
-    proc_count = count_processes(r'litellm.*--config')
-    dup = detect_duplicate_processes(r'litellm.*--config')
+def check_bifrost():
+    # Bifrost 是 Docker 容器（network host），不是 systemd 进程
+    out, _, _ = run("docker ps --filter name=^bifrost$ --format '{{.Names}}'")
+    proc_alive = "bifrost" in out
 
-    out, _, _ = run("curl -s http://127.0.0.1:4142/health/liveliness --max-time 5")
-    liveliness = out or "unreachable"
+    # Docker 健康状态
+    out, _, _ = run("docker inspect bifrost --format '{{.State.Health.Status}}' 2>/dev/null")
+    health_status = out.strip() or "unknown"
 
-    # Do NOT call /model/info here. In DB-backed LiteLLM setups, /model/info
-    # may try to infer providers from provider-native model names (for example
-    # ark-code-latest) and emit false LLM Provider NOT provided errors even
-    # though normal chat completions route correctly via custom_openai. Count
-    # configured models directly from the LiteLLM DB instead.
-    out, err, rc = run(
-        "docker exec shared-postgres psql -h localhost -p 5432 -U postgres -d litellm "
-        "-At -c 'SELECT count(*) FROM \"LiteLLM_ProxyModelTable\"'",
-        timeout=10,
-    )
+    # API 健康
+    out, _, _ = run("curl -s http://127.0.0.1:4142/health --max-time 5")
+    api_health = out or "unreachable"
+    api_ok = '"status":"ok"' in api_health.replace(" ", "")
+
+    # 模型列表（从 config 文件统计，/v1/models 只返回部分模型）
+    out, _, _ = run("cat /root/.bifrost/data/config.json 2>/dev/null || echo '{}'")
     models_online = 0
     model_count_error = ""
-    if rc == 0 and out.strip():
+    if out.strip():
         try:
-            models_online = int(out.strip().split("\n")[-1])
-        except ValueError:
-            model_count_error = out[:200]
-    else:
-        model_count_error = (err or out or "unknown error")[:200]
-
-    out, _, _ = run("curl -s -o /dev/null -w '%{http_code}' "
-                    "http://127.0.0.1:4142/ui/login --max-time 5")
-    ui_reachable = out in ("200", "302", "307")
+            import json as _json
+            _cfg = _json.loads(out)
+            _providers = _cfg.get("providers", {})
+            _all_models = set()
+            for _pname, _pdata in _providers.items():
+                for _k in _pdata.get("keys", []):
+                    for _m in _k.get("models", []):
+                        _all_models.add(_m)
+            models_online = len(_all_models)
+        except Exception as e:
+            model_count_error = str(e)[:200]
 
     st = "ok"
-    if proc_count == 0: st = "fail"
-    elif dup: st = "warn"
-    elif 'alive' not in liveliness.lower() and liveliness not in ("healthy",): st = "warn"
+    if not proc_alive: st = "fail"
+    elif health_status == "unhealthy": st = "warn"
+    elif not api_ok: st = "warn"
     elif models_online <= 0: st = "warn"
 
-    write_check("litellm", st, {
-        "process_alive": proc_count > 0,
-        "process_count": proc_count,
-        "duplicate_detected": dup,
-        "liveliness": liveliness,
+    write_check("bifrost", st, {
+        "process_alive": proc_alive,
+        "container_status": health_status,
+        "api_health": api_health,
         "models_online": models_online,
-        "model_count_source": "db:LiteLLM_ProxyModelTable",
+        "model_count_source": "api:/v1/models",
         "model_count_error": model_count_error,
-        "ui_reachable": ui_reachable,
     })
 
 # ============================================
@@ -569,7 +568,7 @@ if __name__ == "__main__":
     
     checks = {
         "hermes": check_hermes,
-        "litellm": check_litellm,
+        "bifrost": check_bifrost,
         "hindsight": check_hindsight,
         "sag": check_sag,
         "postgres": check_postgres,
