@@ -58,8 +58,8 @@ class TestRun:
         """异常返回错误信息"""
         stdout, stderr, rc = hca.run("/nonexistent/command_xyz123")
         assert stdout == ""
-        # shell=True 时 shell 自身返回 127（command not found），不是 -1
-        assert rc in (127, -1)
+        # shell=True 时 shell 自身返回非零（Linux=127, Windows=1），不是 -1
+        assert rc in (127, 1, -1)
 
 
 # ══════════════════════════════════════════════════════════

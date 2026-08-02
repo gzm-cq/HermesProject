@@ -332,52 +332,52 @@ class TestAdaptiveHdbscanParams:
         assert ms == 3
 
     def test_100_to_499(self) -> None:
-        """100 <= n_samples < 500: min_cluster_size=5, min_samples=4"""
+        """100 <= n_samples < 500: min_cluster_size=3, min_samples=2"""
         mcs, ms = adaptive_hdbscan_params(200)
-        assert mcs == 5
-        assert ms == 4
+        assert mcs == 3
+        assert ms == 2
 
     def test_boundary_100(self) -> None:
         """边界值: n_samples=100"""
         mcs, ms = adaptive_hdbscan_params(100)
-        assert mcs == 5
-        assert ms == 4
+        assert mcs == 3
+        assert ms == 2
 
     def test_boundary_499(self) -> None:
         """边界值: n_samples=499"""
         mcs, ms = adaptive_hdbscan_params(499)
-        assert mcs == 5
-        assert ms == 4
+        assert mcs == 3
+        assert ms == 2
 
     def test_500_to_1999(self) -> None:
-        """500 <= n_samples < 2000: min_cluster_size=8, min_samples=6"""
+        """500 <= n_samples < 2000: min_cluster_size=4, min_samples=3"""
         mcs, ms = adaptive_hdbscan_params(1000)
-        assert mcs == 8
-        assert ms == 6
+        assert mcs == 4
+        assert ms == 3
 
     def test_boundary_500(self) -> None:
         """边界值: n_samples=500"""
         mcs, ms = adaptive_hdbscan_params(500)
-        assert mcs == 8
-        assert ms == 6
+        assert mcs == 4
+        assert ms == 3
 
     def test_boundary_1999(self) -> None:
         """边界值: n_samples=1999"""
         mcs, ms = adaptive_hdbscan_params(1999)
-        assert mcs == 8
-        assert ms == 6
+        assert mcs == 4
+        assert ms == 3
 
     def test_large_dataset_2000_plus(self) -> None:
-        """n_samples >= 2000: min_cluster_size=15, min_samples=10"""
+        """n_samples >= 2000: min_cluster_size=8, min_samples=5"""
         mcs, ms = adaptive_hdbscan_params(5000)
-        assert mcs == 15
-        assert ms == 10
+        assert mcs == 8
+        assert ms == 5
 
     def test_boundary_2000(self) -> None:
         """边界值: n_samples=2000"""
         mcs, ms = adaptive_hdbscan_params(2000)
-        assert mcs == 15
-        assert ms == 10
+        assert mcs == 8
+        assert ms == 5
 
     def test_min_samples_clamped_by_min(self) -> None:
         """min_samples 受 min_samples_min 限制"""
