@@ -6,7 +6,10 @@ from drawio_generator.layout import (
     _identify_back_edges, _separate_isolated,
     DEFAULT_NODE_W, DEFAULT_NODE_H,
 )
-from drawio_generator.geometry import _compute_orthogonal_edge
+from drawio_generator.geometry import (
+    _compute_orthogonal_edge, _compute_straight_edge,
+    _compute_bezier_edge, compute_edge_path, _clip_line_to_rect,
+)
 
 
 class TestBuildAdjacency:
@@ -79,22 +82,32 @@ class TestTopologicalSort:
 class TestAssignLayers:
     """测试层级分配"""
 
+    @staticmethod
+    def _build_node_map_and_preds(nodes, adj):
+        """辅助：构建 node_map 和 predecessors"""
+        node_map = {n["id"]: n for n in nodes if "id" in n}
+        preds = {}
+        for src, targets in adj.items():
+            for tgt in targets:
+                preds.setdefault(tgt, []).append(src)
+        return node_map, preds
+
     def test_linear_chain(self):
         nodes = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
         adj = {"a": ["b"], "b": ["c"], "c": []}
         topo = ["a", "b", "c"]
-        layers = _assign_layers(topo, adj, nodes)
+        nm, preds = self._build_node_map_and_preds(nodes, adj)
+        layers = _assign_layers(topo, adj, nm, preds)
         assert layers["a"] == 0
         assert layers["b"] == 1
         assert layers["c"] == 2
 
     def test_diamond_graph(self):
-        # a(0) → b(1) → d(2)
-        # a(0) → c(1) → d(2)
         nodes = [{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}]
         adj = {"a": ["b", "c"], "b": ["d"], "c": ["d"], "d": []}
         topo = ["a", "b", "c", "d"]
-        layers = _assign_layers(topo, adj, nodes)
+        nm, preds = self._build_node_map_and_preds(nodes, adj)
+        layers = _assign_layers(topo, adj, nm, preds)
         assert layers["a"] == 0
         assert layers["b"] == 1
         assert layers["c"] == 1
@@ -103,38 +116,49 @@ class TestAssignLayers:
     def test_single_node(self):
         nodes = [{"id": "a"}]
         adj = {"a": []}
-        layers = _assign_layers(["a"], adj, nodes)
+        nm, preds = self._build_node_map_and_preds(nodes, adj)
+        layers = _assign_layers(["a"], adj, nm, preds)
         assert layers["a"] == 0
 
 
 class TestComputeCoordinates:
     """测试坐标计算"""
 
+    @staticmethod
+    def _build_node_map_and_preds(nodes, adj):
+        node_map = {n["id"]: n for n in nodes if "id" in n}
+        preds = {}
+        for src, targets in adj.items():
+            for tgt in targets:
+                preds.setdefault(tgt, []).append(src)
+        return node_map, preds
+
     def test_vertical_layout(self):
         layers = {"a": 0, "b": 1}
         nodes = [{"id": "a"}, {"id": "b"}]
-        result = _compute_coordinates(layers, nodes, {}, "vertical")
+        nm, preds = self._build_node_map_and_preds(nodes, {})
+        result = _compute_coordinates(layers, nm, preds, {}, "vertical")
         assert len(result) == 2
         a_node = [n for n in result if n["id"] == "a"][0]
         b_node = [n for n in result if n["id"] == "b"][0]
         assert "x" in a_node and "y" in a_node
         assert "x" in b_node and "y" in b_node
-        # b 应在 a 下方（垂直布局）
         assert b_node["y"] > a_node["y"]
 
     def test_horizontal_layout(self):
         layers = {"a": 0, "b": 1}
         nodes = [{"id": "a"}, {"id": "b"}]
-        result = _compute_coordinates(layers, nodes, {}, "horizontal")
+        nm, preds = self._build_node_map_and_preds(nodes, {})
+        result = _compute_coordinates(layers, nm, preds, {}, "horizontal")
         a_node = [n for n in result if n["id"] == "a"][0]
         b_node = [n for n in result if n["id"] == "b"][0]
-        # b 应在 a 右侧（水平布局）
         assert b_node["x"] > a_node["x"]
 
     def test_custom_node_size(self):
         layers = {"a": 0}
         nodes = [{"id": "a", "w": 300, "h": 100}]
-        result = _compute_coordinates(layers, nodes, {}, "vertical")
+        nm, preds = self._build_node_map_and_preds(nodes, {})
+        result = _compute_coordinates(layers, nm, preds, {}, "vertical")
         assert result[0]["w"] == 300
         assert result[0]["h"] == 100
 
@@ -142,45 +166,45 @@ class TestComputeCoordinates:
 class TestReduceCrossings:
     """测试重心启发式层内排序"""
 
+    @staticmethod
+    def _build_preds(adj):
+        preds = {}
+        for src, targets in adj.items():
+            for tgt in targets:
+                preds.setdefault(tgt, []).append(src)
+        return preds
+
     def test_single_layer_no_change(self):
-        """单层不应改变顺序"""
         groups = {0: ["a", "b"]}
-        result = _reduce_crossings(groups, {})
+        result = _reduce_crossings(groups, {}, {})
         assert result == {0: ["a", "b"]}
 
     def test_empty_adj_no_crash(self):
-        """无边时不应崩溃"""
         groups = {0: ["a"], 1: ["b"]}
-        result = _reduce_crossings(groups, {})
+        result = _reduce_crossings(groups, {}, {})
         assert 0 in result and 1 in result
 
     def test_crossing_reduced(self):
-        """交叉边应被优化"""
-        # 层 0: [a, b]  层 1: [c, d]
-        # 边: a→d, b→c  (交叉)
-        # 优化后: 层 1 应重排为 [d, c] 或层 0 重排
         groups = {0: ["a", "b"], 1: ["c", "d"]}
         adj = {"a": ["d"], "b": ["c"]}
-        result = _reduce_crossings(groups, adj)
-        # 层 1 中 d 应在 c 之前（d 连接 a 位置 0，c 连接 b 位置 1）
+        preds = self._build_preds(adj)
+        result = _reduce_crossings(groups, adj, preds)
         d_idx = result[1].index("d")
         c_idx = result[1].index("c")
         assert d_idx < c_idx, f"期望 d 在 c 前，实际顺序: {result[1]}"
 
     def test_upward_sweep(self):
-        """反向扫描：下层节点影响上层排序"""
         groups = {0: ["a", "b"], 1: ["c", "d"]}
         adj = {"a": ["d"], "b": ["c"]}
-        result = _reduce_crossings(groups, adj)
-        # 层 0: a 连接 d(位置1调整后), b 连接 c
-        # 经过双向扫描后层 0 也应优化
+        preds = self._build_preds(adj)
+        result = _reduce_crossings(groups, adj, preds)
         assert len(result[0]) == 2
 
     def test_multi_layer_complex(self):
-        """三层图：不应崩溃且保持所有节点"""
         groups = {0: ["a", "b"], 1: ["c", "d", "e"], 2: ["f", "g"]}
         adj = {"a": ["c", "d"], "b": ["e"], "c": ["f"], "d": ["g"], "e": ["f", "g"]}
-        result = _reduce_crossings(groups, adj)
+        preds = self._build_preds(adj)
+        result = _reduce_crossings(groups, adj, preds)
         assert len(result[0]) == 2
         assert len(result[1]) == 3
         assert len(result[2]) == 2
@@ -497,3 +521,117 @@ class TestOrthogonalEdge:
         tgt = {"x": 150, "y": 100, "w": 100, "h": 50}
         pts = _compute_orthogonal_edge(src, tgt)
         assert len(pts) == 4
+
+
+class TestStraightEdge:
+    """测试直线边路径计算"""
+
+    def test_horizontal_straight(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 200, "y": 0, "w": 100, "h": 50}
+        pts = _compute_straight_edge(src, tgt)
+        assert len(pts) == 2
+        # 起点应在 src 右边界，终点应在 tgt 左边界
+        assert pts[0][0] == 100
+        assert pts[-1][0] == 200
+
+    def test_vertical_straight(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 0, "y": 200, "w": 100, "h": 50}
+        pts = _compute_straight_edge(src, tgt)
+        assert len(pts) == 2
+        assert pts[0][1] == 50
+        assert pts[-1][1] == 200
+
+
+class TestBezierEdge:
+    """测试贝塞尔曲线边路径计算"""
+
+    def test_returns_4_points(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 200, "y": 0, "w": 100, "h": 50}
+        pts = _compute_bezier_edge(src, tgt)
+        assert len(pts) == 4
+        # (start, cp1, cp2, end)
+        assert pts[0][0] == 100  # src 右边界
+        assert pts[-1][0] == 200  # tgt 左边界
+
+    def test_horizontal_dominant_control_points(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 300, "y": 10, "w": 100, "h": 50}
+        pts = _compute_bezier_edge(src, tgt)
+        _, (c1x, c1y), (c2x, c2y), _ = pts
+        # 水平主导时，控制点 x 偏移应较大
+        assert c1x > pts[0][0]
+        assert c2x < pts[-1][0]
+
+    def test_vertical_dominant_control_points(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 10, "y": 300, "w": 100, "h": 50}
+        pts = _compute_bezier_edge(src, tgt)
+        _, (c1x, c1y), (c2x, c2y), _ = pts
+        # 垂直主导时，控制点 y 偏移应较大
+        assert c1y > pts[0][1]
+        assert c2y < pts[-1][1]
+
+
+class TestComputeEdgePath:
+    """测试 compute_edge_path 分发"""
+
+    def test_orthogonal_dispatch(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 200, "y": 0, "w": 100, "h": 50}
+        pts = compute_edge_path(src, tgt, curve="orthogonal")
+        assert len(pts) >= 2
+
+    def test_straight_dispatch(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 200, "y": 0, "w": 100, "h": 50}
+        pts = compute_edge_path(src, tgt, curve="straight")
+        assert len(pts) == 2
+
+    def test_bezier_dispatch(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 200, "y": 0, "w": 100, "h": 50}
+        pts = compute_edge_path(src, tgt, curve="bezier")
+        assert len(pts) == 4
+
+    def test_default_is_orthogonal(self):
+        src = {"x": 0, "y": 0, "w": 100, "h": 50}
+        tgt = {"x": 200, "y": 100, "w": 100, "h": 50}
+        pts = compute_edge_path(src, tgt)
+        assert len(pts) == 4  # orthogonal default
+
+
+class TestClipLineToRect:
+    """测试线段裁剪到矩形"""
+
+    def test_clip_right(self):
+        """向右射线与右边界相交"""
+        ix, iy = _clip_line_to_rect(50, 25, 200, 25, 0, 0, 100, 50)
+        assert ix == 100
+        assert iy == 25
+
+    def test_clip_left(self):
+        """向左射线与左边界相交"""
+        ix, iy = _clip_line_to_rect(50, 25, -100, 25, 0, 0, 100, 50)
+        assert ix == 0
+        assert iy == 25
+
+    def test_clip_down(self):
+        """向下射线与下边界相交"""
+        ix, iy = _clip_line_to_rect(50, 25, 50, 200, 0, 0, 100, 50)
+        assert ix == 50
+        assert iy == 50
+
+    def test_clip_up(self):
+        """向上射线与上边界相交"""
+        ix, iy = _clip_line_to_rect(50, 25, 50, -100, 0, 0, 100, 50)
+        assert ix == 50
+        assert iy == 0
+
+    def test_zero_direction_returns_origin(self):
+        """方向为零向量返回原点"""
+        ix, iy = _clip_line_to_rect(50, 25, 50, 25, 0, 0, 100, 50)
+        assert ix == 50
+        assert iy == 25

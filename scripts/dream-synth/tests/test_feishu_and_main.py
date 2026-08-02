@@ -4,14 +4,7 @@ import os
 import subprocess
 from unittest.mock import patch, MagicMock
 
-
-def _make_reflection(sid, title, score=5):
-    return {
-        "session_id": sid,
-        "title": title,
-        "score": score,
-        "content": f"# {title}\n\n## 摘要\n这是{title}的摘要内容，包含关键信息。\n\n## 关键决策\n测试决策点。\n\n## 知识要点\n技术知识点。\n\n## 待办事项\n后续任务。",
-    }
+from tests._helpers import make_reflection as _make_reflection
 
 
 class TestPhaseFeishu:

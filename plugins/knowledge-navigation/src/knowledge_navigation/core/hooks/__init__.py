@@ -63,6 +63,10 @@ from knowledge_navigation.core.hooks.router import (
     _normalize_kt_score,
     _pass_gates,
     _post_process_recall,
+    _router_route,
+    exclude_marked,
+    extract_rerank_scores,
+    filter_by_score,
     pre_llm_call,
 )
 
@@ -116,4 +120,5 @@ __all__ = [
     "_expand_multi_hop",
     "_assemble_xml_output",
     "_post_process_recall",
+    "_router_route",
 ]

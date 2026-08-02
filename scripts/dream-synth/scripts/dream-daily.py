@@ -830,28 +830,55 @@ date: {datetime.now().strftime('%Y-%m-%d')}
     return promoted
 
 # ── Phase 4: 飞书推送 ────────────────────────────────
+def _load_pushed_session_ids(feishu_log: str) -> set[str]:
+    """从 feishu-log.json 读取所有已推送过的 session_id"""
+    pushed: set[str] = set()
+    if not os.path.exists(feishu_log):
+        return pushed
+    with open(feishu_log, encoding="utf-8") as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+                sids = entry.get("session_ids", [])
+                pushed.update(sids)
+            except json.JSONDecodeError:
+                pass
+    return pushed
+
+
+def _mark_verdicts_feishu_pushed(verdict_dir: str, session_ids: set[str]):
+    """在 verdict cache 中标记已推送到飞书"""
+    for fname in os.listdir(verdict_dir):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(verdict_dir, fname)
+        try:
+            with open(path, encoding="utf-8") as f:
+                cache = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            continue
+        sid = cache.get("session_id", "")
+        if sid in session_ids and not cache.get("feishu_pushed"):
+            cache["feishu_pushed"] = True
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+            print(f"  feishu: 标记 {sid[:20]}... 已推送")
+
+
 def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = False):
-    """推送 top-5 未归档反思到飞书"""
+    """推送 top-5 未推送反思到飞书（已推的不重复推送）"""
     promoted_sids = {r["session_id"] for r in promoted}
-    unsorted = [r for r in reflections if r["session_id"] not in promoted_sids]
+    # 同时排除已归档和已推送过的
+    feishu_log = CFG["cache"].get("feishu_log", os.path.join(
+        os.path.dirname(CFG["cache"]["verdict_dir"]), "feishu-log.json"))
+    pushed_sids = _load_pushed_session_ids(feishu_log)
+    skip_sids = promoted_sids | pushed_sids
+
+    unsorted = [r for r in reflections if r["session_id"] not in skip_sids]
 
     if not unsorted:
-        print("  feishu: 无未归档反思，跳过")
+        print("  feishu: 无未推送反思，跳过")
         return
-
-    # 幂等：检查当天是否已推送过
-    feishu_log = CFG["cache"].get("feishu_log", os.path.join(os.path.dirname(CFG["cache"]["verdict_dir"]), "feishu-log.json"))
-    today = datetime.now().strftime("%Y-%m-%d")
-    if os.path.exists(feishu_log):
-        with open(feishu_log, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                    if entry.get("date") == today:
-                        print(f"  feishu: 今天已推送过（{today}），跳过")
-                        return
-                except json.JSONDecodeError:
-                    pass
 
     # 按 score 排序取 top-5
     feishu_top_n = CFG.get("feishu", {}).get("top_n", 5)
@@ -860,9 +887,9 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
 
     # 格式化飞书消息
     lines = [f"# 🌙 梦境流水线 — {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
-    lines.append(f"今日提炼 {len(reflections)} 篇反思，归档 {len(promoted)} 篇，未归档 {len(unsorted)} 篇")
+    lines.append(f"今日提炼 {len(reflections)} 篇反思，归档 {len(promoted)} 篇，剩余未推送 {len(unsorted)} 篇")
     lines.append("")
-    lines.append("## Top-5 未归档反思")
+    lines.append("## Top-5 未推送反思")
     for i, r in enumerate(top5):
         lines.append(f"{i+1}. **{r['title'][:50]}**")
         # 取摘要第一段
@@ -880,6 +907,7 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
         lines.append("")
 
     lines.append("---")
+    lines.append(f"_已推送 {len(pushed_sids)} 篇，仍有 {len(unsorted) - len(top5)} 篇待推送_")
     lines.append("_如需归档，告诉 axiom 即可_")
 
     msg = "\n".join(lines)
@@ -900,11 +928,20 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
         )
         if proc.returncode == 0:
             print("  feishu: 推送成功")
-            # 记入幂等日志
+            # 记录本次推送的 session_ids 到幂等日志
+            pushed_sids_this_run = {r["session_id"] for r in top5}
             os.makedirs(os.path.dirname(feishu_log), exist_ok=True)
             with open(feishu_log, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"date": today, "time": datetime.now().strftime("%H:%M")},
-                                    ensure_ascii=False) + "\n")
+                f.write(json.dumps({
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "time": datetime.now().strftime("%H:%M"),
+                    "count": len(top5),
+                    "session_ids": list(pushed_sids_this_run),
+                    "titles": [r["title"][:50] for r in top5],
+                }, ensure_ascii=False) + "\n")
+            # 更新 verdict cache 标记
+            verdict_dir = CFG["cache"]["verdict_dir"]
+            _mark_verdicts_feishu_pushed(verdict_dir, pushed_sids_this_run)
         else:
             print(f"  feishu: 推送失败 (exit={proc.returncode}) {proc.stderr[:200]}",
                   file=sys.stderr)

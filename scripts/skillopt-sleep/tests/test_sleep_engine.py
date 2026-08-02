@@ -344,7 +344,7 @@ class TestMultiObjectiveAndPrefs(unittest.TestCase):
 
         class CapBackend(CliBackend):
             name = "cap"
-            def _call(self, prompt, *, max_tokens=1024):
+            def _call(self, prompt, *, max_tokens=1024, response_format=None):
                 captured["prompt"] = prompt
                 return "[]"
 

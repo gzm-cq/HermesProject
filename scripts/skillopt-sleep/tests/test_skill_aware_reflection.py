@@ -13,14 +13,6 @@ Covers:
 """
 from __future__ import annotations
 
-import os
-import sys
-
-# Ensure THIS repo's skillopt is imported (not an installed copy) when the
-# file is run directly: script mode puts tests/ on sys.path, not the repo root.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 def _reference_old_apply(skill: str, edit: dict) -> str:
     """Reproduce the ORIGINAL slow-update-only edit behavior inline."""
     SU_START = "<!-- SLOW_UPDATE_START -->"

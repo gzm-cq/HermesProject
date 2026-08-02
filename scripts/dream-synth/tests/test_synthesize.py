@@ -3,15 +3,7 @@ import json
 import os
 from unittest.mock import patch, MagicMock
 
-
-def _make_session(sid="s1", title="测试对话"):
-    body = ("这是一段测试对话内容。用户说什么，助手回应什么。" * 100)
-    return {
-        "id": sid,
-        "title": title,
-        "text": f"[用户] {title}相关的讨论\n\n[助手] 好的，关于{title}，我们来分析一下。\n\n" + body,
-        "text_len": 3000 + len(title) * 2,
-    }
+from tests._helpers import make_session as _make_session
 
 
 def _mock_sag_ok():

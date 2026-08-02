@@ -11,6 +11,34 @@ HORIZONTAL_GAP = 60      # 同层节点水平间距
 VERTICAL_GAP = 120       # 层间垂直间距
 LAYER_PADDING = 40       # 画布四边内边距
 
+# 动态间距常量（按节点复杂度）
+SIMPLE_GAP = 200         # ≤5 节点
+SIMPLE_LAYER_GAP = 150
+SIMPLE_CORRIDOR = 60
+MEDIUM_GAP = 280         # 6-10 节点
+MEDIUM_LAYER_GAP = 200
+MEDIUM_CORRIDOR = 80
+COMPLEX_GAP = 350        # >10 节点
+COMPLEX_LAYER_GAP = 250
+COMPLEX_CORRIDOR = 100
+
+
+def _get_spacing_by_complexity(node_count):
+    """
+    根据节点复杂度自动计算间距。
+
+    参数:
+        node_count: 节点总数
+    返回:
+        (gap, layer_gap, corridor) 三元组
+    """
+    if node_count <= 5:
+        return (SIMPLE_GAP, SIMPLE_LAYER_GAP, SIMPLE_CORRIDOR)
+    elif node_count <= 10:
+        return (MEDIUM_GAP, MEDIUM_LAYER_GAP, MEDIUM_CORRIDOR)
+    else:
+        return (COMPLEX_GAP, COMPLEX_LAYER_GAP, COMPLEX_CORRIDOR)
+
 
 def layout_plan(nodes, edges, direction="vertical", **kwargs):
     """
@@ -23,12 +51,28 @@ def layout_plan(nodes, edges, direction="vertical", **kwargs):
         gap: 同层节点间距 (默认 60)
         layer_gap: 层间间距 (默认 120)
         padding: 画布内边距 (默认 40)
+        gap_auto: 是否根据节点数自动计算间距 (默认 True)
+        corridor_gap: 路由走廊额外间距 (默认 0，gap_auto 模式自动设置)
     返回:
         {"nodes": [{id, label, x, y, w, h, ...}], "width": N, "height": N,
          "has_cycle": bool, "back_edges": [...], "edge_routes": [...]}
     """
-    gap = kwargs.get("gap", HORIZONTAL_GAP)
-    layer_gap = kwargs.get("layer_gap", VERTICAL_GAP)
+    gap_auto = kwargs.get("gap_auto", True)
+    user_gap = kwargs.get("gap")
+    user_layer_gap = kwargs.get("layer_gap")
+    user_corridor = kwargs.get("corridor_gap", 0)
+
+    # 自动间距计算
+    if gap_auto and user_gap is None and user_layer_gap is None:
+        auto_gap, auto_layer_gap, auto_corridor = _get_spacing_by_complexity(len(nodes))
+        gap = auto_gap
+        layer_gap = auto_layer_gap
+        corridor_gap = auto_corridor if user_corridor == 0 else user_corridor
+    else:
+        gap = user_gap if user_gap is not None else HORIZONTAL_GAP
+        layer_gap = user_layer_gap if user_layer_gap is not None else VERTICAL_GAP
+        corridor_gap = user_corridor
+
     padding = kwargs.get("padding", LAYER_PADDING)
     # 为缺失尺寸的节点填充默认值
     resolved = []
@@ -41,7 +85,11 @@ def layout_plan(nodes, edges, direction="vertical", **kwargs):
     # 分离孤立节点（不参与任何边的节点）
     isolated_nodes, connected_nodes = _separate_isolated(resolved, edges)
 
+    # 预构建 node_map，供多个函数复用
+    node_map = {n.get("id"): n for n in connected_nodes if n.get("id")}
+
     topo_order = []
+    predecessors = {}
     if connected_nodes:
         # 构建邻接关系（仅连通节点）
         adj, in_degree = _build_adjacency(connected_nodes, edges)
@@ -49,8 +97,13 @@ def layout_plan(nodes, edges, direction="vertical", **kwargs):
         # 拓扑排序
         topo_order, has_cycle = _topological_sort(adj, in_degree, connected_nodes)
 
-        # 层级分配
-        layers = _assign_layers(topo_order, adj, connected_nodes)
+        # 构建前驱关系（供 _assign_layers 和 _reduce_crossings 共用）
+        for pred_id, targets in adj.items():
+            for tgt in targets:
+                predecessors.setdefault(tgt, []).append(pred_id)
+
+        # 层级分配（复用预构建的 node_map 和 predecessors）
+        layers = _assign_layers(topo_order, adj, node_map, predecessors)
 
         # 自动检测布局方向
         if direction == "auto":
@@ -61,9 +114,10 @@ def layout_plan(nodes, edges, direction="vertical", **kwargs):
             width = max(layer_counts.values()) if layer_counts else 1
             direction = "horizontal" if width > depth else "vertical"
 
-        # 坐标计算（仅连通节点）
-        positioned = _compute_coordinates(layers, connected_nodes, adj, direction,
-                                          gap=gap, layer_gap=layer_gap, padding=padding)
+        # 坐标计算（仅连通节点，复用预构建的 node_map 和 predecessors）
+        positioned = _compute_coordinates(layers, node_map, predecessors, adj, direction,
+                                          gap=gap, layer_gap=layer_gap, padding=padding,
+                                          corridor_gap=corridor_gap)
     else:
         positioned = []
         has_cycle = False
@@ -194,9 +248,10 @@ def _place_isolated(positioned, isolated_nodes, connected_nodes,
         x = padding
         y = padding + label_height
         for n in isolated_nodes:
-            n["x"] = int(x)
-            n["y"] = int(y)
-            positioned.append(n)
+            node = dict(n)
+            node["x"] = int(x)
+            node["y"] = int(y)
+            positioned.append(node)
             if is_vertical:
                 x += n.get("w", DEFAULT_NODE_W) + gap
             else:
@@ -271,20 +326,11 @@ def _compute_edge_routes(nodes, edges):
     return routes
 
 
-def _assign_layers(topo_order, adj, nodes):
-    """最长路径层级分配。返回 {node_id: layer_index (0-based)}"""
-    node_map = {}
-    for n in nodes:
-        nid = n.get("id")
-        if nid:
-            node_map[nid] = n
+def _assign_layers(topo_order, adj, node_map, predecessors):
+    """最长路径层级分配。返回 {node_id: layer_index (0-based)}
 
-    # 构建反向邻接表（前驱关系） O(V+E)
-    predecessors = {}
-    for pred_id, targets in adj.items():
-        for tgt in targets:
-            predecessors.setdefault(tgt, []).append(pred_id)
-
+    复用外部预构建的 node_map 和 predecessors，避免重复 O(V+E) 构建。
+    """
     layers = {}
     for nid in topo_order:
         if nid not in node_map:
@@ -297,23 +343,20 @@ def _assign_layers(topo_order, adj, nodes):
     return layers
 
 
-def _compute_coordinates(layers, nodes, adj, direction,
+def _compute_coordinates(layers, node_map, predecessors, adj, direction,
                          gap=HORIZONTAL_GAP, layer_gap=VERTICAL_GAP,
-                         padding=LAYER_PADDING):
-    """根据层级分配计算具体 x/y 坐标，按实际节点尺寸压缩层间距"""
-    node_map = {}
-    for n in nodes:
-        nid = n.get("id")
-        if nid:
-            node_map[nid] = dict(n)
+                         padding=LAYER_PADDING, corridor_gap=0):
+    """根据层级分配计算具体 x/y 坐标，按实际节点尺寸压缩层间距
 
+    复用外部预构建的 node_map 和 predecessors，避免重复 O(V+E) 构建。
+    """
     # 按层级分组
     layer_groups = {}
     for nid, layer in layers.items():
         layer_groups.setdefault(layer, []).append(nid)
 
-    # 重心启发式层内排序（减少边交叉）
-    layer_groups = _reduce_crossings(layer_groups, adj)
+    # 重心启发式层内排序（减少边交叉），复用预构建的 predecessors
+    layer_groups = _reduce_crossings(layer_groups, adj, predecessors)
 
     positioned = []
     is_vertical = direction in ("vertical", "v")
@@ -347,7 +390,7 @@ def _compute_coordinates(layers, nodes, adj, direction,
                 node["y"] = int(y_cursor)
                 positioned.append(node)
                 x_cursor += node.get("w", DEFAULT_NODE_W) + gap
-            y_cursor += layer_max_h[layer_id] + layer_gap
+            y_cursor += layer_max_h[layer_id] + layer_gap + corridor_gap
     else:
         # 水平布局：列宽取决于该层最大节点宽度，列间距 = 最大宽 + layer_gap
         layer_max_w = {}
@@ -376,73 +419,70 @@ def _compute_coordinates(layers, nodes, adj, direction,
                 node["y"] = int(y_cursor)
                 positioned.append(node)
                 y_cursor += node.get("h", DEFAULT_NODE_H) + gap
-            x_cursor += layer_max_w[layer_id] + layer_gap
+            x_cursor += layer_max_w[layer_id] + layer_gap + corridor_gap
 
     return positioned
 
 
 # ===== 重心启发式层内排序 =====
 
-def _reduce_crossings(layer_groups, adj):
+def _reduce_crossings(layer_groups, adj, predecessors):
     """
     重心启发式层内排序：多层扫描（2 前向 + 1 反向）减少边交叉。
 
     对每个节点，计算其相邻层连接节点的平均位置索引（重心），
     按重心值排序使相连节点尽量对齐，从而减少边交叉。
 
-    参数:
-        layer_groups: {layer_id: [nid, ...]}
-        adj: {nid: [target_nid, ...]} 邻接表
-    返回:
-        {layer_id: [nid, ...]} 排序后的层分组
+    复用外部预构建的 predecessors，避免重复 O(V+E) 构建。
     """
     groups = {lid: list(nids) for lid, nids in layer_groups.items()}
     if len(groups) <= 1:
         return groups
 
-    # 构建反向邻接表（前驱关系）
-    pred = {}  # {nid: [predecessor_ids]}
-    for src, targets in adj.items():
-        for tgt in targets:
-            pred.setdefault(tgt, []).append(src)
-
     # 层 ID 有序列表
     sorted_layers = sorted(groups.keys())
-    max_layer = sorted_layers[-1]
 
-    # 辅助：获取节点在层中的位置索引
+    # 预建位置索引 {layer: {nid: idx}}，增量更新避免每次 .index() O(n)
+    pos_index = {lid: {nid: i for i, nid in enumerate(nids)}
+                 for lid, nids in groups.items()}
+
     def _pos(nid, layer):
-        try:
-            return groups[layer].index(nid)
-        except ValueError:
-            return 0
+        return pos_index.get(layer, {}).get(nid, 0)
+
+    def _refresh_layer_index(lid):
+        """层 lid 排序后刷新位置索引"""
+        pos_index[lid] = {nid: i for i, nid in enumerate(groups[lid])}
 
     # 前向扫描：按前驱重心排序（从上到下）
     for _ in range(2):
         for lid in sorted_layers[1:]:
-            _sort_layer_by_barycenter(groups, lid, lid - 1, pred, _pos)
+            _sort_layer_by_barycenter(groups, lid, lid - 1, predecessors, _pos)
+            _refresh_layer_index(lid)
 
     # 反向扫描：按后继重心排序（从下到上）
     for lid in reversed(sorted_layers[:-1]):
         _sort_layer_by_barycenter(groups, lid, lid + 1, adj, _pos)
+        _refresh_layer_index(lid)
 
     return groups
 
 
 def _sort_layer_by_barycenter(groups, lid, neighbor_lid, conn_map, pos_fn):
-    """按相邻层连接节点的重心值对层 lid 排序"""
+    """按相邻层连接节点的重心值对层 lid 排序（使用预建的 pos_fn，无 O(n) 查找）"""
     if lid not in groups or neighbor_lid not in groups:
         return
+    neighbor_set = set(groups.get(neighbor_lid, ()))
+    # 预取当前层原始 idx（兜底用），避免重复查询当前层 idx
     barycenters = {}
-    for nid in groups[lid]:
-        connected = conn_map.get(nid, [])
-        # 只考虑在相邻层中的节点
-        neighbors = [c for c in connected if c in groups.get(neighbor_lid, [])]
+    current_layer = groups[lid]
+    for idx, nid in enumerate(current_layer):
+        connected = conn_map.get(nid, ())
+        # 只考虑在相邻层中的节点（用 set 做 O(1) 成员判断）
+        neighbors = [c for c in connected if c in neighbor_set]
         if neighbors:
             avg = sum(pos_fn(c, neighbor_lid) for c in neighbors) / len(neighbors)
         else:
             # 无连接节点：取原始位置索引
-            avg = pos_fn(nid, lid)
+            avg = idx
         barycenters[nid] = avg
-    groups[lid].sort(key=lambda nid: barycenters.get(nid, 0))
-
+    current_layer.sort(key=lambda nid: barycenters.get(nid, 0))

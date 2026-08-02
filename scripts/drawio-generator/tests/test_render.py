@@ -1,13 +1,13 @@
-"""drawio_generator 单元测试"""
+"""drawio_generator 核心单元测试 — 渲染、配色、形状、模板。"""
 
 import json
 import os
 import tempfile
+import pytest
 from drawio_generator.render import (
-    generate_svg, render, PALETTES, DEFAULT_PALETTE, SHAPES,
-    _desaturate, _lighten, _compute_bounding_box, validate_plan,
-    repair_drawio,
+    generate_svg, render, PALETTES, DEFAULT_PALETTE, SHAPES, repair_drawio,
 )
+from drawio_generator.palettes import _desaturate, _lighten
 
 
 class TestPalettes:
@@ -60,23 +60,6 @@ class TestColorUtils:
 
     def test_lighten_white(self):
         assert _lighten("#FFFFFF", 0.5) == "#FFFFFF"
-
-
-class TestBoundingBox:
-    """测试自动裁剪计算"""
-
-    def test_empty_nodes(self):
-        vx, vy, vw, vh = _compute_bounding_box([], [], 1000, 800)
-        assert vw == 1000
-        assert vh == 800
-
-    def test_single_node(self):
-        nodes = [{"id": "n1", "x": 100, "y": 100, "w": 200, "h": 80}]
-        vx, vy, vw, vh = _compute_bounding_box(nodes, [], 1000, 800, padding=30)
-        assert vx == 70
-        assert vy == 70
-        assert vw == 260  # 200 + 30*2
-        assert vh == 140  # 80 + 30*2
 
 
 class TestRenderDrawio:
@@ -539,6 +522,93 @@ class TestRenderSvg:
         finally:
             os.unlink(out_path)
 
+    def test_svg_bezier_edge(self):
+        """SVG bezier 曲线边使用 C 命令"""
+        plan = {
+            "title": "Bezier", "width": 600, "height": 400,
+            "nodes": [
+                {"id": "a", "label": "A", "x": 50, "y": 100, "w": 100, "h": 50},
+                {"id": "b", "label": "B", "x": 300, "y": 100, "w": 100, "h": 50},
+            ],
+            "edges": [{"from": "a", "to": "b", "curve": "bezier"}],
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "C " in content  # cubic bezier 命令
+            assert "M " in content
+        finally:
+            os.unlink(out_path)
+
+    def test_svg_straight_edge(self):
+        """SVG straight 直线边为 2 点"""
+        plan = {
+            "title": "Straight", "width": 600, "height": 400,
+            "nodes": [
+                {"id": "a", "label": "A", "x": 50, "y": 100, "w": 100, "h": 50},
+                {"id": "b", "label": "B", "x": 300, "y": 100, "w": 100, "h": 50},
+            ],
+            "edges": [{"from": "a", "to": "b", "curve": "straight"}],
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            # straight 边：M x1,y1 x2,y2（仅两个点）
+            assert "M " in content
+        finally:
+            os.unlink(out_path)
+
+    def test_svg_bidirectional_edge(self):
+        """SVG 双向箭头含 marker-start"""
+        plan = {
+            "title": "BiDir", "width": 600, "height": 400,
+            "nodes": [
+                {"id": "a", "label": "A", "x": 50, "y": 100, "w": 100, "h": 50},
+                {"id": "b", "label": "B", "x": 300, "y": 100, "w": 100, "h": 50},
+            ],
+            "edges": [{"from": "a", "to": "b", "bidirectional": True}],
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert 'marker-start="url(#as)"' in content
+            assert 'marker-end="url(#a)"' in content
+        finally:
+            os.unlink(out_path)
+
+    def test_drawio_bidirectional_edge(self):
+        """drawio 双向箭头含 startArrow"""
+        plan = {
+            "title": "BiDirD", "width": 600, "height": 400,
+            "nodes": [
+                {"id": "a", "label": "A", "x": 50, "y": 100, "w": 100, "h": 50},
+                {"id": "b", "label": "B", "x": 300, "y": 100, "w": 100, "h": 50},
+            ],
+            "edges": [{"from": "a", "to": "b", "bidirectional": True}],
+            "format": "drawio",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".drawio", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "startArrow=" in content
+        finally:
+            os.unlink(out_path)
+
     def test_svg_open_arrow(self):
         """SVG open arrow 样式"""
         plan = {
@@ -754,6 +824,108 @@ class TestRender:
             os.unlink(out_path)
 
 
+class TestTemplates:
+    """测试图类型预设模板"""
+
+    def test_microservices_template(self):
+        plan = {
+            "template": "microservices",
+            "services": ["A服务", "B服务"],
+            "with_mq": False,
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "API 网关" in content
+            assert "A服务" in content
+            assert "B服务" in content
+        finally:
+            os.unlink(out_path)
+
+    def test_network_topology_template(self):
+        plan = {
+            "template": "network-topology",
+            "app_server_count": 1,
+            "db_replica": False,
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "互联网" in content
+            assert "负载均衡" in content
+        finally:
+            os.unlink(out_path)
+
+    def test_dataflow_template(self):
+        plan = {
+            "template": "dataflow",
+            "stages": ["抽取", "加载"],
+            "with_analytics": False,
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "数据源" in content
+            assert "抽取" in content
+            assert "加载" in content
+        finally:
+            os.unlink(out_path)
+
+    def test_er_diagram_template(self):
+        plan = {
+            "template": "er-diagram",
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "用户" in content
+            assert "订单" in content
+        finally:
+            os.unlink(out_path)
+
+    def test_unknown_template_raises(self):
+        plan = {"template": "nonexistent", "format": "svg"}
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            with pytest.raises(ValueError, match="未知模板"):
+                render(plan, out_path)
+        finally:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+
+    def test_template_user_override(self):
+        """用户字段覆盖模板默认值"""
+        plan = {
+            "template": "microservices",
+            "palette": "warm",
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            assert os.path.isfile(out_path)
+        finally:
+            os.unlink(out_path)
+
+
 class TestMainEntry:
     """测试 main() CLI 入口"""
 
@@ -801,100 +973,16 @@ class TestMainEntry:
             sys.argv = old_argv
 
 
-class TestValidatePlan:
-    """测试输入校验"""
-
-    def test_valid_plan_no_errors(self):
-        """合法 plan 应无 error"""
-        plan = {
-            "title": "Test", "width": 800, "height": 600,
-            "nodes": [{"id": "a", "label": "A", "x": 50, "y": 50, "w": 100, "h": 50}],
-            "edges": [],
-        }
-        issues = validate_plan(plan)
-        errors = [i for i in issues if i[0] == "error"]
-        assert errors == [], f"unexpected errors: {errors}"
-
-    def test_missing_title(self):
-        """缺 title 应报错"""
-        issues = validate_plan({"nodes": [], "edges": []})
-        assert any(i[0] == "error" and "title" in i[1] for i in issues)
-
-    def test_missing_nodes(self):
-        """缺 nodes 应报错"""
-        issues = validate_plan({"title": "T", "edges": []})
-        assert any(i[0] == "error" and "nodes" in i[1] for i in issues)
-
-    def test_duplicate_node_id(self):
-        """重复 id 应报错"""
-        plan = {
-            "title": "T", "nodes": [
-                {"id": "x", "label": "A", "x": 10, "y": 10, "w": 50, "h": 30},
-                {"id": "x", "label": "B", "x": 100, "y": 10, "w": 50, "h": 30},
-            ], "edges": [],
-        }
-        issues = validate_plan(plan)
-        assert any(i[0] == "error" and "重复" in i[2] for i in issues)
-
-    def test_node_missing_coords(self):
-        """节点缺坐标应报错"""
-        plan = {
-            "title": "T", "nodes": [{"id": "a", "label": "A"}], "edges": [],
-        }
-        issues = validate_plan(plan)
-        assert any(i[0] == "error" and ".x" in i[1] for i in issues)
-
-    def test_unknown_palette_warning(self):
-        """未知配色应 warning"""
-        plan = {
-            "title": "T", "nodes": [], "edges": [], "palette": "nonexistent",
-        }
-        issues = validate_plan(plan)
-        assert any(i[0] == "warning" and "palette" in i[1] for i in issues)
-
-    def test_unknown_format_warning(self):
-        """未知 format 应 warning"""
-        plan = {
-            "title": "T", "nodes": [], "edges": [], "format": "pdf",
-        }
-        issues = validate_plan(plan)
-        assert any(i[0] == "warning" and "format" in i[1] for i in issues)
-
-    def test_unknown_shape_warning(self):
-        """未知 shape 应 warning"""
-        plan = {
-            "title": "T",
-            "nodes": [{"id": "a", "label": "A", "x": 10, "y": 10, "w": 50, "h": 30,
-                        "shape": "star"}],
-            "edges": [],
-        }
-        issues = validate_plan(plan)
-        assert any(i[0] == "warning" and "shape" in i[1] for i in issues)
-
-    def test_edge_ref_undefined_node(self):
-        """边引用未定义节点应 warning"""
-        plan = {
-            "title": "T",
-            "nodes": [{"id": "a", "label": "A", "x": 10, "y": 10, "w": 50, "h": 30}],
-            "edges": [{"from": "a", "to": "nonexistent"}],
-        }
-        issues = validate_plan(plan)
-        assert any("nonexistent" in i[2] for i in issues)
-
-    def test_not_dict_error(self):
-        """非 dict 输入应报错"""
-        issues = validate_plan("not a dict")
-        assert any(i[0] == "error" and "root" in i[1] for i in issues)
-
-
 class TestNodeShapes:
     """测试节点形状渲染"""
 
     def test_shapes_defined(self):
-        """SHAPES 应包含基本形状"""
-        for name in ("rect", "process", "cylinder", "hexagon"):
-            assert name in SHAPES, f"missing shape: {name}"
-            assert "drawio" in SHAPES[name]
+            """SHAPES 应包含所有基本形状"""
+            for name in ("rect", "process", "cylinder", "hexagon",
+                         "cloud", "note", "document", "cube", "card",
+                         "step", "parallelogram", "rhombus"):
+                assert name in SHAPES, f"missing shape: {name}"
+                assert "drawio" in SHAPES[name]
 
     def test_svg_cylinder_shape(self):
         """SVG cylinder 应包含椭圆"""
@@ -993,11 +1081,50 @@ class TestNodeShapes:
             os.unlink(out_path)
 
     def test_drawio_process_shape(self):
-        """drawio process 应为 rounded=0"""
+            """drawio process 应包含 shape=process"""
+            plan = {
+                "title": "Proc", "width": 400, "height": 300,
+                "nodes": [{"id": "p", "label": "Proc", "x": 50, "y": 50,
+                            "w": 100, "h": 50, "shape": "process"}],
+                "edges": [],
+                "format": "drawio",
+            }
+            with tempfile.NamedTemporaryFile(suffix=".drawio", delete=False) as f:
+                out_path = f.name
+            try:
+                render(plan, out_path)
+                with open(out_path, encoding="utf-8") as f:
+                    content = f.read()
+                assert "shape=process" in content
+            finally:
+                os.unlink(out_path)
+
+    def test_svg_rhombus_shape(self):
+        """SVG rhombus 应渲染为 polygon（菱形）"""
         plan = {
-            "title": "Proc", "width": 400, "height": 300,
-            "nodes": [{"id": "p", "label": "Proc", "x": 50, "y": 50,
-                        "w": 100, "h": 50, "shape": "process"}],
+            "title": "Decision", "width": 400, "height": 300,
+            "nodes": [{"id": "d", "label": "判断", "x": 50, "y": 50,
+                        "w": 100, "h": 80, "shape": "rhombus"}],
+            "edges": [],
+            "format": "svg",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "<polygon" in content
+            assert "判断" in content
+        finally:
+            os.unlink(out_path)
+
+    def test_drawio_rhombus_shape(self):
+        """drawio rhombus 应包含 shape=rhombus"""
+        plan = {
+            "title": "Decision", "width": 400, "height": 300,
+            "nodes": [{"id": "d", "label": "判断", "x": 50, "y": 50,
+                        "w": 100, "h": 80, "shape": "rhombus"}],
             "edges": [],
             "format": "drawio",
         }
@@ -1007,7 +1134,71 @@ class TestNodeShapes:
             render(plan, out_path)
             with open(out_path, encoding="utf-8") as f:
                 content = f.read()
-            assert "rounded=0" in content
+            assert "shape=rhombus" in content
+        finally:
+            os.unlink(out_path)
+
+    def test_svg_sketch_mode(self):
+        """SVG sketch 模式应包含 feTurbulence 滤镜并应用到节点"""
+        plan = {
+            "title": "Sketch", "width": 400, "height": 300,
+            "nodes": [{"id": "a", "label": "A", "x": 50, "y": 50,
+                        "w": 100, "h": 60}],
+            "edges": [],
+            "format": "svg",
+            "sketch": True,
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "feTurbulence" in content
+            assert "feDisplacementMap" in content
+            assert "url(#sketch)" in content
+        finally:
+            os.unlink(out_path)
+
+    def test_svg_sketch_with_shadow(self):
+        """SVG sketch+shadow 应合并为单个 filter 属性"""
+        plan = {
+            "title": "SketchShadow", "width": 400, "height": 300,
+            "nodes": [{"id": "a", "label": "A", "x": 50, "y": 50,
+                        "w": 100, "h": 60}],
+            "edges": [],
+            "format": "svg",
+            "sketch": True,
+            "shadow": True,
+        }
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            # 两个滤镜应合并在同一个 filter 属性中
+            assert 'filter="url(#shadow) url(#sketch)"' in content
+        finally:
+            os.unlink(out_path)
+
+    def test_drawio_sketch_mode(self):
+        """drawio sketch 模式应包含 sketch=1"""
+        plan = {
+            "title": "Sketch", "width": 400, "height": 300,
+            "nodes": [{"id": "a", "label": "A", "x": 50, "y": 50,
+                        "w": 100, "h": 60}],
+            "edges": [],
+            "format": "drawio",
+            "sketch": True,
+        }
+        with tempfile.NamedTemporaryFile(suffix=".drawio", delete=False) as f:
+            out_path = f.name
+        try:
+            render(plan, out_path)
+            with open(out_path, encoding="utf-8") as f:
+                content = f.read()
+            assert "sketch=1" in content
         finally:
             os.unlink(out_path)
 

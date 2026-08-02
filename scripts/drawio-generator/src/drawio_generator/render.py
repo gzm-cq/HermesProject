@@ -5,21 +5,21 @@ import argparse
 import json
 import sys
 import webbrowser
-import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as _html_escape
 from pathlib import Path
-from xml.sax.saxutils import escape
 
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-from .palettes import (PALETTES, DEFAULT_PALETTE, ARROW_STYLES,
-                       PALETTE_INFO,
-                       _hex_to_rgb, _rgb_to_hex, _desaturate, _lighten,
+from .palettes import (PALETTES, DEFAULT_PALETTE, PALETTE_INFO,
                        _resolve_color, _get_arrow_style, _apply_grayscale)
 from .shapes import SHAPES, _render_svg_shape
 from .validator import validate_plan
-from .geometry import _compute_bounding_box, _get_node_by_id
 from .svg_renderer import _render_svg
 from .drawio_renderer import _render_drawio, repair_drawio
+from .templates import apply_template, TEMPLATES
+from .diagram_presets import apply_diagram_type, PRESETS
+from .style_presets import load_preset as _load_style_preset
+from .legend import build_legend
 
 VERSION = "1.2.0"
 
@@ -33,9 +33,13 @@ def render(plan_dict, output_path):
     可选:
         layers, palette, format ("drawio"|"svg"), show_emoji,
         font_family, font_size, stroke_width, arrow_style, grayscale,
-        gradient, shadow, paper_mode, presentation, auto_fit
+        gradient, shadow, paper_mode, presentation, auto_fit,
+        template, diagram_type, layout_engine, flow_animation, edge_style
     """
-    plan = plan_dict
+    # 注意：本函数会原地修改 plan_dict（为节点补全坐标等）。
+    # 调用方如需保留原始数据，请自行传入 deepcopy。
+    plan = apply_template(plan_dict)
+    plan = apply_diagram_type(plan)
     nodes = plan.get("nodes", [])
     edges = plan.get("edges", [])
     auto_fit = plan.get("auto_fit", True)
@@ -45,27 +49,33 @@ def render(plan_dict, output_path):
         n.get("x") is None or n.get("y") is None for n in nodes
     )
     if auto_layout and nodes:
-        from .layout import layout_plan
+        layout_engine = plan.get("layout_engine", "native")
         direction = plan.get("layout_direction", "vertical")
-        layout_kw = {"direction": direction}
-        for k in ("gap", "layer_gap", "padding"):
-            if k in plan:
-                layout_kw[k] = plan[k]
-        layout_result = layout_plan(nodes, edges, **layout_kw)
+        if layout_engine == "graphviz":
+            from .graphviz_layout import layout_plan_graphviz
+            layout_kw = {"direction": direction}
+            for k in ("padding", "nodesep", "ranksep"):
+                if k in plan:
+                    layout_kw[k] = plan[k]
+            layout_result = layout_plan_graphviz(nodes, edges, **layout_kw)
+        else:
+            from .layout import layout_plan
+            layout_kw = {"direction": direction}
+            for k in ("gap", "layer_gap", "padding"):
+                if k in plan:
+                    layout_kw[k] = plan[k]
+            layout_result = layout_plan(nodes, edges, **layout_kw)
         nodes = layout_result["nodes"]
-        # 将计算结果写回 plan_dict 使后续校验通过
-        plan_dict["nodes"] = nodes
+        plan["nodes"] = nodes
         if auto_fit:
-            plan_dict["width"] = layout_result["width"]
-            plan_dict["height"] = layout_result["height"]
+            plan["width"] = layout_result["width"]
+            plan["height"] = layout_result["height"]
         if layout_result.get("has_cycle"):
             print("[WARN]  layout: 检测到环路依赖，已自动处理", file=sys.stderr)
-        # 标记回边（反馈边），渲染层使用不同样式
         back_edges = set(tuple(be) for be in layout_result.get("back_edges", []))
         for edge in edges:
             if (edge.get("from", ""), edge.get("to", "")) in back_edges:
                 edge["back_edge"] = True
-        # 复用预计算边路径，渲染端不再重复计算
         route_map = {(r["from"], r["to"]): r["points"]
                       for r in layout_result.get("edge_routes", [])}
         for edge in edges:
@@ -73,8 +83,58 @@ def render(plan_dict, output_path):
             if key in route_map:
                 edge["points"] = route_map[key]
 
+    # 容器处理（独立于 auto_layout，有坐标即可）
+    layers = plan.get("layers", [])
+    has_group = any(n.get("group") for n in nodes)
+    containers = None
+    node_parent_map = None
+    if has_group:
+        from .containers import (
+            parse_group_tree, compute_container_boxes,
+            assign_group_colors, compute_node_offsets,
+            generate_container_cells, apply_group_colors_to_nodes,
+            GROUP_COLOR_CYCLE,
+        )
+        raw_palette = plan.get("palette", "academic")
+        if isinstance(raw_palette, str):
+            container_palette = dict(PALETTES.get(raw_palette, PALETTES["academic"]))
+        else:
+            container_palette = dict(raw_palette)
+            for k, v in PALETTES["academic"].items():
+                container_palette.setdefault(k, v)
+
+        tree = parse_group_tree(nodes)
+        if tree["ordered"]:
+            container_boxes = compute_container_boxes(tree, nodes, padding=24)
+            group_colors = assign_group_colors(tree, container_palette)
+            nodes = apply_group_colors_to_nodes(nodes, tree, group_colors, container_palette)
+            plan["nodes"] = nodes
+
+            nid_counter = 100 + 1 + len(layers) * 2
+            nid_counter += len(tree["ordered"]) * 2
+            cells, _, path_cid_map = generate_container_cells(
+                tree, container_boxes, group_colors, container_palette, nid_counter
+            )
+
+            offsets = compute_node_offsets(tree, container_boxes)
+            node_parent_map = {}
+            for n in nodes:
+                nid = n.get("id", "")
+                if nid in offsets:
+                    ox, oy = offsets[nid]
+                    nx = n.get("x")
+                    ny = n.get("y")
+                    if nx is not None and ny is not None:
+                        n["x"] = int(nx - ox)
+                        n["y"] = int(ny - oy)
+                    path = tree["gpath"].get(nid)
+                    if path and path in path_cid_map:
+                        node_parent_map[nid] = path_cid_map[path]
+
+            containers = cells
+
     # 输入校验
-    issues = validate_plan(plan_dict)
+    issues = validate_plan(plan)
     has_error = False
     for typ, field, msg in issues:
         if typ == "error":
@@ -88,7 +148,6 @@ def render(plan_dict, output_path):
     title = plan.get("title", "架构图")
     width = plan.get("width", 1000)
     height = plan.get("height", 800)
-    layers = plan.get("layers", [])
 
     # 输出格式：文件扩展名决定优先级最高，最后判定
     fmt = plan.get("format", "drawio")
@@ -97,19 +156,22 @@ def render(plan_dict, output_path):
     if paper_mode:
         fmt = "svg"
     if presentation:
-        pass  # 仅影响 gradient/shadow/arrow 等
+        pass
 
-    # 文件扩展名优先于所有 JSON 字段
     ext = Path(output_path).suffix.lower()
     if ext == ".svg":
         fmt = "svg"
     elif ext == ".drawio":
         fmt = "drawio"
 
-    # 解析配色
+    # 解析配色（先查 style_presets，再查 PALETTES）
     raw_palette = plan.get("palette", "academic")
     if isinstance(raw_palette, str):
-        colors = dict(PALETTES.get(raw_palette, PALETTES["academic"]))
+        preset_colors = _load_style_preset(raw_palette)
+        if preset_colors is not None:
+            colors = dict(preset_colors)
+        else:
+            colors = dict(PALETTES.get(raw_palette, PALETTES["academic"]))
     else:
         colors = dict(raw_palette)
         for k, v in PALETTES["academic"].items():
@@ -130,6 +192,8 @@ def render(plan_dict, output_path):
     gradient = plan.get("gradient", False)
     shadow = plan.get("shadow", False)
     show_emoji = plan.get("show_emoji", True)
+    flow_animation = plan.get("flow_animation", False)
+    edge_style = plan.get("edge_style", "orthogonal")
 
     if paper_mode:
         font_family = font_family or "Times New Roman, serif"
@@ -144,21 +208,41 @@ def render(plan_dict, output_path):
         gradient = gradient if "gradient" in plan else True
         shadow = shadow if "shadow" in plan else True
 
+    # auto_legend: 自动图例（颜色>=3才生成）
+    layers = plan.get("layers", [])
+    if plan.get("auto_legend", False):
+        legend = build_legend(plan, nodes, edges, colors,
+                              position=plan.get("legend_position", "bottom_right"))
+        if legend["nodes"]:
+            layers = list(layers) + legend["layers"]
+            nodes = list(nodes) + legend["nodes"]
+            width = max(width, plan.get("width", 1000) + legend["width"])
+            height = max(height, plan.get("height", 800) + legend["height"])
+
+    # sketch 手绘风格：轻微抖动 + 圆角加大 + 线宽变化
+    sketch_mode = plan.get("sketch", False)
+    if sketch_mode:
+        stroke_width = (stroke_width if stroke_width is not None else 1.5) * 1.2
+        # 给节点增加 sketch style 属性（drawio_renderer / svg_renderer 识别）
+        for n in nodes:
+            n["_sketch"] = True
+
     if fmt == "svg":
         _render_svg(width, height, title, nodes, edges, layers, colors,
                      output_path, font_family, font_size, stroke_width,
-                     arrow_style, gradient, shadow, auto_fit)
+                     arrow_style, gradient, shadow, auto_fit, sketch_mode,
+                     flow_animation=flow_animation)
     else:
         _render_drawio(width, height, title, nodes, edges, layers, colors,
                         output_path, stroke_width, arrow_style,
-                        font_family, font_size, gradient, shadow, show_emoji)
+                        font_family, font_size, gradient, shadow, show_emoji,
+                        containers=containers, node_parent_map=node_parent_map,
+                        flow_animation=flow_animation, edge_style=edge_style,
+                        sketch_mode=sketch_mode)
 
 
 def generate_svg(plan_json, output_path):
-    """
-    [兼容别名] 从结构化布局 JSON 生成矢量图。
-    内部调用 render()，支持 dict 或 JSON 字符串输入。
-    """
+    """[兼容别名] 从结构化布局 JSON 生成矢量图。"""
     plan = plan_json if isinstance(plan_json, dict) else json.loads(plan_json)
     render(plan, output_path)
 
@@ -202,18 +286,15 @@ a:hover {{ text-decoration: underline; }}
 
 # ===== CLI 入口 =====
 def _open_in_browser(file_path):
-    """在默认浏览器中打开生成的 SVG/drawio 文件"""
     abs_path = Path(file_path).resolve()
     webbrowser.open(f"file://{abs_path}")
 
 
 def _serve_http(output_path, port):
-    """启动 HTTP 预览服务器，提供居中 HTML 包装页"""
     output_path = Path(output_path).resolve()
     ext = output_path.suffix.lower()
     svg_mode = ext == ".svg"
 
-    # 构建居中 HTML 包装页
     if svg_mode:
         wrapper = _SVG_PREVIEW_HEAD
         with open(output_path, encoding="utf-8") as f:
@@ -221,7 +302,7 @@ def _serve_http(output_path, port):
         wrapper += svg_content
         wrapper += "\n</body>\n</html>"
     else:
-        wrapper = _DRAWIO_PREVIEW_HTML.format(name=output_path.name)
+        wrapper = _DRAWIO_PREVIEW_HTML.format(name=_html_escape(output_path.name))
 
     output_dir = output_path.parent
     html_path = output_dir / "_preview.html"
@@ -231,11 +312,10 @@ def _serve_http(output_path, port):
     class _Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(output_dir), **kwargs)
-
         def log_message(self, fmt, *args):
-            print(f"[HTTP] {args[0]} {args[1]} {args[2]}")
+            print(f"[HTTP] {' '.join(str(a) for a in args)}")
 
-    server = HTTPServer(("0.0.0.0", port), _Handler)
+    server = HTTPServer(("127.0.0.1", port), _Handler)
     url = f"http://localhost:{port}/_preview.html"
     print(f"[SERVE] 预览地址: {url}")
     print(f"[SERVE] 按 Ctrl+C 停止")
@@ -243,14 +323,13 @@ def _serve_http(output_path, port):
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n[SERVE] 已停止")
-        server.server_close()
     finally:
+        server.server_close()
         if html_path.exists():
             html_path.unlink()
 
 
 def main():
-    """CLI 入口：从 JSON 文件读取布局，生成 .drawio / SVG"""
     parser = argparse.ArgumentParser(
         description="draw.io/SVG 矢量图生成器 - 根据结构化布局 JSON 渲染矢量图",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -263,17 +342,16 @@ def main():
     parser.add_argument("layout_json", nargs="?",
                         help="布局 JSON 文件路径")
     parser.add_argument("output_path", nargs="?",
-                        help="输出文件路径 (省略时根据 JSON 内容决定)")
+                        help="输出文件路径")
     parser.add_argument("--open", action="store_true",
                         help="生成后在默认浏览器中打开")
     parser.add_argument("--serve", action="store_true",
                         help="启动 HTTP 预览服务器")
     parser.add_argument("--port", type=int, default=8080,
-                        help="HTTP 服务器端口号 (默认: 8080)")
+                        help="HTTP 服务器端口号")
 
     args = parser.parse_args()
 
-    # --list-palettes: 列出配色方案后直接退出
     if args.list_palettes:
         max_len = max(len(k) for k in PALETTE_INFO)
         print("可用配色方案 (palette):")
@@ -281,19 +359,15 @@ def main():
             print(f"  {name:<{max_len}}  {desc}")
         return
 
-    # --version 由 argparse 自动处理
-
     if args.layout_json is None:
         parser.error("缺少布局 JSON 文件路径参数")
 
-    # stdin 输入
     if args.layout_json == "-":
         plan = json.load(sys.stdin)
     else:
         with open(args.layout_json, encoding="utf-8") as f:
             plan = json.load(f)
 
-    # 自动推导输出路径
     out_path = args.output_path
     if out_path is None:
         if args.layout_json == "-":

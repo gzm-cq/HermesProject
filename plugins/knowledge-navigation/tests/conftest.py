@@ -11,6 +11,8 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Generator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # 确保源码可导入
@@ -68,7 +70,7 @@ def cleanup_hooks_globals() -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_router_and_eval() -> None:
+def mock_router_and_eval() -> Generator[None, Any, Any]:
     """全局 mock Router 返回全开 + HAS_KNOWLEDGE_TREE=True + 禁用 eval queries。
 
     避免真实 HTTP 请求和网络超时，所有 hooks/e2e 测试默认 Router 全开。
@@ -80,13 +82,8 @@ def mock_router_and_eval() -> None:
     def _fake_router(*args, **kwargs):
         return {"h": True, "kt": True, "s": True}
 
-    with patch.object(nav_hooks, "_router_route", side_effect=_fake_router), \
-         patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True), \
-         patch.object(nav_hooks, "_eval_queries", []), \
-         patch.object(nav_hooks, "_do_hindsight_recall", return_value=None), \
-         patch.object(nav_hooks, "_do_kt_recall", return_value=[]), \
-         patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-         patch.object(kn_router, "_router_route", side_effect=_fake_router):
+    with patch.object(kn_router, "_router_route", side_effect=_fake_router), \
+         patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
         yield
 
 

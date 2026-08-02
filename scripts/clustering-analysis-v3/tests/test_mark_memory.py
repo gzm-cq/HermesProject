@@ -1,12 +1,9 @@
 """单元测试：mark_memory.py 核心函数（不依赖数据库）。"""
 
 import re
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from mark_memory import _keyword_matches, MARK_PATTERN
 
 # ======== _keyword_matches ========

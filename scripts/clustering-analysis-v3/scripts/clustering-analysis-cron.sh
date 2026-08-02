@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# 确保使用正确的 Python 环境（有 sklearn/HDBSCAN）
+export PATH="/root/.local/bin:$PATH"
+
 # ===== 加载公共库 =====
 _CRON_LIB="${CRON_LIB:-/root/.hermes/lib/cron_common.sh}"
 if [[ -f "$_CRON_LIB" ]]; then

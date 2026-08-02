@@ -28,7 +28,7 @@ metadata:
 直接描述需求，示例：
 > "帮我画一个三层系统架构图，上层Hermes Agent中间Hindsight底层LiteLLM"
 
-输出文件默认保存到 `C:\Users\1\Desktop\AI\论文\` 目录。
+输出文件默认保存到当前工作目录，或由用户通过参数指定路径。
 
 ## 流程
 

@@ -6,11 +6,12 @@ import pytest
 
 from knowledge_navigation.config import CONFIG
 from knowledge_navigation.core import hooks as nav_hooks
+from knowledge_navigation.core.hooks import router as kn_router
 from knowledge_navigation.core.hooks import pre_llm_call
 
 
-@patch("knowledge_navigation.core.hooks._router_route")
-@patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+@patch("knowledge_navigation.core.hooks.router._router_route")
+@patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
 def test_knowledge_tree_candidates_have_final_scores_in_score_stats(
     mock_recall: MagicMock,
     mock_route: MagicMock,
@@ -31,8 +32,8 @@ def test_knowledge_tree_candidates_have_final_scores_in_score_stats(
         {"id": 102, "text": "知识树结果B", "score": 0.6},
     ]
 
-    with patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True), \
-         patch.object(nav_hooks, "_do_kt_recall", return_value=kt_results), \
+    with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True), \
+         patch.object(kn_router, "_do_kt_recall", return_value=kt_results), \
          patch.object(CONFIG, "eval_match_enabled", False):
         caplog.set_level("INFO")
         result = pre_llm_call("session-kt-score", "测试知识树统一打分质量", platform="cli")

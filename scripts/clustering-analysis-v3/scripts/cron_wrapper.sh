@@ -22,6 +22,14 @@
 #                                                  # 写入管线（②/③/④ 执行 apply）
 #   bash cron_wrapper.sh --skip-steps "1,3"       # 跳过指定步骤（逗号分隔，1-based）
 #
+# 约束：
+#   - 纯 bash，no_agent=true 可用
+#   - 依赖：python3, psql, bc, tee
+#   - 日志：/tmp/hindsight-cron-$(date +%Y%m%d-%H%M%S).log
+
+# 确保使用正确的 Python 环境（有 sklearn/HDBSCAN）
+export PATH="/root/.local/bin:$PATH"
+
 # 环境变量：
 #   CLUSTERING_DB_URL  PostgreSQL 连接字符串（必填）
 #   CONFIRM_APPLY      --apply 必须显式设置为 I_UNDERSTAND_THIS_WRITES_HINDSIGHT

@@ -4,16 +4,7 @@ import os
 from unittest.mock import patch, MagicMock
 import pytest
 
-
-def _make_reflection(sid="s1", title="反思标题", score=5, content=None):
-    if content is None:
-        content = f"# {title}\n\n## 摘要\n这是关于{title}的摘要内容。\n\n## 关键决策\n测试决策。\n\n## 知识要点\n测试知识点。\n\n## 待办事项\n测试待办。"
-    return {
-        "session_id": sid,
-        "title": title,
-        "score": score,
-        "content": content,
-    }
+from tests._helpers import make_reflection as _make_reflection
 
 
 class TestPhasePatterns:

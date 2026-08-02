@@ -26,11 +26,14 @@ SKILLOPT_DIR="${HERMES_HOME:-/root/.hermes}/skillopt-runner"
 PYTHON_BIN="${HERMES_HOME:-/root/.hermes}/hermes-agent/venv/bin/python"
 
 cron_section "SkillOpt 增量优化"
-if cd "$SKILLOPT_DIR" && "$PYTHON_BIN" skillopt_runner.py; then
+set +e
+(cd "$SKILLOPT_DIR" && "$PYTHON_BIN" skillopt_runner.py)
+rc=$?
+set -e
+if [[ $rc -eq 0 ]]; then
     cron_ok "SkillOpt 运行完成"
     _STEP_RESULTS+=("✅ SkillOpt 增量优化")
 else
-    rc=$?
     cron_err "SkillOpt 运行失败 (exit=$rc)"
     _STEP_RESULTS+=("❌ SkillOpt 增量优化 (exit=$rc)")
 fi

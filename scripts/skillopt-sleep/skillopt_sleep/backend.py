@@ -345,13 +345,22 @@ class CliBackend(Backend):
         self._cache: Dict[str, str] = {}
 
     # subclasses override --------------------------------------------------
-    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 1024, response_format: str | None = None) -> str:
+        """Call the model.
+
+        Args:
+            response_format: Optional hint like ``"json_object"``.  Subclasses
+                that don't support it silently ignore the parameter (the prompt
+                still enforces the format).  LiteLLM / OpenAI-compatible
+                backends use it to request structured output from the API.
+        """
         raise NotImplementedError
 
-    def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024) -> str:
+    def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024,
+                     response_format: str | None = None) -> str:
         if key in self._cache:
             return self._cache[key]
-        out = self._call(prompt, max_tokens=max_tokens)
+        out = self._call(prompt, max_tokens=max_tokens, response_format=response_format)
         self._tokens += len(prompt) // 4 + len(out) // 4
         self._cache[key] = out
         return out
@@ -416,11 +425,11 @@ class CliBackend(Backend):
             return hard, max(hard, keyword_soft_score(task.reference, response)), "exact(local)"
         prompt = (
             "Score how well the response satisfies the rubric, 0..1. "
-            'Return ONLY JSON {"score": <0..1>, "reason": "..."}.\n\n'
+            'Return ONLY valid JSON with {"score": <0..1>, "reason": "..."}.\n\n'
             f"# Rubric\n{task.reference or task.intent}\n\n# Response\n{response}"
         )
         key = "judge:" + skill_hash(prompt)
-        raw = self._cached_call(key, prompt, max_tokens=200)
+        raw = self._cached_call(key, prompt, max_tokens=1024, response_format="json_object")
         obj = _extract_json(raw, "object")
         if isinstance(obj, dict):
             try:
@@ -532,15 +541,16 @@ class CliBackend(Backend):
             f"# Recurring failures\n{fail_text}"
         )
         # Call with one retry: transient non-JSON replies otherwise waste a whole
-        # night (the gate sees no edits and rejects). A firmer second prompt
-        # recovers most of these.
+        # night (the gate sees no edits and rejects).  We request json_object
+        # format when the backend supports it; the prompt-level guardrails and
+        # the JSON-extract fallback remain as defense in depth.
         arr = None
         for attempt in range(2):
             p = prompt if attempt == 0 else (
                 prompt + "\n\nIMPORTANT: your previous reply was not valid JSON. "
                 "Reply with ONLY the JSON array, no prose, no markdown fences."
             )
-            raw = self._call(p, max_tokens=1024)
+            raw = self._call(p, max_tokens=2048, response_format="json_object")
             self._tokens += len(p) // 4 + len(raw) // 4
             arr = _extract_json(raw, "array")
             if isinstance(arr, list) and arr:
@@ -578,7 +588,7 @@ class ClaudeCliBackend(CliBackend):
                          timeout=timeout)
         self.claude_path = claude_path
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 1024, response_format: str | None = None) -> str:
         # Run ISOLATED so the ambient Claude Code environment does not leak into
         # the optimizer/target call. Critically, the user's GLOBAL skills
         # (~/.claude/skills) are injected regardless of cwd, so we must disable
@@ -726,7 +736,7 @@ class CodexCliBackend(CliBackend):
         self.codex_path = resolve_codex_path(codex_path)
         self.sandbox = sandbox
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 1024, response_format: str | None = None) -> str:
         import tempfile
         out_path = tempfile.NamedTemporaryFile(
             prefix="codex_last_", suffix=".txt", delete=False
@@ -851,9 +861,9 @@ class DualBackend(Backend):
     def reflect(self, failures, successes, skill, memory, **kw):
         return self.optimizer.reflect(failures, successes, skill, memory, **kw)
 
-    def _call(self, prompt, *, max_tokens=1024):
+    def _call(self, prompt, *, max_tokens=1024, response_format=None):
         # used by the LLM miner; prefer the optimizer (the "thinking" model)
-        return self.optimizer._call(prompt, max_tokens=max_tokens)  # type: ignore[attr-defined]
+        return self.optimizer._call(prompt, max_tokens=max_tokens, response_format=response_format)  # type: ignore[attr-defined]
 
     def tokens_used(self):
         return self.target.tokens_used() + self.optimizer.tokens_used()
@@ -876,10 +886,16 @@ _AZURE_MI_CLIENT_ID = "8cafa2b1-a2a7-4ad9-814a-ffe4aed7e800"
 class LiteLLMBackend(CliBackend):
     """LiteLLM gateway at http://127.0.0.1:4142/v1 — OpenAI-compatible.
     Uses the LITELLM_MASTER_KEY environment variable for authentication.
+
+    Note: We deliberately do NOT send ``extra_body={"thinking": {"type":
+    "disabled"}}`` — some backend routes (e.g. sensenova fallback) treat
+    the presence of the thinking field as "allocate reasoning budget",
+    inflating latency 10x-30x.  The gateway's router-level config is the
+    single source of truth for thinking-mode toggling.
     """
     name = "litellm"
 
-    def __init__(self, model: str = "", timeout: int = 300) -> None:
+    def __init__(self, model: str = "", timeout: int = 180) -> None:
         super().__init__(model=model, timeout=timeout)
         self.model = model
         self.endpoint = "http://127.0.0.1:4142/v1"
@@ -891,20 +907,24 @@ class LiteLLMBackend(CliBackend):
             self._client = OpenAI(
                 base_url=self.endpoint,
                 api_key=os.environ.get("LITELLM_MASTER_KEY", ""),
-                max_retries=0,  # handled by _call()
+                max_retries=4,
                 timeout=self.timeout,
             )
         return self._client
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 8) -> str:
-        """Call LiteLLM gateway with intelligent retry.
+    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5,
+              response_format: str | None = None) -> str:
+        """Call LiteLLM gateway with bounded retries.
 
-        Retryable errors: timeout, rate-limit, 5xx, connection errors.
-        Non-retryable (fail fast): 4xx auth/bad-request/model errors.
-        Empty responses are also retried (may indicate transient thinking-mode issue).
+        Retries=5 mirrors the research harness and the Azure backend's budget.
+        Combined with the client's ``max_retries=4`` this gives ~5 logical
+        attempts per call; with the 180s timeout the worst-case single call
+        completes in well under 3 minutes instead of 300s+ per attempt.
 
-        Model is assumed unstable — retry generously with exponential backoff,
-        max ~30s total wait before giving up on a single call.
+        ``response_format="json_object"`` enables the OpenAI-compatible
+        structured-output mode.  Tested working on sensenova-6.7-flash-lite
+        (requires max_tokens >= 1024 for complex payloads because the model
+        emits a long preamble before the JSON body).
         """
         if max_tokens < 512:
             max_tokens = 512
@@ -912,13 +932,17 @@ class LiteLLMBackend(CliBackend):
         client = self._get_client()
         last_exc = None
 
+        extra_kwargs: Dict[str, Any] = {}
+        if response_format == "json_object":
+            extra_kwargs["response_format"] = {"type": "json_object"}
+
         for attempt in range(max(1, retries)):
             try:
                 resp = client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     max_completion_tokens=max_tokens,
-                    extra_body={"thinking": {"type": "disabled"}},
+                    **extra_kwargs,
                 )
                 text = (resp.choices[0].message.content or "").strip()
                 try:
@@ -933,20 +957,18 @@ class LiteLLMBackend(CliBackend):
                 last_exc = "empty-response"
 
             except (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError) as e:
-                # Retryable: network blips, overload, server errors
                 last_exc = e
                 logger.warning("LLM call attempt %d/%d retryable: %s", attempt + 1, retries, e)
             except APIStatusError as e:
-                # Non-retryable 4xx (auth, bad-request, model-not-found, etc.)
                 last_exc = e
                 logger.error("LLM call failed (non-retryable): %s", e)
-                break  # fail fast — no point retrying
+                break
             except Exception as e:
-                # Catch-all for anything unexpected — still retry
                 last_exc = e
                 logger.warning("LLM call attempt %d/%d unexpected: %s", attempt + 1, retries, e)
 
-            _exponential_backoff_sleep(attempt, retries)
+            if attempt < retries - 1:
+                _exponential_backoff_sleep(attempt, retries)
 
         return ""
 
@@ -990,7 +1012,8 @@ class AzureOpenAIBackend(CliBackend):
             )
         return self._client
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5,
+              response_format: str | None = None) -> str:
         """Call the deployment with bounded retries.
 
         IMPORTANT: transient failures (429 rate-limit, timeouts, 5xx) must NOT be
@@ -1091,7 +1114,8 @@ class AzureResponsesBackend(AzureOpenAIBackend):
             self._rr += 1
         return ep
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5,
+              response_format: str | None = None) -> str:
         last = None
         base_ep = self._next_endpoint()           # this call's primary endpoint
         base_idx = self.endpoints.index(base_ep)

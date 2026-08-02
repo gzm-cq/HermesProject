@@ -1,0 +1,50 @@
+[
+    {
+        "param": "KN_MIN_SCORE",
+        "default": 0.6,
+        "min": 0.4,
+        "max": 0.8,
+        "step": 0.05,
+        "feedback_metrics": ["kn_avg_score", "router_empty_pct"]
+    },
+    {
+        "param": "sag_max_inject",
+        "default": 3,
+        "min": 2,
+        "max": 6,
+        "step": 1,
+        "feedback_metrics": ["sag_total_kept"]
+    },
+    {
+        "param": "sag_search_top_k",
+        "default": 3,
+        "min": 3,
+        "max": 10,
+        "step": 1,
+        "feedback_metrics": ["sag_merge_zero_pct"]
+    },
+    {
+        "param": "token_budget_hindsight_ratio",
+        "default": 0.4,
+        "min": 0.3,
+        "max": 0.6,
+        "step": 0.05,
+        "feedback_metrics": ["memory_hindsight_count", "sag_total_kept"]
+    },
+    {
+        "param": "sag_search_threshold",
+        "default": 0.5,
+        "min": 0.3,
+        "max": 0.8,
+        "step": 0.05,
+        "feedback_metrics": ["sag_on_pct", "sag_total_kept"]
+    },
+    {
+        "param": "token_budget",
+        "default": 4000,
+        "min": 2000,
+        "max": 8000,
+        "step": 500,
+        "feedback_metrics": ["token_exhaust_pct"]
+    }
+]

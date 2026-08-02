@@ -9,6 +9,8 @@ import pytest
 from knowledge_navigation import register
 from knowledge_navigation.config import CONFIG, KnowledgeNavigationConfig
 from knowledge_navigation.core import hooks as nav_hooks
+from knowledge_navigation.core.hooks import router as kn_router
+from knowledge_navigation.core.hooks import cache as kn_cache
 from knowledge_navigation.core import circuit_breaker as cb
 from knowledge_navigation.core.hooks import pre_llm_call
 
@@ -44,7 +46,7 @@ def _reset_circuit_breaker() -> None:
 @pytest.fixture(autouse=True)
 def _mock_kt_disabled() -> None:
     """默认禁用知识树 recall（各测试不需要它）。"""
-    with patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", False):
+    with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", False):
         yield
 
 
@@ -99,15 +101,15 @@ class TestPreLlmCall:
         def fake_submit(fn, *args, **kwargs):
             return fake_future
 
-        with patch.object(nav_hooks._recall_executor, "submit", fake_submit), \
+        with patch.object(kn_router._recall_executor, "submit", fake_submit), \
              patch.object(CONFIG, "timeout_seconds", 0.01), \
-             patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": True, "s": True, "sag": True}):
+             patch.object(kn_router, "_router_route", return_value={"h": True, "kt": True, "s": True, "sag": True}):
             result = pre_llm_call("session-123", "12345678901", platform="cli")
             assert result is None
 
         assert fake_future.cancelled is True
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_internal_maintenance_prompt_skips_recall(self, mock_recall: MagicMock) -> None:
         """内部维护类 prompt 不应触发 Hindsight recall。"""
         result = pre_llm_call(
@@ -119,19 +121,21 @@ class TestPreLlmCall:
         assert result is None
         mock_recall.assert_not_called()
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
-    def test_long_operational_prompt_skips_recall(self, mock_recall: MagicMock) -> None:
+    @patch("knowledge_navigation.core.hooks.router._do_skill_match", return_value="")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
+    def test_long_operational_prompt_skips_recall(self, mock_recall: MagicMock, mock_skill: MagicMock) -> None:
         """操作型长消息含内部 prompt 特征时也应跳过 recall（仅靠内部 prompt 匹配）。"""
-        result = pre_llm_call(
-            "session-123",
-            "修复\n<memory-context>" + "历史上下文" * 80 + "</memory-context>",
-            platform="cli",
-        )
+        with patch.object(CONFIG, "eval_match_enabled", False):
+            result = pre_llm_call(
+                "session-123",
+                "修复\n<memory-context>" + "历史上下文" * 80 + "</memory-context>",
+                platform="cli",
+            )
 
         assert result is None
         mock_recall.assert_not_called()
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_operational_short_message_not_skipped_by_turn_gate(
         self, mock_recall: MagicMock,
     ) -> None:
@@ -140,15 +144,15 @@ class TestPreLlmCall:
             results=[{"id": "node1", "text": "相关经验"}],
             trace={"reranked": [{"node_id": "node1", "rerank_score": 0.9}]},
         )
-        with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False}):
-            with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_router_route", return_value={"h": True, "kt": False, "s": False}):
+            with patch.object(kn_router, "_do_sag_recall", return_value=[]):
                 result = pre_llm_call("session-123", "修源码", platform="cli")
 
         # turn_gate 不应跳过 → Router 被调用 → recall 被调用
         assert result is not None
         mock_recall.assert_called_once()
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_deploy_message_not_skipped_by_turn_gate(
         self, mock_recall: MagicMock,
     ) -> None:
@@ -157,8 +161,8 @@ class TestPreLlmCall:
             results=[{"id": "node1", "text": "部署经验"}],
             trace={"reranked": [{"node_id": "node1", "rerank_score": 0.9}]},
         )
-        with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False}):
-            with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_router_route", return_value={"h": True, "kt": False, "s": False}):
+            with patch.object(kn_router, "_do_sag_recall", return_value=[]):
                 result = pre_llm_call("session-123", "部署到生产环境", platform="cli")
 
         assert result is not None
@@ -166,11 +170,11 @@ class TestPreLlmCall:
 
     def test_system_notice_skipped_by_turn_gate(self) -> None:
         """系统通知（如 [Note: ...]）应被 turn_gate 跳过。"""
-        with patch.object(nav_hooks, "_router_route") as mock_route:
+        with patch.object(kn_router, "_router_route") as mock_route:
             pre_llm_call("sess-sys", "[Note: model was just switched to default]", platform="cli")
         mock_route.assert_not_called()
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_recall_success_returns_context(
         self,
         mock_recall: MagicMock,
@@ -192,33 +196,37 @@ class TestPreLlmCall:
         assert '<memory source="hindsight" node_id="node2">Memory two</memory>' in result
         assert '<system_state>' in result
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_skill_match", return_value="")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_recall_error_returns_none(
         self,
         mock_recall: MagicMock,
+        mock_skill: MagicMock,
     ) -> None:
         """测试 recall 异常时返回 None。"""
         mock_recall.side_effect = RuntimeError("API down")
 
-        with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_sag_recall", return_value=[]):
             result = pre_llm_call("session-123", "12345678901", platform="cli")
 
         assert result is None
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_skill_match", return_value="")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_recall_empty_result_returns_none(
         self,
         mock_recall: MagicMock,
+        mock_skill: MagicMock,
     ) -> None:
         """测试空结果返回 None。"""
         mock_recall.return_value = None
 
-        with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_sag_recall", return_value=[]):
             result = pre_llm_call("session-123", "12345678901", platform="cli")
 
         assert result is None
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_recall_empty_results_list_returns_none(
         self,
         mock_recall: MagicMock,
@@ -226,14 +234,14 @@ class TestPreLlmCall:
         """测试 results 为空列表时返回 None。"""
         mock_recall.return_value = self._mock_recall(results=[])
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]), \
-             patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": False}):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]), \
+             patch.object(kn_router, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": False}):
             result = pre_llm_call("session-123", "查询某个具体的问题", platform="cli")
 
         assert result is None
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_low_score_results_filtered_out(
         self,
         mock_recall: MagicMock,
@@ -244,13 +252,13 @@ class TestPreLlmCall:
             trace={"reranked": [{"node_id": "node1", "rerank_score": 0.1}]},
         )
 
-        with patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
-            with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": False}):
+        with patch.object(kn_router, "_do_sag_recall", return_value=[]):
+            with patch.object(kn_router, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": False}):
                 result = pre_llm_call("session-123", "查询某个具体的问题", platform="cli")
 
         assert result is None
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_results_limited_by_max_results(
         self,
         mock_recall: MagicMock,
@@ -275,7 +283,7 @@ class TestPreLlmCall:
         # 新格式：user_query (3) + recalled_memory (7) + system_state (3) ≈ 13 行
         assert '<recalled_memory source="hindsight" count="3"' in result
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_exclude_marked_in_pipeline(
         self,
         mock_recall: MagicMock,
@@ -307,7 +315,7 @@ class TestPreLlmCall:
         assert '<memory source="hindsight" node_id="node1">Good memory</memory>' in result
         assert '[标记:' not in result  # 排除的标记不应出现
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_eval_query_id_logged(
         self,
         mock_recall: MagicMock,
@@ -316,7 +324,7 @@ class TestPreLlmCall:
     ) -> None:
         """测试 eval_query_id 在日志中记录。"""
         # 清除模块级缓存以重新加载
-        nav_hooks._eval_queries = None
+        kn_cache._eval_queries = None
 
         # 创建临时评测查询文件
         eval_file = tmp_path / "eval_queries.json"
@@ -337,7 +345,7 @@ class TestPreLlmCall:
             for rec in caplog.records
         ), "eval_query_id 应出现在日志中"
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_eval_query_not_matched_not_logged(
         self,
         mock_recall: MagicMock,
@@ -346,7 +354,7 @@ class TestPreLlmCall:
     ) -> None:
         """测试不匹配的查询不记录 eval_query_id。"""
         # 清除模块级缓存以重新加载
-        nav_hooks._eval_queries = None
+        kn_cache._eval_queries = None
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
@@ -370,7 +378,7 @@ class TestPreLlmCall:
 class TestCircuitBreaker:
     """测试熔断器（Circuit Breaker）机制。"""
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_opens_after_three_consecutive_failures(
         self,
         mock_recall: MagicMock,
@@ -381,8 +389,8 @@ class TestCircuitBreaker:
 
         threshold = CONFIG.circuit_breaker_threshold
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]):
             # 前 threshold-1 次失败计数增加但熔断器不打开
             for i in range(threshold - 1):
                 result = pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
@@ -403,8 +411,8 @@ class TestCircuitBreaker:
             assert result is None
             assert mock_recall.call_count == threshold  # 未增加
 
-    @patch("knowledge_navigation.core.hooks.time.time")
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router.time.time")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_auto_recovers_after_cooldown(
         self,
         mock_recall: MagicMock,
@@ -420,8 +428,8 @@ class TestCircuitBreaker:
         threshold = CONFIG.circuit_breaker_threshold
         cooldown = CONFIG.circuit_breaker_cooldown
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]):
             # threshold 次异常触发熔断
             for _ in range(threshold):
                 pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
@@ -447,14 +455,14 @@ class TestCircuitBreaker:
             assert cb._hindsight_cb._open_until == 0.0
             assert mock_recall.call_count == threshold + 1  # 恢复调用
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_success_resets_failure_counter(
         self,
         mock_recall: MagicMock,
     ) -> None:
         """成功调用重置失败计数。"""
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]):
             # 2 次失败
             mock_recall.side_effect = [RuntimeError("down"), RuntimeError("down")]
             for _ in range(2):
@@ -475,9 +483,9 @@ class TestCircuitBreaker:
             assert pre_llm_call("session-123", "xyz xyz xyz", platform="cli") is None
             assert cb._hindsight_cb._failures == 1
 
-    @patch("knowledge_navigation.core.hooks._do_kt_recall", return_value=[])
-    @patch("knowledge_navigation.core.hooks.time.time")
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_kt_recall", return_value=[])
+    @patch("knowledge_navigation.core.hooks.router.time.time")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_returns_none_during_circuit_open(
         self,
         mock_recall: MagicMock,
@@ -493,8 +501,8 @@ class TestCircuitBreaker:
         cb._hindsight_cb._failures = CONFIG.circuit_breaker_threshold
         cb._hindsight_cb._open_until = base_time + CONFIG.circuit_breaker_cooldown
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]):
             caplog.set_level(logging.INFO)
             result = pre_llm_call("session-123", "xyz xyz xyz", platform="cli")
 
@@ -504,9 +512,9 @@ class TestCircuitBreaker:
             # 熔断期间不应追加失败计数（防止熔断死循环）
             assert cb._hindsight_cb._failures == CONFIG.circuit_breaker_threshold
 
-    @patch("knowledge_navigation.core.hooks._do_kt_recall", return_value=[{"id": 1, "text": "kt result"}])
-    @patch("knowledge_navigation.core.hooks.time.time")
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_kt_recall", return_value=[{"id": 1, "text": "kt result"}])
+    @patch("knowledge_navigation.core.hooks.router.time.time")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_circuit_open_with_kt_results_no_failure_recorded(
         self,
         mock_recall: MagicMock,
@@ -585,7 +593,7 @@ class TestKeywordExtraction:
 class TestFlexibleEvalMatch:
     """测试灵活匹配逻辑。"""
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_keyword_match_records_candidate_not_counted(
         self,
         mock_recall: MagicMock,
@@ -593,7 +601,7 @@ class TestFlexibleEvalMatch:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """关键词重叠只记录候选，不进入 recall@k 计数。"""
-        nav_hooks._eval_queries = None
+        kn_cache._eval_queries = None
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
@@ -614,7 +622,7 @@ class TestFlexibleEvalMatch:
         assert all(not hasattr(rec, "eval_query_id") for rec in success_records)
         assert any(getattr(rec, "eval_counted", None) is False for rec in success_records)
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_keyword_match_low_overlap_rejected(
         self,
         mock_recall: MagicMock,
@@ -622,7 +630,7 @@ class TestFlexibleEvalMatch:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """测试低关键词重叠不匹配。"""
-        nav_hooks._eval_queries = None
+        kn_cache._eval_queries = None
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
@@ -644,7 +652,7 @@ class TestFlexibleEvalMatch:
             for rec in caplog.records
         )
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_exact_match_still_works(
         self,
         mock_recall: MagicMock,
@@ -652,7 +660,7 @@ class TestFlexibleEvalMatch:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """测试精确匹配仍然优先。"""
-        nav_hooks._eval_queries = None
+        kn_cache._eval_queries = None
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
@@ -674,7 +682,7 @@ class TestFlexibleEvalMatch:
             for rec in caplog.records
         )
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_explicit_eval_id_counts(
         self,
         mock_recall: MagicMock,
@@ -682,7 +690,7 @@ class TestFlexibleEvalMatch:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """[EVAL:id] 显式触发应进入 recall@k 计数。"""
-        nav_hooks._eval_queries = None
+        kn_cache._eval_queries = None
 
         eval_file = tmp_path / "eval_queries.json"
         eval_file.write_text(
@@ -705,7 +713,7 @@ class TestFlexibleEvalMatch:
             for rec in caplog.records
         )
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_exact_match_beats_keyword(
         self,
         mock_recall: MagicMock,
@@ -713,7 +721,7 @@ class TestFlexibleEvalMatch:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """测试精确匹配优先于关键词匹配。"""
-        nav_hooks._eval_queries = None
+        kn_cache._eval_queries = None
 
         # 两条 query，关键词重叠都能匹配
         # 但有一条是精确匹配
@@ -750,9 +758,9 @@ class TestRouterMask:
         """patch hooks 模块中的 _router_route 返回指定 mask（自动补 sag=False）。"""
         full_mask = {"h": False, "kt": False, "s": False, "sag": False}
         full_mask.update(mask)
-        return patch.object(nav_hooks, "_router_route", return_value=full_mask)
+        return patch.object(kn_router, "_router_route", return_value=full_mask)
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_router_all_off_returns_none(self, mock_hs: MagicMock) -> None:
         """Router 全关闭 → return None，recall 不被调用。"""
         with self._patch_router({"h": False, "kt": False, "s": False}):
@@ -760,7 +768,7 @@ class TestRouterMask:
         assert result is None
         mock_hs.assert_not_called()
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_router_only_h_runs_hindsight(self, mock_hs: MagicMock) -> None:
         """Router {h:1, kt:0, s:0} → 只跑 Hindsight。"""
         mock_hs.return_value = {
@@ -768,7 +776,7 @@ class TestRouterMask:
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
         }
         with self._patch_router({"h": True, "kt": False, "s": False}):
-            with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+            with patch.object(kn_router, "_do_skill_match", return_value=""):
                 result = pre_llm_call("sess1", self.LONG_QUERY, platform="cli")
         assert result is not None
         assert "recalled_memory" in result
@@ -777,11 +785,11 @@ class TestRouterMask:
 
     def test_router_only_kt_runs_knowledge_tree(self) -> None:
         """Router {h:0, kt:1, s:0} → 只跑知识树。"""
-        with patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True):
+        with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
             fake_kt = [{"id": 1, "text": "kt node", "score": 0.8}]
-            with patch.object(nav_hooks, "_do_kt_recall", return_value=fake_kt):
-                with patch.object(nav_hooks, "_multi_hop_recall", return_value=[], create=True):
-                    with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+            with patch.object(kn_router, "_do_kt_recall", return_value=fake_kt):
+                with patch.object(kn_router, "_multi_hop_recall", return_value=[], create=True):
+                    with patch.object(kn_router, "_do_skill_match", return_value=""):
                         with self._patch_router({"h": False, "kt": True, "s": False}):
                             result = pre_llm_call("sess2", self.LONG_QUERY, platform="cli")
         assert result is not None
@@ -790,46 +798,46 @@ class TestRouterMask:
 
     def test_router_only_skill_runs_skill(self) -> None:
         """Router {h:0, kt:0, s:1} → 只跑 skill（与旧 generic 行为等价）。"""
-        with patch.object(nav_hooks, "_do_skill_match", return_value="<auto_loaded_skills>test</auto_loaded_skills>") as mock_skill:
+        with patch.object(kn_router, "_do_skill_match", return_value="<auto_loaded_skills>test</auto_loaded_skills>") as mock_skill:
             with self._patch_router({"h": False, "kt": False, "s": True}):
                 result = pre_llm_call("sess3", self.LONG_QUERY, platform="cli")
         assert result is not None
         assert "auto_loaded_skills" in result
         mock_skill.assert_called_once()
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_router_full_on_runs_all(self, mock_hs: MagicMock) -> None:
         """Router 全开 → 三路都跑（与原行为一致）。"""
         mock_hs.return_value = {
             "results": [{"id": "n1", "text": "test memory", "score": 0.9}],
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
         }
-        with patch.object(nav_hooks, "HAS_KNOWLEDGE_TREE", True):
-            with patch.object(nav_hooks, "_do_kt_recall", return_value=[]):
-                with patch.object(nav_hooks, "_multi_hop_recall", return_value=[], create=True):
-                    with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
+            with patch.object(kn_router, "_do_kt_recall", return_value=[]):
+                with patch.object(kn_router, "_multi_hop_recall", return_value=[], create=True):
+                    with patch.object(kn_router, "_do_skill_match", return_value=""):
                         with self._patch_router({"h": True, "kt": True, "s": True}):
                             result = pre_llm_call("sess4", self.LONG_QUERY, platform="cli")
         assert result is not None
         assert "recalled_memory" in result
         mock_hs.assert_called_once()
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_router_failure_fallback_all_on(self, mock_hs: MagicMock) -> None:
         """Router 调用异常 → fallback 全开，三路都跑。"""
         mock_hs.return_value = {
             "results": [{"id": "n1", "text": "test memory", "score": 0.9}],
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
         }
-        with patch.object(nav_hooks, "_router_route", side_effect=RuntimeError("API down")):
-            with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+        with patch.object(kn_router, "_router_route", side_effect=RuntimeError("API down")):
+            with patch.object(kn_router, "_do_skill_match", return_value=""):
                 result = pre_llm_call("sess5", self.LONG_QUERY, platform="cli")
         assert result is not None
         mock_hs.assert_called_once()
 
     def test_turn_gate_skip_does_not_call_router(self) -> None:
         """turn_gate 跳过后 → router 不应被调用。"""
-        with patch.object(nav_hooks, "_router_route") as mock_route:
+        with patch.object(kn_router, "_router_route") as mock_route:
             pre_llm_call("sess6", "好的", platform="cli")
         mock_route.assert_not_called()
 
@@ -900,7 +908,7 @@ class TestSagRecall:
             {"chunkId": "c2", "content": "SAG 知识内容2", "score": 0.85, "documentId": "doc-2", "heading": "用法"},
         ]
 
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
             with patch("requests.post") as mock_post:
                 mock_resp = MagicMock()
                 mock_resp.status_code = 200
@@ -924,7 +932,7 @@ class TestSagRecall:
             {"chunkId": "c2", "content": "低分内容", "score": 0.01, "documentId": "doc-2"},
         ]
 
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
             with patch("requests.post") as mock_post:
                 mock_resp = MagicMock()
                 mock_resp.status_code = 200
@@ -939,7 +947,7 @@ class TestSagRecall:
 
     def test_sag_disabled_by_router(self) -> None:
         """Router 关闭 sag → SAG 不被调用。"""
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": False}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": False}):
             with patch("requests.post") as mock_post:
                 result = pre_llm_call("sess-sag-off", self.LONG_QUERY, platform="cli")
 
@@ -949,8 +957,8 @@ class TestSagRecall:
 
     def test_router_fallback_sag_closed(self) -> None:
         """Router 异常 fallback → sag 保守关闭，不调用 SAG。"""
-        with patch.object(nav_hooks, "_router_route", side_effect=RuntimeError("API down")):
-            with patch.object(nav_hooks, "_do_hindsight_recall", return_value={
+        with patch.object(kn_router, "_router_route", side_effect=RuntimeError("API down")):
+            with patch.object(kn_router, "_do_hindsight_recall", return_value={
                 "results": [{"id": "n1", "text": "mem", "score": 0.9}],
                 "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
             }):
@@ -962,7 +970,7 @@ class TestSagRecall:
                     ]}
                     mock_post.return_value = mock_resp
 
-                    with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+                    with patch.object(kn_router, "_do_skill_match", return_value=""):
                         result = pre_llm_call("sess-fb", self.LONG_QUERY, platform="cli")
 
         assert result is not None
@@ -979,8 +987,8 @@ class TestSagRecall:
             "trace": {"reranked": [{"node_id": "hs1", "rerank_score": 0.9}]},
         }
 
-        with patch.object(nav_hooks, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": True}):
-            with patch.object(nav_hooks, "_do_hindsight_recall", return_value=hs_result):
+        with patch.object(kn_router, "_router_route", return_value={"h": True, "kt": False, "s": False, "sag": True}):
+            with patch.object(kn_router, "_do_hindsight_recall", return_value=hs_result):
                 with patch("requests.post") as mock_post:
                     mock_resp = MagicMock()
                     mock_resp.status_code = 200
@@ -997,7 +1005,7 @@ class TestSagRecall:
 
     def test_sag_empty_result_not_in_output(self) -> None:
         """SAG 返回空结果 → 输出中不应出现 SAG knowledge 块。"""
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
             with patch("requests.post") as mock_post:
                 mock_resp = MagicMock()
                 mock_resp.status_code = 200
@@ -1014,7 +1022,7 @@ class TestSagRecall:
             {"chunkId": "c1", "content": "无分数内容", "documentId": "doc-1"},
         ]
 
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
             with patch("requests.post") as mock_post:
                 mock_resp = MagicMock()
                 mock_resp.status_code = 200
@@ -1032,7 +1040,7 @@ class TestSagRecall:
             {"content": "无 chunkId 内容", "score": 0.8, "documentId": "doc-1"},
         ]
 
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
             with patch("requests.post") as mock_post:
                 mock_resp = MagicMock()
                 mock_resp.status_code = 200
@@ -1076,8 +1084,8 @@ class TestSagRecall:
         """SAG 连续失败后熔断器打开，跳过 recall。"""
         threshold = CONFIG.circuit_breaker_threshold
         with patch("requests.post", side_effect=Exception("SAG down")):
-            with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
-                with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+            with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+                with patch.object(kn_router, "_do_skill_match", return_value=""):
                     for i in range(threshold):
                         pre_llm_call("sess-cb", self.LONG_QUERY, platform="cli")
 
@@ -1090,8 +1098,8 @@ class TestSagRecall:
     def test_sag_circuit_breaker_success_resets(self) -> None:
         """SAG 成功调用后熔断器计数重置。"""
         with patch("requests.post", side_effect=Exception("SAG down")):
-            with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
-                with patch.object(nav_hooks, "_do_skill_match", return_value=""):
+            with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+                with patch.object(kn_router, "_do_skill_match", return_value=""):
                     for _ in range(2):
                         pre_llm_call("sess-cb2", self.LONG_QUERY, platform="cli")
                     assert cb._sag_cb._failures == 2
@@ -1102,7 +1110,7 @@ class TestSagRecall:
         mock_resp.json.return_value = {"sections": sag_sections}
 
         with patch("requests.post", return_value=mock_resp):
-            with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+            with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
                 pre_llm_call("sess-cb2", self.LONG_QUERY, platform="cli")
                 assert cb._sag_cb._failures == 0
 
@@ -1115,7 +1123,7 @@ class TestSagRecall:
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"sections": sag_sections}
 
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
             with patch("requests.post", return_value=mock_resp):
                 result1 = pre_llm_call("sess-dedup", self.LONG_QUERY, platform="cli")
                 assert result1 is not None
@@ -1134,7 +1142,7 @@ class TestSagRecall:
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"sections": sag_sections}
 
-        with patch.object(nav_hooks, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
             with patch("requests.post", return_value=mock_resp):
                 result = pre_llm_call("sess-std", self.LONG_QUERY, platform="cli")
 
@@ -1151,7 +1159,7 @@ class TestTokenBudgetEvent:
 
     LONG_QUERY = "请详细解释量子计算中的纠缠现象以及它在密码学中的应用" * 3
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_token_budget_event_contains_per_source_fields(
         self,
         mock_recall: MagicMock,
@@ -1163,8 +1171,8 @@ class TestTokenBudgetEvent:
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
         }
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]):
             caplog.set_level(logging.INFO)
             pre_llm_call("sess-tb", self.LONG_QUERY, platform="cli")
 
@@ -1187,7 +1195,7 @@ class TestRecallLoggerEvents:
 
     LONG_QUERY = "请详细解释机器学习中的梯度下降算法以及学习率的影响" * 3
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_recall_hindsight_event_logged(
         self,
         mock_recall: MagicMock,
@@ -1199,8 +1207,8 @@ class TestRecallLoggerEvents:
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
         }
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]):
             caplog.set_level(logging.INFO)
             pre_llm_call("sess-rl", self.LONG_QUERY, platform="cli")
 
@@ -1213,7 +1221,7 @@ class TestRecallLoggerEvents:
         # score_stats 字段必须存在（即使为空字典也算存在）
         assert hasattr(rec, "score_stats")
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_recall_sag_event_logged_when_sag_active(
         self,
         mock_recall: MagicMock,
@@ -1230,10 +1238,10 @@ class TestRecallLoggerEvents:
             {"chunkId": "s1", "content": "sag 内容", "score": 0.75, "documentId": "d1"}
         ]}
 
-        with patch.object(nav_hooks, "_router_route",
+        with patch.object(kn_router, "_router_route",
                           return_value={"h": True, "kt": False, "s": False, "sag": True}), \
              patch("requests.post", return_value=mock_resp), \
-             patch.object(nav_hooks, "_do_skill_match", return_value=""):
+             patch.object(kn_router, "_do_skill_match", return_value=""):
             caplog.set_level(logging.INFO)
             pre_llm_call("sess-sag-rl", self.LONG_QUERY, platform="cli")
 
@@ -1243,7 +1251,7 @@ class TestRecallLoggerEvents:
         assert getattr(rec, "source") == "sag"
         assert getattr(rec, "count") >= 1
 
-    @patch("knowledge_navigation.core.hooks._do_hindsight_recall")
+    @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_recall_success_contains_per_source_kept_counts(
         self,
         mock_recall: MagicMock,
@@ -1255,8 +1263,8 @@ class TestRecallLoggerEvents:
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
         }
 
-        with patch.object(nav_hooks, "_do_skill_match", return_value=""), \
-             patch.object(nav_hooks, "_do_sag_recall", return_value=[]):
+        with patch.object(kn_router, "_do_skill_match", return_value=""), \
+             patch.object(kn_router, "_do_sag_recall", return_value=[]):
             caplog.set_level(logging.INFO)
             pre_llm_call("sess-success", self.LONG_QUERY, platform="cli")
 

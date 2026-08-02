@@ -3,18 +3,18 @@
 
 # ===== 内置配色方案 =====
 PALETTES = {
-    # 学术论文 — Nature/PNAS 风格，低饱和度、优雅 muted、色盲友好
+    # 默认 — draw.io 官方标准配色（经 10 年+ 验证，白色背景上最佳可读性）
     "academic": {
-        "node_blue":   {"fill": "#EEF2F8", "stroke": "#4A6FA5"},
-        "node_green":  {"fill": "#EAF3EE", "stroke": "#4A8C6A"},
-        "node_orange": {"fill": "#F6F0E4", "stroke": "#B57A4A"},
-        "node_yellow": {"fill": "#F6F2DC", "stroke": "#9E904A"},
-        "node_purple": {"fill": "#F0ECF4", "stroke": "#7A5A9E"},
-        "node_red":    {"fill": "#F4E8E8", "stroke": "#A05050"},
-        "node_cyan":   {"fill": "#E8F2F2", "stroke": "#4A7A7A"},
+        "node_blue":   {"fill": "#dae8fc", "stroke": "#6c8ebf"},
+        "node_green":  {"fill": "#d5e8d4", "stroke": "#82b366"},
+        "node_orange": {"fill": "#ffe6cc", "stroke": "#d79b00"},
+        "node_yellow": {"fill": "#fff2cc", "stroke": "#d6b656"},
+        "node_purple": {"fill": "#e1d5e7", "stroke": "#9673a6"},
+        "node_red":    {"fill": "#f8cecc", "stroke": "#b85450"},
+        "node_cyan":   {"fill": "#d4e8f0", "stroke": "#5a8a9a"},
         "bg": "#FFFFFF",
-        "layer_bg": "#F7F8FA",
-        "layer_stroke": "#E0E2E6",
+        "layer_bg": "#F4F6F8",
+        "layer_stroke": "#D5DCE4",
         "title_color": "#1A1A1A",
         "text_color": "#333333",
     },
@@ -108,17 +108,49 @@ PALETTES = {
         "title_color": "#000000",
         "text_color": "#222222",
     },
+    # 深色主题 — 暗背景高对比度（值与 style_presets.py 保持同步）
+    "dark": {
+        "node_blue":   {"fill": "#1E3A5F", "stroke": "#4DA8DA"},
+        "node_green":  {"fill": "#22543d", "stroke": "#68d391"},
+        "node_orange": {"fill": "#7b341e", "stroke": "#fdba74"},
+        "node_yellow": {"fill": "#744210", "stroke": "#f6e05e"},
+        "node_purple": {"fill": "#44337a", "stroke": "#b794f4"},
+        "node_red":    {"fill": "#742a2a", "stroke": "#fc8181"},
+        "node_cyan":   {"fill": "#234e52", "stroke": "#4fd1c5"},
+        "bg": "#1A1A2E",
+        "layer_bg": "#2d3748",
+        "layer_stroke": "#4a5568",
+        "title_color": "#e2e8f0",
+        "text_color": "#cbd5e0",
+    },
+    # 色盲友好 — 基于 Okabe-Ito 调色板（值与 style_presets.py 保持同步）
+    "colorblind-safe": {
+        "node_blue":   {"fill": "#e69f00", "stroke": "#cc7a00"},   # 橙（色盲安全）
+        "node_green":  {"fill": "#56b4e9", "stroke": "#2a8fc7"},   # 天蓝（色盲安全）
+        "node_orange": {"fill": "#009e73", "stroke": "#007a59"},   # 绿（色盲安全）
+        "node_yellow": {"fill": "#f0e442", "stroke": "#d4c720"},   # 黄（色盲安全）
+        "node_purple": {"fill": "#0072b2", "stroke": "#00548a"},   # 蓝（色盲安全）
+        "node_red":    {"fill": "#d55e00", "stroke": "#a84a00"},   # 红橙（色盲安全）
+        "node_cyan":   {"fill": "#cc79a7", "stroke": "#b05a8e"},   # 粉紫（色盲安全）
+        "bg": "#FFFFFF",
+        "layer_bg": "#F4F6F8",
+        "layer_stroke": "#D5DCE4",
+        "title_color": "#1A1A1A",
+        "text_color": "#333333",
+    },
 }
 DEFAULT_PALETTE = PALETTES["academic"]
 
 
 # ===== 配色方案描述 =====
 PALETTE_INFO = {
-    "academic": "学术论文 — Nature/PNAS 风格，低饱和度、色盲友好",
+    "academic": "默认 — draw.io 官方标准配色，白色背景最佳可读性",
     "business": "商务汇报 — Google Material 3 风格",
     "minimal": "极简线框 — Figma 原型风格，节点统一灰色",
     "tech": "科技公司 — Vercel/Linear 风格，高饱和色彩",
     "warm": "温暖大地 — 咖啡/陶土暖色系",
+    "dark": "深色主题 — 暗背景高对比度，适合深色模式展示",
+    "colorblind-safe": "色盲友好 — 基于 Okabe-Ito 调色板，红绿色盲/蓝黄色盲均可区分",
     "paper-wireframe": "极简线框 — 论文黑白打印场景",
     "paper-grayscale": "全灰度 — 论文黑白印刷极致优化",
 }
@@ -161,6 +193,15 @@ ARROW_STYLES = {
 
 
 # ===== 颜色工具函数 =====
+def _sanitize_color(val):
+    """清理颜色值，移除可能注入 SVG/HTML 属性的字符"""
+    if not isinstance(val, str):
+        return "#888888"
+    # 仅允许字母、数字、#、(、)、,、空格（覆盖 #hex、rgb()、named colors）
+    safe = "".join(c for c in val if c.isalnum() or c in "#(),. ")
+    return safe or "#888888"
+
+
 def _hex_to_rgb(h):
     """#RRGGBB 或 #RGB → (R, G, B)"""
     h = h.lstrip("#")

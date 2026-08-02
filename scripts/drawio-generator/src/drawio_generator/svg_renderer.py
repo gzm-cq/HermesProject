@@ -3,19 +3,23 @@
 
 from xml.sax.saxutils import escape
 
-from .palettes import ARROW_STYLES, _resolve_color, _lighten
+from .palettes import ARROW_STYLES, _resolve_color, _lighten, _sanitize_color
 from .shapes import _render_svg_shape
-from .geometry import _compute_bounding_box, _get_node_by_id, _compute_orthogonal_edge
+from .geometry import _compute_bounding_box, compute_edge_path
 
 
 # ===== SVG 模板函数 =====
 
 def _svg_header(vx, vy, vw, vh, font_family, font_size):
     """SVG 根元素（响应式 viewBox）"""
+    # 防御性转义，防止 XML 注入
+    from xml.sax.saxutils import quoteattr
+    ff = font_family if isinstance(font_family, str) else ""
+    fs = int(font_size) if isinstance(font_size, (int, float, str)) else 12
     return (f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'width="100%" viewBox="{vx} {vy} {vw} {vh}" '
             f'preserveAspectRatio="xMidYMid meet" '
-            f'font-family="{font_family}" font-size="{font_size}">')
+            f'font-family={quoteattr(ff)} font-size="{fs}">')
 
 
 def _svg_footer():
@@ -23,16 +27,23 @@ def _svg_footer():
 
 
 def _svg_marker_def(arrow_style, edge_color, sw):
-    """生成箭头 marker 定义"""
+    """生成箭头 marker 定义（含 endArrow 和 startArrow）"""
     arrow_info = ARROW_STYLES.get(arrow_style, ARROW_STYLES["classic"])
     if not arrow_info["svg_path"]:
         return []
     is_open = (arrow_info["svg_fill"] == "none")
     svg_fill = "none" if is_open else edge_color
     svg_stroke = edge_color if is_open else "none"
+    mw = min(sw * 4, 8)
+    mh = min(sw * 4, 8)
     lines = [
         (f'<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" '
-         f'markerWidth="{min(sw*4, 8)}" markerHeight="{min(sw*4, 8)}" orient="auto">'),
+         f'markerWidth="{mw}" markerHeight="{mh}" orient="auto">'),
+        (f'<path d="{arrow_info["svg_path"]}" fill="{svg_fill}" '
+         f'stroke="{svg_stroke}" stroke-width="{min(sw, 1.5)}"/>'),
+        "</marker>",
+        (f'<marker id="as" viewBox="0 0 10 10" refX="9" refY="5" '
+         f'markerWidth="{mw}" markerHeight="{mh}" orient="auto-start-reverse">'),
         (f'<path d="{arrow_info["svg_path"]}" fill="{svg_fill}" '
          f'stroke="{svg_stroke}" stroke-width="{min(sw, 1.5)}"/>'),
         "</marker>",
@@ -102,14 +113,40 @@ def _svg_edge_line(x1, y1, x2, y2, color, sw, dashed=False):
             f'stroke="{color}" stroke-width="{sw}" {dash} marker-end="url(#a)"/>')
 
 
-def _svg_edge_path(points, color, sw, dashed=False):
-    """正交折线路径，points 为 [(x1,y1), (x2,y2), ...]"""
+def _svg_edge_path(points, color, sw, dashed=False, curve="orthogonal", bidirectional=False, filter_attr="", flow_animation=False):
+    """边路径，支持 polyline（orthogonal/straight）和 bezier 曲线，可选 flowAnimation"""
     dash = 'stroke-dasharray="5,3"' if dashed else ""
-    d = " ".join(f"{p[0]},{p[1]}" for p in points)
-    return (f'<path d="M {d}" fill="none" '
-            f'stroke="{color}" stroke-width="{sw}" {dash} marker-end="url(#a)"/>')
+    markers = 'marker-end="url(#a)"'
+    if bidirectional:
+        markers += ' marker-start="url(#as)"'
 
+    # 计算路径字符串 d=... 
+    if curve == "bezier" and len(points) == 4:
+        (x1, y1), (c1x, c1y), (c2x, c2y), (x2, y2) = points
+        d = f"M {x1},{y1} C {c1x},{c1y} {c2x},{c2y} {x2},{y2}"
+    else:
+        d = "M " + " ".join(f"{p[0]},{p[1]}" for p in points)
 
+    # flowAnimation：如果启用，输出带动画的完整边（path + animateMotion circles）
+    if flow_animation:  
+        path_id = "edge-path-ref-" + str(id(points))  
+        lines_anim = [f'<path id="{path_id}" d="{d}" fill="none" stroke="{color}" stroke-width="{sw}" {dash} {markers}{filter_attr}/>']
+        lines_anim.append( 
+            '<circle cx="0" cy="0" r="3" fill="#fff" opacity="0.8">' 
+            '<animateMotion dur="2s" repeatCount="indefinite">' 
+            f'<mpath href="#{path_id}"/>'
+            '</animateMotion></circle>'
+        )
+        lines_anim.append(
+            '<circle cx="0" cy="0" r="3" fill="#fff" opacity="0.6">'
+            '<animateMotion dur="2s" repeatCount="indefinite" begin="1s">'
+            f'<mpath href="#{path_id}"/>'
+            '</animateMotion></circle>' 
+        )
+        return "\n".join(lines_anim)
+
+    # 普通边（无动画）
+    return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{sw}" {dash} {markers}{filter_attr}/>'
 def _svg_edge_label_bg(lx, ly, text, font_size):
     """边标签白色半透明背景框"""
     # 估算文本宽度（中文字符≈font_size，ASCII≈font_size*0.6）
@@ -134,17 +171,25 @@ def _svg_edge_label(lx, ly, text, font_size, color):
 # ===== SVG 渲染主函数 =====
 def _render_svg(width, height, title, nodes, edges, layers, colors, path,
                 font_family=None, font_size=None, stroke_width=None,
-                arrow_style="classic", gradient=False, shadow=False, auto_fit=True):
+                arrow_style="classic", gradient=False, shadow=False, auto_fit=True,
+                sketch_mode=False, flow_animation=False):
     """渲染为 SVG 格式，支持全套视觉配置"""
-    title_color = colors.get("title_color", "#1a1a1a")
-    text_color = colors.get("text_color", "#333333")
-    edge_color = colors.get("edge_color", text_color)
+    title_color = _sanitize_color(colors.get("title_color", "#1a1a1a"))
+    text_color = _sanitize_color(colors.get("text_color", "#333333"))
+    edge_color = _sanitize_color(colors.get("edge_color", text_color))
+    bg_color = _sanitize_color(colors.get("bg", "#ffffff"))
     font_family = font_family or "SimSun, Arial, sans-serif"
     fs = font_size or {}
     fs_title = fs.get("title", 16)
     fs_label = fs.get("label", 11)
     fs_small = fs.get("small", 9)
     sw = stroke_width if stroke_width is not None else 1.5
+
+    # sketch: 启用 filter 模拟手绘抖动
+    sketch_filter = ("<filter id='sketch' x='-10%' y='-10%' width='120%' height='120%'>"
+                     "<feTurbulence type='fractalNoise' baseFrequency='0.025' numOctaves='2' seed='7'/>"
+                     "<feDisplacementMap in='SourceGraphic' scale='2'/>"
+                     "</filter>") if sketch_mode else None
 
     # 自动裁剪
     if auto_fit:
@@ -162,6 +207,8 @@ def _render_svg(width, height, title, nodes, edges, layers, colors, path,
     # 投影 filter
     if shadow:
         lines.append(_svg_shadow_filter())
+    if sketch_filter:
+        lines.append(sketch_filter)
 
     # 渐变定义
     grad_ids = set()
@@ -176,7 +223,6 @@ def _render_svg(width, height, title, nodes, edges, layers, colors, path,
     lines.append("</defs>")
 
     # 背景
-    bg_color = colors.get("bg", "#ffffff")
     lines.append(_svg_background(vx, vy, vw, vh, bg_color))
 
     # 标题
@@ -184,21 +230,22 @@ def _render_svg(width, height, title, nodes, edges, layers, colors, path,
 
     # 层次
     for layer in layers:
-        lx, ly, lw, lh = layer["x"], layer["y"], layer["w"], layer["h"]
-        lbg = colors.get("layer_bg", "#f5f5f5")
-        lstroke = colors.get("layer_stroke", "#ccc")
+        lx, ly, lw, lh = (layer.get("x", 0) or 0), (layer.get("y", 0) or 0), (layer.get("w", 0) or 0), (layer.get("h", 0) or 0)
+        lbg = _sanitize_color(colors.get("layer_bg", "#f5f5f5"))
+        lstroke = _sanitize_color(colors.get("layer_stroke", "#ccc"))
         lines.append(_svg_layer_rect(lx, ly, lw, lh, lbg, lstroke, sw))
         if "label" in layer:
             lines.append(_svg_layer_label(lx, lw, ly, layer["label"], fs_label, title_color))
 
     # 节点
     for node in nodes:
-        nx, ny, nw, nh = node["x"], node["y"], node["w"], node["h"]
+        nx, ny, nw, nh = (node.get("x", 0) or 0), (node.get("y", 0) or 0), (node.get("w", 0) or 0), (node.get("h", 0) or 0)
         nc = _resolve_color(colors, node)
         shadow_attr = ' filter="url(#shadow)"' if shadow else ""
+        sketch_attr = ' filter="url(#sketch)"' if sketch_mode else ""
         fill_val = f"url(#g_{id(node)})" if gradient else nc["fill"]
         lines.append(_render_svg_shape(node, nx, ny, nw, nh, fill_val,
-                                        nc["stroke"], sw, shadow_attr))
+                                        nc["stroke"], sw, shadow_attr, sketch_attr))
         # 主标签
         label = node.get("label", "")
         if label:
@@ -210,22 +257,39 @@ def _render_svg(width, height, title, nodes, edges, layers, colors, path,
             lines.append(_svg_sub_label(nx, nw, ny, nh, sub, fs_small, text_color))
 
     # 边
+    node_map = {n.get("id", ""): n for n in nodes if n.get("id")}
     for edge in edges:
         src_id = edge.get("from", "")
         tgt_id = edge.get("to", "")
-        src_node = _get_node_by_id(nodes, src_id)
-        tgt_node = _get_node_by_id(nodes, tgt_id)
+        src_node = node_map.get(src_id)
+        tgt_node = node_map.get(tgt_id)
         if src_node and tgt_node:
-            # 优先使用预计算路径，否则实时计算
-            edge_path = edge.get("points") or _compute_orthogonal_edge(src_node, tgt_node)
+            curve = edge.get("curve", "orthogonal")
+            # 优先使用预计算路径（仅限正交），否则实时计算
+            precomputed = edge.get("points")
+            if precomputed and curve == "orthogonal":
+                edge_path = precomputed
+            else:
+                edge_path = compute_edge_path(src_node, tgt_node, curve=curve)
             # 回边（反馈边）用橙色 + 虚线
             is_back = edge.get("back_edge", False)
             ec = "#E74C3C" if is_back else edge_color
+            bidirectional = edge.get("bidirectional", False)
+            edge_filter = ' filter="url(#sketch)"' if sketch_mode else ""
+            flow_animation = edge.get("flow_animation", False)
             lines.append(_svg_edge_path(edge_path, ec, sw,
-                                         dashed=is_back or edge.get("dashed", False)))
+                                         dashed=is_back or edge.get("dashed", False),
+                                         curve=curve, bidirectional=bidirectional,
+                                         filter_attr=edge_filter,
+                                         flow_animation=flow_animation))
             # 边标签（取中间段的中点）
             if edge.get("label"):
-                if len(edge_path) >= 3:
+                if curve == "bezier" and len(edge_path) == 4:
+                    # 贝塞尔曲线：取控制点中点附近的近似中点
+                    (x1, y1), (c1x, c1y), (c2x, c2y), (x2, y2) = edge_path
+                    lx = (x1 + x2 + c1x + c2x) // 4
+                    ly = (y1 + y2 + c1y + c2y) // 4
+                elif len(edge_path) >= 3:
                     # 折线：取中间段的两个端点
                     mid_idx = len(edge_path) // 2
                     lx = (edge_path[mid_idx - 1][0] + edge_path[mid_idx][0]) // 2

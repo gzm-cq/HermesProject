@@ -6,11 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-
-def _make_reflection(sid="s1", title="反思标题", score=5, content=None):
-    if content is None:
-        content = f"# {title}\n\n## 摘要\n这是关于{title}的摘要内容。\n\n## 关键决策\n测试决策。\n"
-    return {"session_id": sid, "title": title, "score": score, "content": content}
+from tests._helpers import make_reflection as _make_reflection
 
 
 # ── _sanitize_filename ──────────────────────────────
@@ -192,14 +188,17 @@ class TestPromoteFilenameAndIdempotency:
 
 class TestFeishuIdempotency:
     def test_already_pushed_today_skips(self, module, tmp_config):
-        """今天已推送过则跳过。"""
+        """已推送过的 session_id 不再重复推送。"""
         from datetime import datetime
         feishu_log = tmp_config["cache"].get("feishu_log",
             os.path.join(os.path.dirname(tmp_config["cache"]["verdict_dir"]), "feishu-log.json"))
         os.makedirs(os.path.dirname(feishu_log), exist_ok=True)
-        today = datetime.now().strftime("%Y-%m-%d")
         with open(feishu_log, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"date": today, "time": "10:00"}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({
+                "date": "2026-07-20", "time": "10:00",
+                "session_ids": ["s1"],
+                "titles": ["测试"],
+            }, ensure_ascii=False) + "\n")
 
         reflections = [_make_reflection("s1", "测试")]
         with patch.object(module.subprocess, "run") as mock_run:

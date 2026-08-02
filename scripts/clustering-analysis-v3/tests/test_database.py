@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("psycopg2", reason="psycopg2 not installed")
+
 from clustering_analysis.adapters.database import DatabaseAdapter
 
 

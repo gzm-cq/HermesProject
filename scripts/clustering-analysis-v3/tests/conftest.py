@@ -14,6 +14,11 @@ _src = Path(__file__).resolve().parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
+# scripts/ 子目录（mark_memory 等独立脚本）
+_scripts = Path(__file__).resolve().parent.parent / "scripts"
+if str(_scripts) not in sys.path:
+    sys.path.insert(0, str(_scripts))
+
 from clustering_analysis.config import AppConfig
 
 
