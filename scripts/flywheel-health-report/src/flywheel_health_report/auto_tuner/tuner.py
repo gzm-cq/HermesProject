@@ -567,19 +567,21 @@ def update_state(
 
     # ③ 方向历史 + 震荡检测（上→下→上 或 下→上→下 视为来回抖动）
     #    震荡后给一个"振荡惩罚"，加速收敛，且后续计数不应该被 else 清零。
+    #    direction="none"（到边界跳过）不污染方向历史，不参与震荡检测。
     osc_punish = 0
-    history = p.setdefault("direction_history", [])
-    if last_direction_record is not None:
-        if not history or history[-1] != last_direction_record:
-            history.append(last_direction_record)
-    history.append(direction)
-    if len(history) > 3:
-        history[:] = history[-3:]
-    if len(history) >= 3:
-        a, b, c = history[-3], history[-2], history[-1]
-        if a != b and b != c and a == c:
-            osc_punish = 2
-            history.clear()
+    if direction != "none":
+        history = p.setdefault("direction_history", [])
+        if last_direction_record is not None:
+            if not history or history[-1] != last_direction_record:
+                history.append(last_direction_record)
+        history.append(direction)
+        if len(history) > 3:
+            history[:] = history[-3:]
+        if len(history) >= 3:
+            a, b, c = history[-3], history[-2], history[-1]
+            if a != b and b != c and a == c:
+                osc_punish = 2
+                history.clear()
 
     # ④ no_change / 振荡惩罚计数
     # 注意：no_change=False 只清零自然计数，**不清振荡惩罚**（否则振荡惩罚白加了）
@@ -613,8 +615,9 @@ def update_state(
         if int(p.get("no_change_count", 0)) < NO_CHANGE_LOCK_THRESHOLD:
             pass  # 清不清都行，保留震荡惩罚是合理的
 
-    # ⑥ 记录本次方向（下次震荡判断用）
-    p["last_direction"] = direction
+    # ⑥ 记录本次方向（下次震荡判断用）；"none"（到边界跳过）不覆盖 last_direction
+    if direction != "none":
+        p["last_direction"] = direction
     return ns
 
 
@@ -887,6 +890,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     decision = determine_direction(name, current, pmin, pmax, step, fb_csv, last_tune)
     if not decision:
         log_warn("无法确定调优方向（可能已到边界），跳过")
+        # 同步 bash 版约束：到边界也调用 update_state(no_change=True)，
+        # 让 no_change_count 累加，达到 NO_CHANGE_LOCK_THRESHOLD 后能锁定该参数，
+        # 避免每次运行都选中已到边界的参数再跳过。
+        ns = update_state(
+            state, name, "none", current,
+            metrics_improved=True,  # 未恶化，仅无法继续调
+            no_change=True,
+            tune_date=today,
+            old_value=current,
+            last_direction_record=(state.get(name) or {}).get("last_direction"),
+        )
+        save_state(ns)
+        log_ok(f"已记录 no_change（边界跳过），状态已写回")
         return 0
     direction = decision["direction"]
     new_val = float(decision["new_value"])
