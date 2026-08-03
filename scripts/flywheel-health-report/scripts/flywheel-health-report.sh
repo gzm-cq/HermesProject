@@ -1,11 +1,11 @@
 #!/bin/bash
 # flywheel-health-report.sh — 飞轮健康报告统一生成
 #
-# 部署路径: /root/.hermes/scripts/flywheel-health-report.sh
+# 部署路径: /root/.hermes/scripts/flywheel-health-report/scripts/flywheel-health-report.sh
 # 调度: CN 08:00（UTC 00:00），此时前一天 UTC 数据已完整
 #
 # 功能:
-#   - 调用 flywheel-health-report.py 生成报告
+#   - 调用 flywheel_health_report.cli 生成报告
 #   - 发送飞书通知：只报 P0/P1/失败任务，无多余信息
 
 set -euo pipefail
@@ -22,21 +22,23 @@ cron_init "flywheel-health-report"
 CRON_SKIP_FINISH_NOTIFY=true
 
 CHAT_ID="${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}"
-# 允许通过 HERMES_HOME 环境变量覆盖默认路径
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 REPORT_DIR="${HERMES_HOME}/logs/reports"
-SCRIPT_PATH="${HERMES_HOME}/scripts/flywheel-health-report.py"
+
+# 设置 PYTHONPATH 指向包的 src 目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}"
+
 # P0/P1 通知最大行数（避免飞书消息过长）
 MAX_P0_LINES=5
 MAX_P1_LINES=8
-# 文件名用 CN 日期（用户视角的"今天"），与 py 内部 UTC 数据窗口解耦
-# py 内部统计 UTC 前一天的完整数据（CN 17:00 = UTC 09:00，前一天 UTC 数据已完整）
 TODAY_CN=$(TZ='Asia/Shanghai' date +%Y-%m-%d)
 REPORT_FILE="${REPORT_DIR}/flywheel-report-${TODAY_CN}.md"
 
 cron_section "飞轮健康报告生成"
 _RC=0
-if python3 "$SCRIPT_PATH" --home "$HERMES_HOME"; then
+if python3 -m flywheel_health_report.cli --home "$HERMES_HOME"; then
     cron_ok "报告已生成，无 P0 问题"
     _STEP_RESULTS+=("✅ 报告生成（无 P0）")
 else
@@ -53,7 +55,6 @@ fi
 if command -v lark-cli &>/dev/null; then
     cron_section "发送飞书通知"
 
-    # 只提取 P0/P1 数据行和失败任务（动态行数，不截断）
     P0=$(awk '/^## 🔴 P0/{f=1;next} /^## /{f=0} f && /^\|/' "$REPORT_FILE" | tail -n +2 | head -${MAX_P0_LINES} || echo "")
     P1=$(awk '/^## 🟡 P1/{f=1;next} /^## /{f=0} f && /^\|/' "$REPORT_FILE" | tail -n +2 | head -${MAX_P1_LINES} || echo "")
     FAILED_LINE=$(awk -F'|' '$3 ~ /❌/ {print}' "$REPORT_FILE" | head -1 || echo "")
@@ -94,7 +95,7 @@ if command -v lark-cli &>/dev/null; then
 fi
 
 # ===== Auto-Tuner: 参数自优化 =====
-_AUTO_TUNER="${HERMES_HOME}/scripts/auto-tuner.sh"
+_AUTO_TUNER="${SCRIPT_DIR}/auto-tuner.sh"
 if [[ -f "$_AUTO_TUNER" ]]; then
     cron_section "Auto-Tuner 参数自优化"
     if bash "$_AUTO_TUNER"; then

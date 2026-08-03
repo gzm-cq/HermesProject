@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""auto-tuner.py — 飞轮参数自优化调优器（纯Python版，v2 闭环）
+"""tuner.py — 飞轮参数自优化调优器（纯Python版，v2 闭环）
+
+从 cron-wrappers/auto-tuner.py 拆分而来：
+  - 路径常量 / 参数定义 / 阈值 → ..config
+  - 飞书通知函数 → .notifier
+  - 本模块保留：工具函数、指标提取、闭环核心、状态机、方向决策、暂停机制、main
 
 与 bash 版 auto-tuner.sh **完全兼容**：
   - 路径常量一致
@@ -19,8 +24,8 @@
   6. update_state() 每次调优/确认生效时 **一定调用并写回磁盘**
 
 用法:
-    python3 auto-tuner.py [--dry-run] [--help]
-    python3 auto-tuner.py --dry-run   # 只输出决策，不改 .env、不发飞书、写 dry_run 日志
+    python3 -m flywheel_health_report.auto_tuner.tuner [--dry-run] [--help]
+    python3 -m flywheel_health_report.auto_tuner.tuner --dry-run
 """
 
 import argparse
@@ -33,41 +38,20 @@ import sys
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..config import (
+    HERMES_HOME, ENV_FILE, HISTORY_FILE, LOG_FILE, PAUSE_FILE,
+    BACKUP_DIR, STATE_FILE, CRON_LIB, FEISHU_CHAT_ID,
+    PARAM_DEFS, FEEDBACK_KEYS,
+    NO_CHANGE_LOCK_THRESHOLD, CONSECUTIVE_DEGRADATION_SUSPEND_THRESHOLD,
+    COOLDOWN_DAYS_AFTER_APPLY,
+)
+from .notifier import _send_lark, notify_restart_reminder, notify_gateway_restart
+
+
 # ============================================================
-# 0. 路径 & 全局常量（与 bash 版完全一致，保证生产兼容）
+# 0. 颜色（stdout 是 TTY 时启用，与 bash 版一致）
 # ============================================================
 
-HERMES_HOME = os.environ.get("HERMES_HOME", "/root/.hermes")
-ENV_FILE = os.path.join(HERMES_HOME, ".env")
-HISTORY_FILE = os.path.join(HERMES_HOME, "data", "flywheel", "daily-summary-history.jsonl")
-LOG_FILE = os.path.join(HERMES_HOME, "data", "flywheel", "auto-tuner-log.jsonl")
-PAUSE_FILE = os.path.join(HERMES_HOME, "data", "flywheel", "auto-tuner.pause")
-BACKUP_DIR = os.path.join(HERMES_HOME, "backups", "auto-tuner")
-STATE_FILE = os.path.join(HERMES_HOME, "data", "flywheel", "auto-tuner-state.json")
-
-CRON_LIB = os.environ.get("CRON_LIB", "/root/.hermes/lib/cron_common.sh")
-FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "oc_f04a9f65d4b780511cc3f402c7d54ac3")
-
-# 参数池（与 bash 版 PARAM_DEFS 逐行一致）
-# (name, default, pmin, pmax, step, feedback_csv)
-PARAM_DEFS: List[Tuple[str, float, float, float, float, str]] = [
-    ("KN_MIN_SCORE",               0.6, 0.4, 0.8, 0.05, "kn_avg_score,router_empty_pct"),
-    ("sag_max_inject",             3.0, 2.0, 6.0, 1.00, "sag_total_kept"),
-    ("sag_search_top_k",           3.0, 3.0, 10.0,1.00, "sag_merge_zero_pct"),
-    ("token_budget_hindsight_ratio",0.4,0.3, 0.6, 0.05, "memory_hindsight_count,sag_total_kept"),
-]
-
-FEEDBACK_KEYS = [
-    "kn_avg_score", "router_empty_pct", "sag_total_kept",
-    "sag_merge_zero_pct", "memory_hindsight_count",
-]
-
-# 收敛/锁定/暂停阈值
-NO_CHANGE_LOCK_THRESHOLD = 3     # 连续 N 次无变化 → 锁定
-CONSECUTIVE_DEGRADATION_SUSPEND_THRESHOLD = 3  # 连续 N 天恶化 → 暂停
-COOLDOWN_DAYS_AFTER_APPLY = 0    # 调优生效后等 N 天再调下一个（0 = 隔天允许，只要不是同一天）
-
-# 颜色（stdout 是 TTY 时启用，与 bash 版一致）
 _IS_TTY = sys.stdout.isatty()
 
 
@@ -95,7 +79,7 @@ def log_step(msg: str) -> None:  print(f"{C_BLU}[step ]{C_RST} {msg}")
 
 
 # ============================================================
-# 2. 工具函数：日期 / 原子写入 / JSONL / .env / 通知
+# 2. 工具函数：日期 / 原子写入 / JSONL / .env
 # ============================================================
 
 def _today_cn() -> str:
@@ -243,33 +227,6 @@ def _run_shell(cmd: str, timeout: int = 10) -> Tuple[str, str, int]:
         return "", "timeout", -1
     except Exception as e:
         return "", str(e), -1
-
-
-def _has_cron_notify() -> bool:
-    """检查 cron_common.sh 是否提供 cron_notify（实际 bash 侧定义的函数）。
-    Python 里无法直接 source，我们以 lib 文件存在作为 proxy，
-    然后走 lark-cli 直接发送（避免 bash-函数依赖导致耦合）。
-    实际环境两边都 OK。"""
-    return os.path.isfile(CRON_LIB)
-
-
-def _send_lark(title: str, msg: str) -> None:
-    """尽力发送飞书，失败只 warn。"""
-    # 优先：如果环境里有 cron_notify（通过 bash -lc 调用），走这里；
-    # 否则 fallback 到 lark-cli。
-    if _has_cron_notify():
-        out, err, rc = _run_shell(
-            f"bash -lc 'source \"{CRON_LIB}\" 2>/dev/null; "
-            f"cron_notify {json.dumps(title)} {json.dumps(msg)}' 2>&1 || true",
-            timeout=20,
-        )
-        if rc == 0:
-            return
-        # cron_notify 失败则走 fallback
-    # Fallback: lark-cli
-    cmd = (f'lark-cli message send --chat-id "{FEISHU_CHAT_ID}" '
-           f'--title {json.dumps(title)} --text {json.dumps(msg)} 2>/dev/null || true')
-    _run_shell(cmd, timeout=20)
 
 
 # ============================================================
@@ -423,22 +380,6 @@ def update_log_entry(param_name: str, tune_date: str, new_status: str,
         rec["metrics_after"] = metrics_after
     lines[last_match_idx] = json.dumps(rec, ensure_ascii=False)
     _atomic_write_lines(LOG_FILE, lines)
-
-
-def notify_restart_reminder(last_tune: Dict[str, Any]) -> None:
-    """提醒：参数已改但网关未重启，调优没生效。"""
-    param = last_tune.get("parameter", "?")
-    old_v = last_tune.get("old_value", "?")
-    new_v = last_tune.get("new_value", "?")
-    reason = last_tune.get("reason", "")
-    ts = last_tune.get("timestamp", "")
-    title = "⚠️ Auto-Tuner 调优尚未生效（网关未重启）"
-    msg = (f"参数已修改但 hermes-gateway 自 {ts} 之后未重启，调优还没进运行时。\n\n"
-           f"**参数**: {param}\n**旧值**: {old_v}\n**新值**: {new_v}\n"
-           f"**原因**: {reason}\n\n"
-           f"**执行重启**:\n```bash\nsystemctl restart hermes-gateway\n```\n\n"
-           f"**验证**:\n```bash\nsystemctl status hermes-gateway\n```")
-    _send_lark(title, msg)
 
 
 def _parse_feedback(feedback_csv: str) -> List[Tuple[str, str]]:
@@ -818,27 +759,7 @@ def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, fl
 
 
 # ============================================================
-# 7. 飞书通知（网关重启提醒 & 调优完成通知）
-# ============================================================
-
-def notify_gateway_restart(param: str, old_v: Any, new_v: Any, reason: str,
-                           dry_run: bool) -> None:
-    if dry_run:
-        log_info("[DRY-RUN] 跳过飞书通知")
-        return
-    log_step("发送飞书通知 — 需要手动重启网关")
-    title = "🔧 Auto-Tuner 需要手动重启网关"
-    msg = (f"参数已修改，需要重启 hermes-gateway 生效：\n\n"
-           f"**参数**: {param}\n**旧值**: {old_v}\n**新值**: {new_v}\n"
-           f"**原因**: {reason}\n\n"
-           f"**操作**:\n```bash\nsystemctl restart hermes-gateway\n```\n\n"
-           f"**验证**:\n```bash\nsystemctl status hermes-gateway\n```")
-    _send_lark(title, msg)
-    log_ok("飞书通知已发送")
-
-
-# ============================================================
-# 8. 暂停机制（与 bash 版 check_pause 一致，支持 auto-tuner.pause JSON）
+# 7. 暂停机制（与 bash 版 check_pause 一致，支持 auto-tuner.pause JSON）
 # ============================================================
 
 def check_pause() -> bool:
@@ -883,7 +804,7 @@ def check_pause() -> bool:
 
 
 # ============================================================
-# 9. main() — 完整闭环
+# 8. main() — 完整闭环
 # ============================================================
 
 def build_parser() -> argparse.ArgumentParser:

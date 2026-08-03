@@ -1,0 +1,19 @@
+# flywheel-health-report 部署清单
+# 源:  scripts/flywheel-health-report/
+# 标:  /root/.hermes/scripts/flywheel-health-report/
+# 影响: cron 触发的飞轮健康报告生成 + 参数自优化调优器；无需重启服务
+# 注意: 旧版文件 auto-tuner.py/sh 和 flywheel-health-report.py 部署时自动清理
+#
+# 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
+
+# === Include ===
+src/flywheel_health_report/**/*.py
+scripts/**/*.sh
+pyproject.toml
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/.pytest_cache/**
+!**/tests/**
+!**/test_*.py

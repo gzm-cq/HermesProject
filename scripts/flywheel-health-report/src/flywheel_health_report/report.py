@@ -1,0 +1,465 @@
+"""report.py — 7 天趋势表与报告生成器。
+
+从 flywheel-health-report.py L1549-1983 搬入。
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+from .config import (
+    TH, _CRON_TO_FLYWHEEL, _FLYWHEEL_ORDER,
+    CRON_STATE_SUBPATH, CRON_LOG_SUBPATH, TRACE_LOG_SUBPATH,
+    KN_BASELINE_SUBPATH, DATA_FLYWHEEL_SUBPATH, SKILL_USAGE_SUBPATH,
+    ERROR_LOG_SUBPATH, MEMORY_DIR_SUBPATH,
+)
+from .parsers import (
+    parse_cron_states, parse_trace_log, append_daily_summary, load_daily_summary,
+)
+from .utils import _resolve_trend_arrow
+from .integrity import (
+    check_output_integrity, check_dependency_chain,
+    detect_zombie_state_files, detect_report_type,
+)
+from .analyzers.cron_jobs import analyze_cron_jobs
+from .analyzers.router import analyze_router
+from .analyzers.skill import analyze_skill_eval, analyze_skill_usage
+from .analyzers.token_budget import analyze_token_budget
+from .analyzers.sag import analyze_sag_contribution
+from .analyzers.global_errors import analyze_global_errors
+from .analyzers.kt_baseline import analyze_kt_baseline
+from .analyzers.clustering import analyze_clustering
+from .analyzers.kn_baseline import analyze_kn_baseline, analyze_data_credibility
+from .analyzers.memory_cleanup import analyze_memory_cleanup
+from .recommendations import generate_recommendations
+
+
+def format_7day_trend(data_flywheel: Path) -> list[str]:
+    """Format 7-day rolling trend table."""
+    records = load_daily_summary(data_flywheel)
+    if len(records) < 2:
+        return ["历史数据不足 2 天，7 天趋势待积累。"]
+    lines = [
+        "| 日期 | P0/P1 | Router得分 | 全关% | 空结果% | 错误% | KT降级 | Token耗尽% | SAG开启% | SAG召回量 | "
+        "SAG延迟ms | Skill F1 | Skill活跃 | Skill调用次数 | KN unknown% | KN均分 | 聚类噪声% | KT孤立% | MEM占用% | USER占用% | Hindsight产出 | ERROR数 |"
+    ]
+    lines.append(
+        "|------|-------|-----------|-------|---------|-------|--------|-----------|----------|-----------|"
+        "----------|----------|----------|------------|-------------|--------|-----------|---------|---------|---------|--------------|--------|"
+    )
+    for r in records[-7:]:
+        p0 = r.get("p0_count", 0)
+        p1 = r.get("p1_count", 0)
+        lines.append(
+            f"| {r.get('date', '-')} | {p0}/{p1} | "
+            f"{r.get('router_avg_score', '-')} | "
+            f"{r.get('router_full_off_pct', '-')} | "
+            f"{r.get('router_empty_pct', '-')} | "
+            f"{r.get('router_error_rate', '-')} | "
+            f"{r.get('router_kt_fallback_count', '-')} | "
+            f"{r.get('token_exhaust_pct', '-')} | "
+            f"{r.get('sag_on_pct', '-')} | "
+            f"{r.get('sag_total_kept', '-')} | "
+            f"{r.get('sag_avg_latency_ms', '-')} | "
+            f"{r.get('skill_f1', '-')} | "
+            f"{r.get('skill_active_count', '-')} | "
+            f"{r.get('skill_total_uses', '-')} | "
+            f"{r.get('kn_unknown_pct', '-')} | "
+            f"{round(r.get('kn_avg_score', 0), 4) if r.get('kn_avg_score') else '-'} | "
+            f"{r.get('cluster_noise_rate', '-')} | "
+            f"{r.get('kt_orphan_pct', '-')} | "
+            f"{r.get('memory_usage_pct', '-')} | "
+            f"{r.get('memory_user_usage_pct', '-')} | "
+            f"{r.get('memory_hindsight_count', '-')} | "
+            f"{r.get('error_count', '-')} |"
+        )
+    return lines
+
+
+# === Report Generator ===
+
+def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]:
+    now = datetime.now(timezone.utc)
+    now_str = now.strftime("%Y-%m-%d %H:%M UTC")
+    # 报告在 CN 08:00（UTC 00:00）生成，此时 UTC 前一天的完整 24h 数据已就绪。
+    # 数据窗口 = UTC 昨天 + 前天（2 天滚动），保证 Router 样本量 ≥ 50。
+    # 例：CN 7/24 08:00 生成报告 → 数据窗口 = [UTC 7/23, UTC 7/22]
+    data_window = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    data_window_prev = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    data_windows = [data_window, data_window_prev]
+
+    cron_state_dir = home / CRON_STATE_SUBPATH
+    cron_log_dir = home / CRON_LOG_SUBPATH
+    trace_path = home / TRACE_LOG_SUBPATH
+    kn_baseline_dir = home / KN_BASELINE_SUBPATH
+    data_flywheel_dir = home / DATA_FLYWHEEL_SUBPATH
+    skill_usage_path = home / SKILL_USAGE_SUBPATH
+    error_log_path = home / ERROR_LOG_SUBPATH
+
+    # Parse all data
+    cron_states = parse_cron_states(cron_state_dir)
+    trace = parse_trace_log(trace_path, filter_dates=data_windows)
+
+    # Analyze
+    cron_issues, cron_table, elapsed_ann = analyze_cron_jobs(cron_states, cron_log_dir, now)
+    router_issues, router_m, router_trend = analyze_router(trace, data_flywheel_dir)
+    skill_issues, skill_m, skill_trend = analyze_skill_eval(data_flywheel_dir, kn_baseline_dir)
+    skill_usage_issues, skill_usage_m, skill_usage_trend = analyze_skill_usage(skill_usage_path, now)
+    token_issues, token_m, token_trend = analyze_token_budget(trace)
+    sag_contr_issues, sag_contr_m, sag_contr_trend = analyze_sag_contribution(trace)
+    error_issues, error_m, error_trend = analyze_global_errors(error_log_path, data_window)
+    kt_issues, kt_m, kt_trend = analyze_kt_baseline(data_flywheel_dir)
+    cluster_issues, cluster_m, cluster_trend = analyze_clustering(data_flywheel_dir)
+    kn_issues, kn_m, kn_trend = analyze_kn_baseline(kn_baseline_dir)
+    memory_issues, memory_m, memory_trend = analyze_memory_cleanup(home / MEMORY_DIR_SUBPATH, data_window)
+
+    credibility_warnings, credibility_notes = analyze_data_credibility(
+        kt_m, router_m, kn_m, now
+    )
+
+    # Collect issues
+    # Integrity & dependency checks
+    integrity_issues = check_output_integrity(home)
+    dep_issues = check_dependency_chain(cron_states)
+    zombie_files = detect_zombie_state_files(cron_state_dir)
+
+    all_issues = (cron_issues + router_issues + skill_issues + skill_usage_issues +
+                  token_issues + sag_contr_issues + error_issues + kt_issues +
+                  cluster_issues + kn_issues + memory_issues +
+                  integrity_issues + dep_issues)
+    p0 = [i for i in all_issues if i["severity"] == "P0"]
+    p1 = [i for i in all_issues if i["severity"] == "P1"]
+
+    L = []
+    # 报告标题用 data_window（UTC 昨天，对应 CN 当天凌晨前已完整的 24h）
+    # 这样标题日期、数据窗口、daily-summary 记录日期三者一致
+    L.append(f"# Flywheel Health Report - {data_window}")
+    L.append("")
+    L.append(f"**Generated**: {now_str}")
+    L.append(f"**Home**: `{home}`")
+    report_type = detect_report_type(cron_state_dir, now)
+    L.append(f"**Report type**: `{report_type}`")
+    L.append(f"**Data window**: `{data_window}` (UTC, 完整 24h)")
+    zombie_total = len(list(cron_state_dir.glob("*.json"))) - len(cron_table) if cron_state_dir.is_dir() else 0
+    L.append(f"**Core cron tasks**: {len(cron_table)} 个（排除 {zombie_total} 个非飞轮）")
+    if dry_run:
+        L.append("**Mode**: dry-run (no file written)")
+    L.append("")
+
+    # === 概览 ===
+    L.append("## 概览")
+    L.append("")
+    L.append(f"- P0 问题: **{len(p0)}**")
+    L.append(f"- P1 问题: **{len(p1)}**")
+    for w in credibility_warnings:
+        L.append(f"- ⚠️ {w}")
+    for n in credibility_notes:
+        L.append(f"- 📝 {n}")
+    L.append("")
+
+    # === P0 ===
+    L.append("## 🔴 P0 - 需要立即处理")
+    L.append("")
+    if p0:
+        L.append("| 飞轮 | 问题 | 详情 |")
+        L.append("|------|------|------|")
+        for i in p0:
+            L.append(f"| {i['flywheel']} | {i['desc']} | {i.get('detail', '')} |")
+    else:
+        L.append("✅ 无 P0 问题")
+    L.append("")
+
+    # === P1 ===
+    L.append("## 🟡 P1 - 需要关注")
+    L.append("")
+    if p1:
+        L.append("| 飞轮 | 问题 | 详情 |")
+        L.append("|------|------|------|")
+        for i in p1:
+            L.append(f"| {i['flywheel']} | {i['desc']} | {i.get('detail', '')} |")
+    else:
+        L.append("✅ 无 P1 问题")
+    L.append("")
+
+    # === 类别一：任务可靠性 ===
+    L.append("## 📊 任务可靠性")
+    L.append("")
+    L.append("| 任务 | 飞轮 | 状态 | 上次运行 | 耗时 | 耗时异常 |")
+    L.append("|------|------|------|---------|------|---------|")
+    for name, info in sorted(cron_table.items()):
+        icon = "✅" if info["status"] == "success" else "❌" if info["status"] == "fail" else "⚪"
+        fw = _CRON_TO_FLYWHEEL.get(name, name)
+        run_short = info["run_at"][:16] if info["run_at"] != "—" else "—"
+        elapsed_str = f"{info['elapsed']}s" if info['elapsed'] else "—"
+        ann = elapsed_ann.get(name, "—")
+        L.append(f"| {name} | {fw} | {icon} {info['status']} | {run_short} | {elapsed_str} | {ann} |")
+    L.append("")
+
+    # === 类别二：产出明细 ===
+    L.append("## 🔍 产出明细")
+    L.append("")
+
+    # Router
+    L.append("### Router 飞轮")
+    L.append("")
+    if router_m.get("status") == "no_data":
+        L.append("- 无 trace.log 数据")
+    else:
+        L.append(f"- 路由总次数: {router_m['total_masks']}（真实 {router_m['real_total']}，eval 测试 {router_m['eval_total']}）| "
+                 f"样本量: {'充足' if router_m['real_total'] >= TH['min_sample_size'] else '⚠️ 偏少'}")
+        L.append(f"- 全关率: {router_m['full_off_pct']}% ({router_m['full_off']}/{router_m['real_total']}) | "
+                 f"全开率: {router_m['full_on_pct']}% ({router_m['full_on']})")
+        L.append(f"- Hindsight 开启: {router_m['h_on']} | 知识树: {router_m['kt_on']} | Skill: {router_m['s_on']} | SAG: {router_m['sag_on']} ({router_m['sag_on_pct']}%)")
+        L.append(f"- 召回成功: {router_m['success_count']} | 空结果: {router_m['empty_count']} | "
+                 f"超时: {router_m['timeout_count']} | 错误: {router_m.get('error_count', 0)} | "
+                 f"KT降级: {router_m.get('kt_fallback_count', 0)}")
+        L.append(f"- 成功率: {router_m['success_rate']}% | 空结果率: {router_m['empty_rate']}% | "
+                 f"错误率: {router_m.get('error_rate', 0)}% | KT降级率: {router_m.get('kt_fallback_rate', 0)}%")
+        L.append(f"- 平均延迟: {router_m['avg_latency_ms']}ms | p50: {router_m['p50_latency_ms']}ms | "
+                 f"p95: {router_m['p95_latency_ms']}ms | p99: {router_m['p99_latency_ms']}ms | 最大: {router_m['max_latency_ms']}ms")
+        L.append(f"- 平均得分: {router_m['avg_score']} | 多跳展开: {router_m['multi_hop_count']} 次")
+        L.append("")
+        L.append("**Token 预算:**")
+        if token_m.get("status") == "no_data":
+            L.append("- 无 token_budget 数据")
+        else:
+            L.append(f"- 总预算: {token_m['total_budget']} tokens | 事件数: {token_m['event_count']}")
+            ts = token_m["total_stats"]
+            L.append(f"- 消耗: 平均 {ts['avg']} | p50 {ts['p50']} | p90 {ts['p90']} | 最大 {ts['max']}")
+            L.append(f"- 耗尽率: {token_m['exhaust_pct']}% ({token_m['exhaust_count']}/{token_m['event_count']} 次接近耗尽)")
+            hs = token_m["hs_stats"]
+            kt = token_m["kt_stats"]
+            sk = token_m["skill_stats"]
+            L.append(f"- 分源消耗: Hindsight avg={hs['avg']}  KT avg={kt['avg']}  Skill avg={sk['avg']}")
+        L.append("")
+        L.append("**SAG 专项:**")
+        L.append(f"- Router 召回尝试: {router_m['sag_recall_count']} | 异常: {router_m.get('sag_error_count', 0)} | 非空: {router_m['sag_non_empty_count']} | 累计注入: {router_m['sag_total_kept']} 条")
+        L.append(f"- 平均延迟: {router_m['sag_avg_latency_ms']}ms | p50: {router_m['sag_p50_latency_ms']}ms | p95: {router_m['sag_p95_latency_ms']}ms")
+        if sag_contr_m.get("status") != "no_data":
+            rs = sag_contr_m["recall_stats"]
+            ms = sag_contr_m["merge_stats"]
+            # recall_count 与 router_m['sag_recall_count'] 相同，此处不重复显示
+            L.append(f"- 成功召回: {sag_contr_m.get('recall_success_count', sag_contr_m['recall_count'])} 次 (零结果 {sag_contr_m['recall_zero']}), 平均 {rs['avg']} sections, 总计 {rs['total']}")
+            if sag_contr_m.get("recall_error_count", 0) > 0:
+                L.append(f"- 召回异常: {sag_contr_m['recall_error_count']} 次 (已计入上方尝试数)")
+            L.append(f"- SAG 合并量: {sag_contr_m['merge_count']} 次，平均 {ms['avg']} 条，零结果率: {sag_contr_m['merge_zero_pct']}%")
+    L.append("")
+
+    # KN 基线
+    L.append("### KN 基线")
+    L.append("")
+    if kn_m.get("status") == "no_data":
+        L.append("- 无 baseline 数据")
+    else:
+        L.append(f"- 用户查询: {kn_m['total_queries']} | 已过滤测试查询: {kn_m['total_filtered']}")
+        L.append(f"- 未知维度占比: {kn_m['unknown_dim_pct']}%")
+        os = kn_m.get("overall_source", {})
+        if os:
+            L.append(f"- 整体源级贡献: HS={os.get('avg_hs_kept', 0)} "
+                     f"KT={os.get('avg_kt_kept', 0)} SAG={os.get('avg_sag_kept', 0)} "
+                     f"| 延迟: {os.get('avg_latency_ms', 0)}ms")
+        L.append("  *Eval 命中率: 基线中 eval_counted_true/false 均为 0 "
+                 "（LLM judge 评估结果未持久化至该字段，召回成功率参考 trace.log 数据）*")
+        L.append("")
+        L.append("| Dimension | 查询数 | 均分 | HS | KT | SAG | 延迟ms |")
+        L.append("|-----------|--------|------|----|----|-----|--------|")
+        for dim, s in sorted(kn_m["dim_summary"].items()):
+            flag = " ⚠️" if dim == "unknown" else ""
+            L.append(f"| {dim}{flag} | {s['count']} | {s['avg_score']} | "
+                     f"{s.get('avg_hs_kept', 0)} | {s.get('avg_kt_kept', 0)} | "
+                     f"{s.get('avg_sag_kept', 0)} | {s.get('avg_latency_ms', 0)} |")
+    L.append("")
+
+    # Skill
+    L.append("### Skill 飞轮")
+    L.append("")
+    if skill_m.get("status") == "no_data":
+        L.append("- 无 skill_eval 数据")
+    else:
+        L.append(f"- **匹配质量 (eval)**: F1={skill_m['avg_f1']} | Precision={skill_m['avg_precision']} | "
+                 f"Recall={skill_m['avg_recall']}")
+        L.append(f"- 评估查询数: {skill_m['n_queries']} | 时间: {skill_m['timestamp']}")
+    if skill_usage_m.get("status") != "no_data":
+        L.append("")
+        L.append(f"- **真实使用**: 总 Skill {skill_usage_m['total_skills']} 个 | "
+                 f"active {skill_usage_m['active_count']} | 已使用 {skill_usage_m['used_count']} | "
+                 f"从未使用 {skill_usage_m['never_used_count']}")
+        L.append(f"- 总使用次数: {skill_usage_m['total_uses']} | 总浏览: {skill_usage_m['total_views']}")
+        if skill_usage_m.get("stale_count", 0) > 0:
+            L.append(f"- 超 {TH['skill_unused_warn_days']} 天未使用: {skill_usage_m['stale_count']} 个")
+        L.append("")
+        L.append("**Top 10 使用最多:**")
+        L.append("")
+        L.append("| # | Skill | 使用 | 浏览 | 最后使用 |")
+        L.append("|---|-------|------|------|---------|")
+        for i, s in enumerate(skill_usage_m["top_used"], 1):
+            L.append(f"| {i} | {s['name']} | {s['use_count']} | {s['view_count']} | {s['last_used_at']} |")
+        if skill_usage_m.get("recent_7d"):
+            L.append("")
+            L.append(f"**近 7 天活跃 ({len(skill_usage_m['recent_7d'])} 个):**")
+            L.append(", ".join(s["name"] for s in skill_usage_m["recent_7d"][:8]))
+    L.append("")
+
+    # 知识树
+    L.append("### 知识树飞轮")
+    L.append("")
+    if kt_m.get("status") == "no_data":
+        L.append("- 无 baseline 数据")
+    else:
+        L.append(f"- 知识点总量: {kt_m['total_kps']}")
+        L.append(f"- 孤立知识点: {kt_m['orphan_kps']} ({kt_m['orphan_pct']}%)")
+        L.append(f"- 平均置信度: {kt_m['avg_confidence']} | 碎片域: {kt_m['fragment_domains']}")
+        L.append(f"- 采集时间: {kt_m['collected_at']}")
+    L.append("")
+
+    # 聚类
+    L.append("### 聚类飞轮")
+    L.append("")
+    if cluster_m.get("status") == "no_data":
+        L.append("- 无 clustering 数据")
+    else:
+        L.append(f"- 噪声率: {cluster_m['noise_rate']}%{' ⚠️' if cluster_m['noise_rate'] > TH['cluster_noise_rate_high'] else ''}")
+        L.append(f"- 聚类数: {cluster_m['cluster_count']} | Memory Links: {cluster_m['memory_links']}")
+        L.append(f"- 总单元: {cluster_m['total_units']}")
+        if "noise_rate_delta" in cluster_m:
+            L.append(f"- 噪声率变化: {cluster_m['noise_rate_delta']:+.1f}%")
+        L.append(f"- 时间: {cluster_m['timestamp']}")
+    L.append("")
+
+    # 记忆清理
+    L.append("### 记忆清理")
+    L.append("")
+    if memory_m.get("status") == "no_data":
+        L.append("- 无记忆清理数据")
+    else:
+        L.append(f"- MEMORY.md: {memory_m['memory_chars']:,}/{memory_m.get('memory_limit', 50000):,} chars ({memory_m['memory_usage_pct']}%){' ⚠️' if memory_m['memory_usage_pct'] > TH['memory_char_usage_high_pct'] else ''}")
+        L.append(f"- USER.md:   {memory_m['user_chars']:,}/{memory_m.get('user_limit', 15000):,} chars ({memory_m['user_usage_pct']}%){' ⚠️' if memory_m['user_usage_pct'] > TH['memory_char_usage_high_pct'] else ''}")
+        L.append(f"- 清理产出: compress {memory_m['total_compress']} | hindsight {memory_m['total_hindsight']} | remove {memory_m['total_remove']} | merge {memory_m['total_merge']}")
+        if memory_m.get("v2_correct_rate", 0) > 0:
+            L.append(f"- Phase 2 正确率: {memory_m['v2_correct_rate']}%")
+        if memory_m.get("tokens_total", 0) > 0:
+            L.append(f"- Token 消耗: {memory_m['tokens_total']:,}")
+        L.append(f"- 耗时: {memory_m['elapsed_s']}s | 模式: {memory_m['mode']}")
+    L.append("")
+
+    # 全局错误
+    L.append("### 全局错误监控")
+    L.append("")
+    if error_m.get("status") == "no_data":
+        L.append("- 无 errors.log 数据")
+    else:
+        filtered = error_m.get("filtered_errors", 0)
+        L.append(f"- 当日问题日志: {error_m.get('date_logs', 0)} 条 "
+                 f"(ERROR {error_m.get('error_count', 0)} | WARNING {error_m.get('warning_count', 0)})")
+        if filtered > 0:
+            L.append(f"- 已过滤重启级联噪音: {filtered} 条")
+        L.append(f"- ERROR 占比: {error_m.get('error_pct', 0)}%")
+        top_mods = error_m.get("top_modules", [])
+        if top_mods:
+            L.append("")
+            L.append("**Top 10 错误模块:**")
+            L.append("")
+            L.append("| # | 模块 | 条数 |")
+            L.append("|---|------|------|")
+            for i, m in enumerate(top_mods, 1):
+                L.append(f"| {i} | {m['module']} | {m['count']} |")
+        top_kws = error_m.get("top_keywords", [])
+        if top_kws:
+            L.append("")
+            kw_str = ", ".join(f"{k['keyword']}({k['count']})" for k in top_kws)
+            L.append(f"**关键词分布**: {kw_str}")
+    L.append("")
+
+    # === 类别三：变化趋势 ===
+    L.append("## 📈 变化趋势")
+    L.append("")
+    all_trends = {}
+    all_trends.update(router_trend)
+    all_trends.update(skill_trend)
+    all_trends.update(kt_trend)
+    all_trends.update(cluster_trend)
+    all_trends.update(kn_trend)
+    all_trends.update(memory_trend)
+
+    if all_trends:
+        L.append("| 指标 | 变化 |")
+        L.append("|------|------|")
+        for key, val in sorted(all_trends.items()):
+            L.append(f"| {key} | {val} |")
+    else:
+        L.append("无趋势数据（基线历史数据不足，V2 自动积累）")
+    L.append("")
+
+    # === 7 天滚动趋势 ===
+    L.append("## 📊 7 天滚动趋势")
+    L.append("")
+    L.extend(format_7day_trend(data_flywheel_dir))
+    L.append("")
+
+    # === 类别四：数据可信度 ===
+    L.append("## ⚠️ 数据可信度")
+    L.append("")
+    if credibility_warnings or credibility_notes:
+        for w in credibility_warnings:
+            L.append(f"- ⚠️ {w}")
+        for n in credibility_notes:
+            L.append(f"- 📝 {n}")
+    else:
+        L.append("✅ 数据样本充足，基线新鲜，分析结果可靠")
+    if zombie_files:
+        L.append(f"- 📝 非 飞轮 state 文件: {', '.join(zombie_files)}")
+    L.append("")
+
+    # Save daily summary for 7-day trend (date = 数据窗口日期)
+    append_daily_summary(data_flywheel_dir, {
+        "date": data_window,
+        "report_type": report_type,
+        "p0_count": len(p0),
+        "p1_count": len(p1),
+        "router_full_off_pct": router_m.get("full_off_pct", 0),
+        "router_empty_pct": router_m.get("empty_rate", 0),
+        "router_error_rate": router_m.get("error_rate", 0),
+        "router_kt_fallback_count": router_m.get("kt_fallback_count", 0),
+        "router_avg_score": router_m.get("avg_score", 0),
+        "router_avg_latency_ms": router_m.get("avg_latency_ms", 0),
+        "sag_on_pct": router_m.get("sag_on_pct", 0),
+        "sag_total_kept": router_m.get("sag_total_kept", 0),
+        "sag_avg_latency_ms": router_m.get("sag_avg_latency_ms", 0),
+        "sag_merge_zero_pct": sag_contr_m.get("merge_zero_pct", 0),
+        "token_exhaust_pct": token_m.get("exhaust_pct", 0),
+        "skill_f1": skill_m.get("avg_f1", 0),
+        "skill_active_count": skill_usage_m.get("active_count", 0),
+        # used_count = 使用过（use_count>0）的不同 active skill 数量
+        # total_uses = 所有 active skill 的 use_count 之和（总调用次数）
+        "skill_used_count": skill_usage_m.get("used_count", 0),
+        "skill_total_uses": skill_usage_m.get("total_uses", 0),
+        "kn_unknown_pct": kn_m.get("unknown_dim_pct", 0),
+        "kn_avg_score": sum(s["avg_score"] for s in kn_m.get("dim_summary", {}).values()) / max(len(kn_m.get("dim_summary", {})), 1) if kn_m.get("dim_summary") else 0,
+        "cluster_noise_rate": cluster_m.get("noise_rate", 0),
+        "kt_orphan_pct": kt_m.get("orphan_pct", 0),
+        "memory_usage_pct": memory_m.get("memory_usage_pct", 0),
+        "memory_user_usage_pct": memory_m.get("user_usage_pct", 0),
+        "memory_hindsight_count": memory_m.get("total_hindsight", 0),
+        "memory_compress_count": memory_m.get("total_compress", 0),
+        "error_count": error_m.get("error_count", 0),
+        "warning_count": error_m.get("warning_count", 0),
+    })
+
+    # === 优化方向 ===
+    L.append("## 💡 优化方向")
+    L.append("")
+    recs = generate_recommendations(
+        router_m, skill_m, kn_m, kt_m, cluster_m,
+        all_issues, all_trends, credibility_warnings, zombie_files,
+        token_m, sag_contr_m, skill_usage_m, error_m, memory_m
+    )
+    if recs:
+        for r in recs:
+            L.append(f"- **{r['flywheel']}**: {r['desc']}")
+    else:
+        L.append("✅ 当前无优先优化项，继续保持日常维护。")
+    L.append("")
+
+    return "\n".join(L), p0

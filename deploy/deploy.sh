@@ -31,6 +31,7 @@
 #   skillopt-sleep            SkillOpt-Sleep 技能优化引擎
 #   cron-common               cron 定时任务公共库
 #   cron-wrappers              cron 定时任务 wrapper 脚本（统一部署到 /root/.hermes/scripts/）
+#   flywheel-health-report    飞轮健康报告+参数自优化调优器
 #   system-health-check       系统健康巡检脚本
 
 set -euo pipefail
@@ -68,6 +69,7 @@ declare -A PROJECT_INFO=(
   [cron-common]="cron 定时任务公共库"
   [cron-wrappers]="cron 定时任务 wrapper 脚本"
   [system-health-check]="系统健康巡检脚本"
+  [flywheel-health-report]="飞轮健康报告+参数自优化调优器"
 )
 
 # ===== 子命令: list =====
