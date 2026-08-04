@@ -1,17 +1,17 @@
 """记忆文件读写适配器 — 读取 MEMORY.md/USER.md 并执行清理操作。"""
 
 import json
+import importlib.util
 import logging
 import re
 import shutil
-import sys
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from memory_cleanup.config import AppConfig, CONFIG
+from memory_cleanup.config import AppConfig, CONFIG, validate_path
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,9 @@ class MemoryFileStore:
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=120):
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    if r.status < 200 or r.status >= 300:
+                        raise OSError(f"Hindsight API returned HTTP {r.status}")
                     return True
             except Exception as e:
                 if attempt < 1:
@@ -103,11 +105,21 @@ class MemoryFileStore:
 
         延迟导入 hermes-agent MemoryStore，仅在 --apply 模式下触发。
         """
-        # 延迟导入 hermes-agent MemoryStore
-        agent_path = self._config.hermes_agent_path
-        if agent_path not in sys.path:
-            sys.path.insert(0, agent_path)
-        from tools.memory_tool import MemoryStore  # type: ignore[import]
+        # 延迟导入 hermes-agent MemoryStore — 使用 importlib 直接加载，避免路径注入
+        agent_path = Path(self._config.hermes_agent_path)
+        memory_tool_path = agent_path / "tools" / "memory_tool.py"
+        if not memory_tool_path.exists():
+            raise FileNotFoundError(f"MemoryStore module not found: {memory_tool_path}")
+        spec = importlib.util.spec_from_file_location("tools.memory_tool", memory_tool_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load MemoryStore module from {memory_tool_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        MemoryStore = module.MemoryStore  # type: ignore[assignment]
+
+        # 校验路径在允许目录树内（P1-1）
+        validate_path(self._config.memory_path)
+        validate_path(self._config.hermes_agent_path)
 
         # 备份
         mem_dir = Path(self._config.memory_path).parent
@@ -230,7 +242,7 @@ class MemoryFileStore:
             future_to_task = {pool.submit(_retain_worker, t): t for t in retain_tasks}
             for f in as_completed(future_to_task):
                 try:
-                    idx, ok, label = f.result(timeout=30)
+                    idx, ok, label = f.result(timeout=150)
                     if ok:
                         retain_ok.add(idx)
                         results["ok"].append((source, idx, label))
@@ -240,7 +252,7 @@ class MemoryFileStore:
                 except TimeoutError:
                     idx, _, label = future_to_task[f]
                     retain_fail.add(idx)
-                    results["fail"].append((source, idx, f"{label}: retain timeout (30s)"))
+                    results["fail"].append((source, idx, f"{label}: retain timeout (150s)"))
 
         print(f"    retain: {len(retain_ok)} OK / {len(retain_fail)} 失败跳过", flush=True)
 

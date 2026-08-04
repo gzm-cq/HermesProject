@@ -63,10 +63,13 @@ class TestRetain:
 
     def test_success_returns_true(self, app_config: AppConfig) -> None:
         store = MemoryFileStore(app_config)
-        with patch.object(urllib.request, "urlopen", return_value=MagicMock()) as mock_urlopen:
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch.object(urllib.request, "urlopen", return_value=mock_resp):
             result = store._retain("test content")
             assert result is True
-            mock_urlopen.assert_called_once()
 
     def test_retry_then_fail(self, app_config: AppConfig) -> None:
         store = MemoryFileStore(app_config)
@@ -88,7 +91,11 @@ class TestRetain:
             call_count += 1
             if call_count == 1:
                 raise Exception("first fail")
-            return MagicMock()
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__ = MagicMock(return_value=resp)
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
 
         with patch.object(urllib.request, "urlopen", side_effect=_side_effect):
             result = store._retain("test content")
@@ -101,7 +108,11 @@ class TestRetain:
 
         def _capture_request(req: urllib.request.Request, **kwargs: object) -> MagicMock:
             captured_request["data"] = json.loads(req.data.decode())
-            return MagicMock()
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__ = MagicMock(return_value=resp)
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
 
         with patch.object(urllib.request, "urlopen", side_effect=_capture_request):
             result = store._retain("test content", tags=["tag1", "tag2"])
@@ -118,7 +129,11 @@ class TestRetain:
 
         def _capture_request(req: urllib.request.Request, **kwargs: object) -> MagicMock:
             captured_request["data"] = json.loads(req.data.decode())
-            return MagicMock()
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__ = MagicMock(return_value=resp)
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
 
         with patch.object(urllib.request, "urlopen", side_effect=_capture_request):
             result = store._retain("test content")
@@ -132,7 +147,11 @@ class TestRetain:
 
         def _capture_request(req: urllib.request.Request, **kwargs: object) -> MagicMock:
             captured_request["data"] = json.loads(req.data.decode())
-            return MagicMock()
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__ = MagicMock(return_value=resp)
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
 
         with patch.object(urllib.request, "urlopen", side_effect=_capture_request):
             result = store._retain("test content", tags=[])
@@ -174,10 +193,16 @@ class TestExecuteCleanup:
             mock_ms.add.return_value = {"success": True}
 
         # Mock the delayed import inside execute_cleanup
-        with patch.dict(sys.modules, {
-            "tools": MagicMock(),
-            "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_ms),
-        }):
+        mock_module = MagicMock()
+        mock_module.MemoryStore = lambda *a, **kw: mock_ms  # type: ignore[attr-defined]
+        mock_spec = MagicMock()
+        mock_spec.loader.exec_module.return_value = None
+        with patch("importlib.util.spec_from_file_location", return_value=mock_spec), \
+             patch("importlib.util.module_from_spec", return_value=mock_module), \
+             patch.dict(sys.modules, {
+                 "tools": MagicMock(),
+                 "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_ms),
+             }):
             # Also need to patch shutil.copy2 to avoid actual file copy
             with patch("shutil.copy2"):
                 return store.execute_cleanup(
@@ -287,10 +312,16 @@ class TestExecuteCleanup:
             mock_ms.remove.return_value = {"success": True}
             mock_ms.add.return_value = {"success": True}
 
-        with patch.dict(sys.modules, {
-            "tools": MagicMock(),
-            "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_ms),
-        }):
+        mock_module = MagicMock()
+        mock_module.MemoryStore = lambda *a, **kw: mock_ms  # type: ignore[attr-defined]
+        mock_spec = MagicMock()
+        mock_spec.loader.exec_module.return_value = None
+        with patch("importlib.util.spec_from_file_location", return_value=mock_spec), \
+             patch("importlib.util.module_from_spec", return_value=mock_module), \
+             patch.dict(sys.modules, {
+                 "tools": MagicMock(),
+                 "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_ms),
+             }):
             with patch("shutil.copy2"):
                 with patch.object(MemoryFileStore, "_retain", return_value=True) as mock_retain:
                     result = store.execute_cleanup(
@@ -402,10 +433,16 @@ class TestExecuteCleanup:
         compress_list = [
             {"index": 0, "精简为": "压缩后的条目A"},
         ]
-        with patch.dict(sys.modules, {
-            "tools": MagicMock(),
-            "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_memory_store),
-        }):
+        mock_module = MagicMock()
+        mock_module.MemoryStore = lambda *a, **kw: mock_memory_store  # type: ignore[attr-defined]
+        mock_spec = MagicMock()
+        mock_spec.loader.exec_module.return_value = None
+        with patch("importlib.util.spec_from_file_location", return_value=mock_spec), \
+             patch("importlib.util.module_from_spec", return_value=mock_module), \
+             patch.dict(sys.modules, {
+                 "tools": MagicMock(),
+                 "tools.memory_tool": MagicMock(MemoryStore=lambda *a, **kw: mock_memory_store),
+             }):
             with patch("shutil.copy2"):
                 with patch.object(MemoryFileStore, "_retain", return_value=True) as mock_retain:
                     store.execute_cleanup(

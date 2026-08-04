@@ -13,6 +13,32 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def validate_path(path: str, allowed_root: str | None = None) -> str:
+    """校验路径必须在允许的根目录树内，防止任意路径写入。
+
+    Args:
+        path: 待校验的路径。
+        allowed_root: 允许的根目录，默认为 ~/.hermes/。
+
+    Returns:
+        校验通过后的绝对路径字符串。
+
+    Raises:
+        ValueError: 路径不在允许的根目录树内。
+    """
+    if allowed_root is None:
+        allowed_root = os.path.expanduser("~/.hermes")
+    resolved = Path(path).resolve()
+    root = Path(allowed_root).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError(
+            f"路径 {path} 不在允许目录 {allowed_root} 内，拒绝写入"
+        )
+    return str(resolved)
+
+
 def _safe_int_env(key: str, field: str, values: dict) -> None:
     """安全解析整型环境变量，失败时记录警告。"""
     v = os.getenv(key)

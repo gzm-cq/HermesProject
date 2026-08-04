@@ -491,7 +491,7 @@ def main() -> None:
         print("\n⚠️ 用户中断", file=sys.stderr)
         raise typer.Exit(1)
     except Exception as e:
-        quiet = "--quiet" in sys.argv
+        quiet = sys.argv == ["--quiet"]
         if quiet:
             print(f"记忆清理失败: {e}", file=sys.stderr)
         raise

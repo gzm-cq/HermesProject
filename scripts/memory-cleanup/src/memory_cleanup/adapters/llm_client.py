@@ -69,6 +69,10 @@ class LLMClient:
                     timeout=120,
                 )
                 data = r.json()
+                # 检查顶层 error 字段（部分 API 在错误时仍返回 200 + choices）
+                if data.get("error"):
+                    logger.warning("LLM response contains error field: %s", str(data["error"])[:300])
+                    raise ValueError(f"LLM API error: {data['error']}")
                 # 校验 choices 键存在（LLM 返回 error/thinking 模式时可能缺失）
                 if "choices" not in data or not data["choices"]:
                     logger.warning("LLM response missing 'choices': %s", str(data)[:300])
