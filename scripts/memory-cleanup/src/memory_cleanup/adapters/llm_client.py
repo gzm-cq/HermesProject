@@ -222,7 +222,7 @@ class LLMClient:
             {"role": "user", "content": judge_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=800, json_mode=True)
+        raw = self._call(messages, max_tokens=2048, json_mode=True)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None:

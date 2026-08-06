@@ -111,6 +111,9 @@ class RecombinationConfig:
                     llm_api_url=cfg.get("llm_api_url") or common.get("llm_api_url", cls.llm_api_url),
                         llm_model=cfg.get("llm_model") or common.get("llm_model", cls.llm_model),
                         llm_api_key=cfg.get("llm_api_key") or os.getenv("LITELLM_MASTER_KEY", ""),
+                    llm_timeout=cfg.get("llm_timeout", cls.llm_timeout),
+                    jaccard_threshold_low=cfg.get("jaccard_threshold_low", cls.jaccard_threshold_low),
+                    jaccard_threshold_high=cfg.get("jaccard_threshold_high", cls.jaccard_threshold_high),
                 )
             except Exception as e:
                 # 记录加载失败原因，使用默认配置
@@ -177,7 +180,7 @@ class RecombinationOperator:
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.1,
-                max_tokens=512,
+                max_tokens=2048,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
                 response_format={"type": "json_object"},
             )
             text = self._llm.extract_content(resp)
@@ -239,14 +242,15 @@ class RecombinationOperator:
         return conflicts
 
     def synthesize(self, components: List[Component], matches: List[ComponentMatch],
-                   task_context: str) -> Tuple[str, Dict[str, str], List[Component], List[Component]]:
+                   task_context: str, selection_criteria: str = None) -> Tuple[str, Dict[str, str], List[Component], List[Component]]:
         preserved, replaced = [], []
         component_map = {}
         content_segments = []
+        criteria = selection_criteria or self.config.selection_criteria
 
-        if self.config.selection_criteria == "quality":
+        if criteria == "quality":
             selected = self._select_by_quality(components, matches)
-        elif self.config.selection_criteria == "coverage":
+        elif criteria == "coverage":
             selected = self._select_by_coverage(components, matches)
         else:
             selected = self._select_by_diversity(components, matches)
@@ -279,15 +283,14 @@ class RecombinationOperator:
 
     def execute(self, candidate_contents: List[str], task_context: str,
                 selection_criteria: str = None) -> RecombinationOutput:
-        if selection_criteria:
-            self.config.selection_criteria = selection_criteria
+        criteria = selection_criteria or self.config.selection_criteria
         components = self.extract_components(candidate_contents)
         matches = self.match_components(components)
         conflict_log = []
         if self.config.detect_conflicts:
             conflict_log = self.detect_conflicts(matches)
         recombined_content, component_map, preserved, replaced = self.synthesize(
-            components, matches, task_context,
+            components, matches, task_context, criteria,
         )
         synergy_score = self.calculate_synergy(candidate_contents, recombined_content)
         extraction_stats = {

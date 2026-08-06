@@ -345,7 +345,7 @@ class CliBackend(Backend):
         self._cache: Dict[str, str] = {}
 
     # subclasses override --------------------------------------------------
-    def _call(self, prompt: str, *, max_tokens: int = 1024, response_format: str | None = None) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 2048, response_format: str | None = None) -> str:  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         """Call the model.
 
         Args:
@@ -356,7 +356,7 @@ class CliBackend(Backend):
         """
         raise NotImplementedError
 
-    def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024,
+    def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 2048,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
                      response_format: str | None = None) -> str:
         if key in self._cache:
             return self._cache[key]
@@ -388,7 +388,7 @@ class CliBackend(Backend):
             prompt = f"{system}{mem_section}\n{body}"
             salt = f"s{sample_id}:" if sample_id else ""
             key = "attempt:" + salt + skill_hash(prompt)
-            return self._cached_call(key, prompt, max_tokens=512)
+            return self._cached_call(key, prompt, max_tokens=2048)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         # generic path (mined daily-case tasks): neutral, content-filter-safe
         # wording. Apply the skill/memory as guidance, not as adversarial
         # "OVERRIDE everything" directives.
@@ -404,7 +404,7 @@ class CliBackend(Backend):
         # cache on (task, skill, memory) so identical hold-out re-scoring is free
         salt = f"s{sample_id}:" if sample_id else ""
         key = "attempt:" + salt + skill_hash(prompt)
-        return self._cached_call(key, prompt, max_tokens=512)
+        return self._cached_call(key, prompt, max_tokens=2048)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
 
     def judge(self, task: TaskRecord, response: str) -> Tuple[float, float, str]:
         # real-benchmark correctness judge (searchqa/livemath/spreadsheet) — local
@@ -429,7 +429,7 @@ class CliBackend(Backend):
             f"# Rubric\n{task.reference or task.intent}\n\n# Response\n{response}"
         )
         key = "judge:" + skill_hash(prompt)
-        raw = self._cached_call(key, prompt, max_tokens=1024, response_format="json_object")
+        raw = self._cached_call(key, prompt, max_tokens=2048, response_format="json_object")  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         obj = _extract_json(raw, "object")
         if isinstance(obj, dict):
             try:
@@ -588,7 +588,7 @@ class ClaudeCliBackend(CliBackend):
                          timeout=timeout)
         self.claude_path = claude_path
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, response_format: str | None = None) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 2048, response_format: str | None = None) -> str:  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         # Run ISOLATED so the ambient Claude Code environment does not leak into
         # the optimizer/target call. Critically, the user's GLOBAL skills
         # (~/.claude/skills) are injected regardless of cwd, so we must disable
@@ -736,7 +736,7 @@ class CodexCliBackend(CliBackend):
         self.codex_path = resolve_codex_path(codex_path)
         self.sandbox = sandbox
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, response_format: str | None = None) -> str:
+    def _call(self, prompt: str, *, max_tokens: int = 2048, response_format: str | None = None) -> str:  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         import tempfile
         out_path = tempfile.NamedTemporaryFile(
             prefix="codex_last_", suffix=".txt", delete=False
@@ -861,7 +861,7 @@ class DualBackend(Backend):
     def reflect(self, failures, successes, skill, memory, **kw):
         return self.optimizer.reflect(failures, successes, skill, memory, **kw)
 
-    def _call(self, prompt, *, max_tokens=1024, response_format=None):
+    def _call(self, prompt, *, max_tokens=2048, response_format=None):  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         # used by the LLM miner; prefer the optimizer (the "thinking" model)
         return self.optimizer._call(prompt, max_tokens=max_tokens, response_format=response_format)  # type: ignore[attr-defined]
 
@@ -912,7 +912,7 @@ class LiteLLMBackend(CliBackend):
             )
         return self._client
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5,
+    def _call(self, prompt: str, *, max_tokens: int = 2048, retries: int = 5,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
               response_format: str | None = None) -> str:
         """Call LiteLLM gateway with bounded retries.
 
@@ -926,8 +926,8 @@ class LiteLLMBackend(CliBackend):
         (requires max_tokens >= 1024 for complex payloads because the model
         emits a long preamble before the JSON body).
         """
-        if max_tokens < 512:
-            max_tokens = 512
+        if max_tokens < 2048:
+            max_tokens = 2048  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
 
         client = self._get_client()
         last_exc = None
@@ -1012,7 +1012,7 @@ class AzureOpenAIBackend(CliBackend):
             )
         return self._client
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5,
+    def _call(self, prompt: str, *, max_tokens: int = 2048, retries: int = 5,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
               response_format: str | None = None) -> str:
         """Call the deployment with bounded retries.
 
@@ -1114,7 +1114,7 @@ class AzureResponsesBackend(AzureOpenAIBackend):
             self._rr += 1
         return ep
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024, retries: int = 5,
+    def _call(self, prompt: str, *, max_tokens: int = 2048, retries: int = 5,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
               response_format: str | None = None) -> str:
         last = None
         base_ep = self._next_endpoint()           # this call's primary endpoint

@@ -139,7 +139,7 @@ def contrastive_reflect(
         '[{"op":"add","content":"<rule>","rationale":"<what good did that bad didnt>"}].\n\n'
         + "\n\n".join(blocks)
     )
-    raw = backend._call(prompt, max_tokens=1024)  # type: ignore[attr-defined]
+    raw = backend._call(prompt, max_tokens=2048)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output  # type: ignore[attr-defined]
     arr = _extract_json(raw, "array")
     edits: List[EditRecord] = []
     if isinstance(arr, list):

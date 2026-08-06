@@ -22,7 +22,7 @@ from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
 # ── DeepSeek + Ollama OpenAI-compatible API client (curl-based, no extra deps) ──
 
 
-def _chat(messages: List[Dict[str, str]], *, model: str, temperature: float = 0.2, max_tokens: int = 1500) -> str:
+def _chat(messages: List[Dict[str, str]], *, model: str, temperature: float = 0.2, max_tokens: int = 2048) -> str:  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
     """Call DeepSeek V4 Pro via curl + jq. No extra Python deps needed."""
     import json as _json
     import urllib.request
@@ -240,7 +240,7 @@ Return ONLY a single float 0.0-1.0 on one line. No explanation. No markdown.
             [{"role": "system", "content": sys}, {"role": "user", "content": usr}],
             model=self._model,
             temperature=0.4,
-            max_tokens=2000,
+            max_tokens=2048,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         )
         self._tokens += len(usr) // 3 + 1500
 

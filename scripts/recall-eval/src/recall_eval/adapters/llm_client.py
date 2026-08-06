@@ -63,7 +63,7 @@ class LLMClient:
     def _call(
         self,
         messages: list[dict[str, str]],
-        max_tokens: int = 1000,
+        max_tokens: int = 2048,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         json_mode: bool = False,
     ) -> str | None:
         """执行单次 LLM HTTP 调用，带指数退避 + jitter 重试。"""
@@ -167,7 +167,7 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=1000, json_mode=True)
+        raw = self._call(messages, max_tokens=2048, json_mode=True)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None and "score" in result:
@@ -211,7 +211,7 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=1000, json_mode=True)
+        raw = self._call(messages, max_tokens=2048, json_mode=True)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None and "score" in result:
@@ -256,7 +256,7 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=1000, json_mode=True)
+        raw = self._call(messages, max_tokens=2048, json_mode=True)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None and "score" in result:

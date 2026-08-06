@@ -104,7 +104,7 @@ def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float
 def call_llm_json(prompt: str, model: str, max_retries: int = 2) -> dict:
     """调用 LLM 并解析 JSON 输出（temperature=0，带重试）"""
     for attempt in range(max_retries + 1):
-        raw = call_llm(prompt, model, max_tokens=1024, temperature=0.0)
+        raw = call_llm(prompt, model, max_tokens=2048, temperature=0.0)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         # 先尝试直接解析
         try:
             return json.loads(raw)

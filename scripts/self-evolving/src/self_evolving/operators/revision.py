@@ -226,7 +226,7 @@ class RevisionOperator:
             timeout=self.config.llm_timeout,
         )
 
-    def _call_llm_json(self, messages: list[dict], max_tokens: int = 1024) -> dict:
+    def _call_llm_json(self, messages: list[dict], max_tokens: int = 2048) -> dict:  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
         """调用 LLM 并解析 JSON 响应"""
         try:
             resp = self._llm.chat_completion(
@@ -419,7 +419,7 @@ class RevisionOperator:
     def _recommend_fix_type(self, failure_type: FailureType, root_cause: str) -> str:
         prompt = FIX_TYPE_PROMPT().format(
             failure_type=failure_type.value,
-            root_cause=root_cause[:_CAUSE_SLICE_LEN],
+            root_cause=(root_cause or "")[:_CAUSE_SLICE_LEN],
         )
         data = self._call_llm_json([
             {"role": "system", "content": "输出推荐修复类型。"},
