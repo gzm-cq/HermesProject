@@ -762,13 +762,24 @@ def collect_all_recalls(log_file: str) -> list[dict]:
                 data = json.loads(line)
                 if is_test_trace_record(data):
                     continue
+                ss = data.get("score_stats", {}) or {}
                 records.append({
                     "timestamp": data.get("timestamp", ""),
                     "query_trunc": data.get("query_trunc", ""),
                     "kept_results": data.get("kept_results", 0),
+                    "total_results": data.get("total_results", 0),
+                    "excluded_marked": data.get("excluded_marked", 0),
                     "injected_count": data.get("injected_count", 0),
-                    "avg_score": data.get("score_stats", {}).get("avg", 0.0),
+                    "avg_score": ss.get("avg", 0.0),
+                    "min_score": ss.get("min", 0.0),
+                    "max_score": ss.get("max", 0.0),
+                    "score_count": ss.get("count", 0),
                     "latency_ms": data.get("latency_ms", 0),
+                    "recalled_ids": data.get("recalled_ids", []),
+                    "recalled_summaries": data.get("recalled_summaries", []),  # 新字段：每条召回的摘要
+                    "hs_kept": data.get("hs_kept", 0),
+                    "kt_kept": data.get("kt_kept", 0),
+                    "sag_kept": data.get("sag_kept", 0),
                     "eval_query_id": data.get("eval_query_id", ""),
                 })
             except (json.JSONDecodeError, TypeError):
@@ -777,34 +788,99 @@ def collect_all_recalls(log_file: str) -> list[dict]:
 
 
 def _judge_one(rec: dict, config: dict | None) -> tuple[float, bool] | tuple[None, Exception]:
-    """单条 recall 的 LLM relevance 评分。返回 (score, True) 或 (None, error)。"""
+    """单条 recall 的 LLM relevance 评分。返回 (score, True) 或 (None, error)。
+
+    评分策略改进（2026-08-08）：
+    - 提供更丰富的上下文：各来源数量、score 分布、recalled_id 特征、recalled_summaries（如有）
+    - 明确告知 judge：召回条数少 ≠ 质量差，可能是系统严格过滤了低相关结果
+    - 如果 kept=0：不是系统返回空，就是用户查不到知识库内容，根据查询语义和 excluded/total 判断
+    """
     query = rec.get("query_trunc") or "(空查询)"
     kept = rec.get("kept_results", 0)
-    score = rec.get("avg_score", 0)
-    prompt = f"""你是一个 RAG 检索质量评估员。
+    total = rec.get("total_results", 0)
+    excluded = rec.get("excluded_marked", 0)
+    injected = rec.get("injected_count", 0)
+    avg_s = rec.get("avg_score", 0)
+    min_s = rec.get("min_score", 0)
+    max_s = rec.get("max_score", 0)
+    count_s = rec.get("score_count", 0)
+    hs = rec.get("hs_kept", 0)
+    kt = rec.get("kt_kept", 0)
+    sag = rec.get("sag_kept", 0)
+    ids = rec.get("recalled_ids", []) or []
+    summaries = rec.get("recalled_summaries", []) or []
 
-用户发问：{query}
+    # 分析 recalled_ids 特征：UUID（hindsight）、数字型（KT节点）、其他
+    uuid_like = sum(1 for i in ids if len(str(i)) >= 16 and '-' in str(i))
+    num_like = sum(1 for i in ids if str(i).isdigit())
+    other_like = len(ids) - uuid_like - num_like
 
-检索结果：
-- 召回条数：{kept}
-- 平均 rerank 分数：{score:.4f}
+    # recalled_summaries（如存在）拼接成文本供 judge 判断
+    summary_text = ""
+    if summaries:
+        items = []
+        for idx, s in enumerate(summaries[:6]):  # 最多前 6 条，防 prompt 过长
+            if isinstance(s, str):
+                items.append(f"  [{idx+1}] {s[:200]}")
+            elif isinstance(s, dict):
+                title = s.get("title", "") or s.get("name", "")
+                body = s.get("text", "") or s.get("content", "") or s.get("body", "") or ""
+                items.append(f"  [{idx+1}] {title[:80]} | {body[:150]}")
+        if items:
+            summary_text = "\n- 召回内容摘要（前几条）：\n" + "\n".join(items)
 
-请只输出一个 0-1 之间的数字，表示此次检索结果与用户发问的相关程度：
-0 = 完全无关
-0.3 = 部分相关
-0.7 = 比较相关
-1.0 = 完全相关
-只输出数字，不要其他文字。"""
+    # recalled_id 类型分布（当 summaries 不可用时，给 judge 一个线索）
+    id_types = []
+    if uuid_like:
+        id_types.append(f"历史回溯笔记 {uuid_like} 条")
+    if num_like:
+        id_types.append(f"知识树节点 {num_like} 条")
+    if other_like:
+        id_types.append(f"其他来源 {other_like} 条")
+    id_desc = "、".join(id_types) if id_types else "未知类型"
+
+    prompt = f"""你是一个 RAG 检索质量评估员。你的任务是判断「系统检索到的材料」与「用户查询」的相关程度，而不是判断材料的数量多少。
+
+【重要评估原则】
+1. 召回条数少不代表质量差 — 系统有分数阈值和去重机制，会主动过滤低相关内容。如果只召回了 1-2 条，但这些条目的 rerank 分数高（>0.6），往往比召回 10 条低质内容更有价值。
+2. 召回条数 = 0 时：可能是用户查询不在知识库中（正常情况，评 0），也可能是所有结果被过滤阈值截断（需要根据查询语义判断）。
+3. 评估核心依据：
+   - 查询的意图与召回条目的主题是否匹配（看到召回内容摘要时）
+   - rerank 分数区间：>0.7 为高相关，0.4~0.7 为中等相关，<0.4 为低相关
+   - 召回来源构成：历史回溯笔记(hindsight)通常相关性强，知识树节点次之
+4. 评分基准：
+   0.0 → 完全无关（查询是"配置知识导航"，却召回了"做饭食谱"）
+   0.3 → 部分相关（主题沾边，但内容不完全对，或分数 < 0.4）
+   0.5 → 中等相关（有 1-2 条对得上，分数 ~0.5 左右，或 kept=0 但查询在知识库有相近主题）
+   0.7 → 比较相关（多条召回主题匹配，平均分数 > 0.5）
+   1.0 → 完全相关（召回内容精准命中查询问题，平均分数 > 0.75）
+
+【用户查询】
+{query}
+
+【检索统计】
+- 初始检索结果总数：{total} 条
+- 被过滤/排除的低相关条目：{excluded} 条
+- 最终保留条数（kept）：{kept} 条
+  · 历史回溯笔记(hindsight)：{hs} 条
+  · 知识树节点(knowledge_tree)：{kt} 条
+  · 会话摘要(sag)：{sag} 条
+- ID 类型构成：{id_desc}
+- Rerank 分数：avg={avg_s:.4f}, min={min_s:.4f}, max={max_s:.4f}, 有效计分 {count_s} 条
+- 注入 LLM 上下文字符数：{injected} 条 chunks
+{summary_text}
+请只输出一个 0-1 之间的数字。只输出数字，不要任何其他文字或解释。"""
 
     headers = {"Content-Type": "application/json"}
     if config.get("key"):
         headers["Authorization"] = f"Bearer {config['key']}"
+    # max_tokens 设 8192：与全局配置对齐，商汤 sensenova-6.7-flash-lite 会写超长 reasoning
+    # reasoning 不额外收费，只是耗时长一些（单条 15~30s），留足余量防止 reasoning 占满导致 content 为空
     body = json.dumps({
         "model": config.get("model", "s-deepseek-v4-flash"),
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,
-        "max_tokens": 250,
-        "extra_body": {"thinking": {"type": "disabled"}},
+        "max_tokens": 8192,
     }).encode("utf-8")
     ctx = ssl.create_default_context()
     if os.environ.get("JUDGE_INSECURE", "").lower() in ("1", "true", "yes"):
@@ -812,12 +888,30 @@ def _judge_one(rec: dict, config: dict | None) -> tuple[float, bool] | tuple[Non
         ctx.verify_mode = ssl.CERT_NONE
     try:
         req = urllib.request.Request(config["url"], data=body, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+        # timeout 延长到 120s：商汤 reasoning 单条最长 ~40s，防止慢请求超时
+        with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
             resp_text = resp.read().decode("utf-8")
             resp_data = json.loads(resp_text)
-            content = resp_data["choices"][0]["message"]["content"].strip()
+            msg = resp_data["choices"][0]["message"]
+            content = (msg.get("content") or "").strip()
             if not content:
-                return None, RuntimeError(f"empty content from LLM")
+                # 兜底：某些模型把最终数字写在 reasoning 末尾（如 sensenova-6.7-flash-lite）
+                reasoning = msg.get("reasoning") or msg.get("reasoning_content") or ""
+                import re
+                # 找 reasoning 末尾类似 "Final Score: 0.5" 或只含 0-1 小数的行
+                for line in reversed(reasoning.splitlines()):
+                    line = line.strip().rstrip('.')
+                    m = re.search(r"[01](?:\.\d+)?", line)
+                    if m:
+                        try:
+                            val = float(m.group())
+                            if 0.0 <= val <= 1.0:
+                                content = m.group()
+                                break
+                        except ValueError:
+                            continue
+                if not content:
+                    return None, RuntimeError(f"empty content from LLM, finish_reason={resp_data['choices'][0].get('finish_reason')}")
             llm_score = float(content)
             llm_score = max(0.0, min(1.0, llm_score))
             return llm_score, True
@@ -846,8 +940,9 @@ def run_judge(log_file: str, config: dict | None = None) -> dict[str, Any]:
     judged = 0
     scores: list[float] = []
 
-    # 采样：最多评 200 条
-    sample = records[:min(200, len(records))]
+    # 采样：最多评 200 条（取最近 200 条，而非最早 200 条）
+    # 最早 200 条可能是几天前的旧数据，无法反映最新配置的效果
+    sample = records[-min(200, len(records)):]
 
     if config and JUDGE_PARALLEL > 1:
         # 并发模式

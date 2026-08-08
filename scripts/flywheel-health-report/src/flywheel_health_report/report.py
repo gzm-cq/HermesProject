@@ -32,6 +32,7 @@ from .analyzers.global_errors import analyze_global_errors
 from .analyzers.kt_baseline import analyze_kt_baseline
 from .analyzers.clustering import analyze_clustering
 from .analyzers.kn_baseline import analyze_kn_baseline, analyze_data_credibility
+from .analyzers.kn_judge import run_judge_within_window, summarize_param_tuning
 from .analyzers.memory_cleanup import analyze_memory_cleanup
 from .recommendations import generate_recommendations
 
@@ -114,6 +115,29 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     cluster_issues, cluster_m, cluster_trend = analyze_clustering(data_flywheel_dir)
     kn_issues, kn_m, kn_trend = analyze_kn_baseline(kn_baseline_dir)
     memory_issues, memory_m, memory_trend = analyze_memory_cleanup(home / MEMORY_DIR_SUBPATH, data_window)
+
+    # ===== KN LLM Judge：知识导航召回质量评估（KN_MIN_SCORE 调优主反馈）=====
+    #   since = 数据窗口（报告 date 对应 UTC 日当天 00:00）
+    #   until = since + 1 天，形成 24h 窗口
+    #   注意：只对 scheduled 报告（主流程）执行；catch-up 只跑轻量分析，避免重复 judge 耗 token
+    import datetime as _dt
+    kn_judge_m: dict[str, Any] = {}
+    try:
+        _since = data_window
+        _dt_date = _dt.date.fromisoformat(data_window)
+        _until = (_dt_date + _dt.timedelta(days=1)).isoformat()
+        kn_judge_m = run_judge_within_window(home, _since, _until)
+    except Exception as _knj_exc:
+        # judge 异常不影响整体报告，只在 kn_judge_m 里挂 error 字段
+        kn_judge_m = {"kn_judge_error": f"exception:{type(_knj_exc).__name__}:{str(_knj_exc)[:80]}"}
+
+    # ===== 参数优化现状（读取 auto-tuner-log / state）=====
+    log_file = home / DATA_FLYWHEEL_SUBPATH / "auto-tuner-log.jsonl"
+    state_file = home / DATA_FLYWHEEL_SUBPATH / "auto-tuner-state.json"
+    try:
+        param_tuning_m = summarize_param_tuning(log_file, state_file)
+    except Exception as _pt_exc:
+        param_tuning_m = {"error": f"{type(_pt_exc).__name__}:{str(_pt_exc)[:80]}"}
 
     credibility_warnings, credibility_notes = analyze_data_credibility(
         kt_m, router_m, kn_m, now
@@ -245,6 +269,96 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             if sag_contr_m.get("recall_error_count", 0) > 0:
                 L.append(f"- 召回异常: {sag_contr_m['recall_error_count']} 次 (已计入上方尝试数)")
             L.append(f"- SAG 合并量: {sag_contr_m['merge_count']} 次，平均 {ms['avg']} 条，零结果率: {sag_contr_m['merge_zero_pct']}%")
+
+    # --- Router: KN LLM Judge 质量评估（KN_MIN_SCORE 调优主反馈）---
+    L.append("")
+    L.append("**KN LLM Judge 召回质量评估 (LLM 评估, 200 样本):**")
+    _jerr = kn_judge_m.get("kn_judge_error")
+    _jn = kn_judge_m.get("kn_judge_sample_count", 0)
+    if _jerr and not _jn:
+        L.append(f"- ⚠️ 本轮未执行 judge: `{_jerr}`（样本不足或配置未启用，反馈链路用 kn_avg_score 兜底）")
+    else:
+        _jrate = kn_judge_m.get("kn_judge_relevant_rate", 0)
+        _javg = kn_judge_m.get("kn_judge_avg_relevance", 0)
+        _jci_lo = kn_judge_m.get("kn_judge_ci_lo")
+        _jci_hi = kn_judge_m.get("kn_judge_ci_hi")
+        _jfb = "（kn_avg_score 兜底）" if kn_judge_m.get("kn_judge_fallback") else ""
+        L.append(f"- 样本量: {_jn} 条 {_jfb}")
+        if isinstance(_jrate, (int, float)):
+            L.append(f"- 相关率 (评分 ≥ 0.5): {round(_jrate * 100, 1)}%")
+        if isinstance(_javg, (int, float)):
+            L.append(f"- 平均 relevance: {round(float(_javg), 4)}")
+        if isinstance(_jci_lo, (int, float)) and isinstance(_jci_hi, (int, float)) and float(_jci_hi) > float(_jci_lo):
+            L.append(f"- Bootstrap 95% CI: [{round(float(_jci_lo), 4)}, {round(float(_jci_hi), 4)}]")
+        if _jerr:
+            L.append(f"- 📝 信息: `{_jerr}`")
+
+    # --- 参数优化现状（与其他参数优化模式一致）---
+    L.append("")
+    if isinstance(param_tuning_m, dict) and param_tuning_m.get("error"):
+        L.append(f"**参数优化现状**：⚠️ 读取失败: `{param_tuning_m['error']}`")
+    elif isinstance(param_tuning_m, dict):
+        L.append("**参数优化现状 (Auto-Tuner):**")
+        params = param_tuning_m.get("params") or {}
+        if params:
+            L.append("")
+            L.append("| 参数 | 当前值 | 区间 | 步长 | 初值→当前 | 历史 | 状态 | 说明 |")
+            L.append("|------|--------|------|------|-----------|------|------|------|")
+            for pname in ["KN_MIN_SCORE", "sag_max_inject", "sag_search_top_k",
+                          "token_budget_hindsight_ratio", "sag_search_threshold",
+                          "token_budget"]:
+                info = params.get(pname)
+                if not info:
+                    continue
+                init_v = info.get("initial_value")
+                impr = info.get("improvement_since_initial")
+                hist = info.get("history") or []
+                state_tags = []
+                if info.get("locked"):
+                    state_tags.append("🔒 收敛")
+                if info.get("suspended"):
+                    state_tags.append("⏸️ 暂停")
+                if info.get("converged") and not info.get("locked") and not info.get("suspended"):
+                    state_tags.append("🎯 近收敛")
+                pending = "⏳待重启" if info.get("last_status") == "pending_restart" else info.get("last_status", "")
+                state_line = " ".join(state_tags + ([pending] if pending else [])) or "调优中"
+                hist_line = f"{len(hist)} 条"
+                if info.get("state_counts"):
+                    sc = info["state_counts"]
+                    hist_line += (
+                        f"（no_change={sc.get('no_change_count', 0)}"
+                        f" / degrad={sc.get('degradation_count', 0)}）"
+                    )
+                impr_str = (
+                    f"{init_v} → {info.get('current')}"
+                    if init_v is not None else f"— → {info.get('current')}"
+                )
+                if impr is not None:
+                    try:
+                        sign = "+" if float(impr) >= 0 else ""
+                        impr_str += f" ({sign}{round(float(impr), 4)})"
+                    except (TypeError, ValueError):
+                        pass
+                prng = info.get("range") or ["", ""]
+                L.append(
+                    f"| {pname} | {info.get('current')} | "
+                    f"[{prng[0]}, {prng[1]}] | {info.get('step')} | "
+                    f"{impr_str} | {hist_line} | {state_line} | "
+                    f"{(hist[-1]['reason'] if hist else '无调优历史')} |"
+                )
+            L.append("")
+        else:
+            L.append("- 暂无参数调优历史（首次运行会自动积累）")
+
+        if param_tuning_m.get("any_pending_restart"):
+            L.append("- ⚠️ 存在 pending_restart 调优记录，请按飞书通知重启 hermes-gateway 使生效")
+        _last = param_tuning_m.get("last_tune") or {}
+        if _last and _last.get("parameter"):
+            L.append(
+                f"- 最近一次调优: {_last.get('date', '')} "
+                f"{_last.get('parameter')}: {_last.get('old')} → {_last.get('new')} "
+                f"({_last.get('status', '')})"
+            )
     L.append("")
 
     # KN 基线
@@ -437,6 +551,14 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "skill_total_uses": skill_usage_m.get("total_uses", 0),
         "kn_unknown_pct": kn_m.get("unknown_dim_pct", 0),
         "kn_avg_score": sum(s["avg_score"] for s in kn_m.get("dim_summary", {}).values()) / max(len(kn_m.get("dim_summary", {})), 1) if kn_m.get("dim_summary") else 0,
+        # KN LLM Judge：调优主反馈（无 judge 时为空，auto-tuner 会用 kn_avg_score 兜底）
+        "kn_judge_sample_count": kn_judge_m.get("kn_judge_sample_count", 0),
+        "kn_judge_relevant_rate": kn_judge_m.get("kn_judge_relevant_rate"),
+        "kn_judge_avg_relevance": kn_judge_m.get("kn_judge_avg_relevance"),
+        "kn_judge_fallback": bool(kn_judge_m.get("kn_judge_fallback", False)),
+        # 参数优化状态（摘要，给趋势图/后续报告读）
+        "param_tune_active_count": param_tuning_m.get("active_count", 0) if isinstance(param_tuning_m, dict) else 0,
+        "param_tune_any_pending": bool(param_tuning_m.get("any_pending_restart", False)) if isinstance(param_tuning_m, dict) else False,
         "cluster_noise_rate": cluster_m.get("noise_rate", 0),
         "kt_orphan_pct": kt_m.get("orphan_pct", 0),
         "memory_usage_pct": memory_m.get("memory_usage_pct", 0),

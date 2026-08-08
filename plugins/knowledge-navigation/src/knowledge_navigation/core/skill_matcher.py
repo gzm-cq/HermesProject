@@ -724,7 +724,9 @@ def _llm_match(
 
     # max_tokens=2048：避免 LiteLLM 降级到 sensenova 等推理模型时，reasoning_content
     # 耗尽 token 配额导致 content 字段为空（512 在长 prompt 下经常不够用）
-    for attempt in range(2):
+    # 不重试：单次失败立即返回空触发 fallback（kw+emb union top-K），
+    # 避免最坏 45s × 2 = 90s 的长尾叠加（实测 p99=66s）。
+    for attempt in range(1):
         try:
             import httpx
             api_key = get_env("LITELLM_MASTER_KEY", "")
@@ -804,10 +806,7 @@ def _llm_match(
             return results
 
         except Exception as e:
-            if attempt == 0:
-                logger.debug("Skill match LLM 重试 (attempt=0): %s", e)
-                continue
-            logger.debug("Skill match LLM error: %s", e)
+            logger.debug("Skill match LLM error (no retry): %s", e)
             return []
 
 

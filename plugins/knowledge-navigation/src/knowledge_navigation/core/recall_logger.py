@@ -122,6 +122,34 @@ class RecallLogger:
 
         recalled_ids = [m.get("id", "") for m in kept_results if m.get("id")]
 
+        # recalled_summaries：给 judge 用的召回内容摘要（前 N 字，避免 trace.log 过大）
+        # 最多保留前 8 条（TOP 结果），每条截断到 200 字（约 50 tokens × 8 = 400 tokens 增量）
+        _MAX_SUMMARIES = 8
+        _MAX_TEXT_PER_ITEM = 200
+        recalled_summaries: list[dict[str, Any]] = []
+        for m in kept_results[:_MAX_SUMMARIES]:
+            text_raw = (
+                m.get("text")
+                or m.get("content")
+                or m.get("body")
+                or m.get("title")
+                or m.get("name")
+                or ""
+            )
+            title = str(m.get("title") or m.get("name") or "")[:80]
+            text = str(text_raw)[:_MAX_TEXT_PER_ITEM]
+            if not text and not title:
+                continue
+            summary_item: dict[str, Any] = {
+                "source": m.get("source", ""),
+                "score": round(float(m.get("final_score") or m.get("score") or 0.0), 4),
+            }
+            if title:
+                summary_item["title"] = title
+            if text:
+                summary_item["text"] = text
+            recalled_summaries.append(summary_item)
+
         per_source_detail: dict[str, dict[str, Any]] = {}
         for source in ("hindsight", "knowledge_tree", "skill", "sag"):
             rr = self._per_source.get(source)
@@ -145,6 +173,7 @@ class RecallLogger:
             "latency_ms": total_latency_ms,
             "score_comparison": score_comparison or {},
             "recalled_ids": recalled_ids,
+            "recalled_summaries": recalled_summaries,
             "hs_kept": len(hs_kept),
             "kt_kept": len(kt_kept),
             "sag_kept": len(sag_kept),

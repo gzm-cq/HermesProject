@@ -387,9 +387,23 @@ def _parse_feedback(feedback_csv: str) -> List[Tuple[str, str]]:
     direction 是 'up_better' / 'down_better' / 'stable_ok'。"""
     out: List[Tuple[str, str]] = []
     for name in (s.strip() for s in feedback_csv.split(",") if s.strip()):
-        if name == "kn_avg_score":
+        if name in ("kn_avg_score",
+                    # KN LLM Judge 反馈：都是越高越好
+                    "kn_judge_relevant_rate",
+                    "kn_judge_avg_relevance",
+                    "kn_judge_sample_count"):
             out.append((name, "up_better"))
         elif name in ("router_empty_pct", "sag_merge_zero_pct"):
+            out.append((name, "down_better"))
+        elif name in ("sag_total_kept", "memory_hindsight_count",
+                      "sag_on_pct", "sag_recall_count",
+                      "skill_f1", "skill_active_count", "skill_used_count",
+                      "skill_total_uses", "hindsight_count",
+                      "memory_compress_count", "memory_hindsight_count"):
+            # 产出/贡献类：稳定或向上不恶化就算改善
+            out.append((name, "stable_ok"))
+        elif name in ("token_exhaust_pct", "router_error_rate",
+                      "error_count", "warning_count"):
             out.append((name, "down_better"))
         else:
             out.append((name, "stable_ok"))

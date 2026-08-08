@@ -167,8 +167,13 @@ CRON_LIB = os.environ.get("CRON_LIB", "/root/.hermes/lib/cron_common.sh")
 FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "oc_f04a9f65d4b780511cc3f402c7d54ac3")
 
 # 参数池
+# 格式：(param_name, default, min, max, step, feedback_csv)
+#   feedback_csv 列：自优化的改善反馈键，逗号分隔；每个键的方向由 _parse_feedback 解析
+#   KN_MIN_SCORE 的主反馈已从 kn_avg_score（rerank 机械分数）升级为 kn_judge_relevant_rate +
+#   kn_judge_avg_relevance（LLM judge 评估的实际相关率/平均相关度，200 条样本，v2 prompt），
+#   与其他参数优化保持一致：通过 daily-summary-history.jsonl 的字段驱动。
 PARAM_DEFS = [
-    ("KN_MIN_SCORE",               0.6, 0.4, 0.8, 0.05, "kn_avg_score,router_empty_pct"),
+    ("KN_MIN_SCORE",               0.50, 0.40, 0.65, 0.05, "kn_judge_relevant_rate,kn_judge_avg_relevance,router_empty_pct"),
     ("sag_max_inject",             3.0, 2.0, 6.0, 1.00, "sag_total_kept"),
     ("sag_search_top_k",           3.0, 3.0, 10.0,1.00, "sag_merge_zero_pct"),
     ("token_budget_hindsight_ratio",0.4,0.3, 0.6, 0.05, "memory_hindsight_count,sag_total_kept"),
@@ -180,7 +185,24 @@ FEEDBACK_KEYS = [
     "kn_avg_score", "router_empty_pct", "sag_total_kept",
     "sag_merge_zero_pct", "memory_hindsight_count",
     "sag_on_pct", "token_exhaust_pct",
+    # KN LLM Judge 质量评估（collect_baseline.py --judge 产出），
+    # 作为 KN_MIN_SCORE 调优的主反馈：
+    #   kn_judge_relevant_rate  (0~1, 越大越好) = judged 中评分 >= 0.5 占比
+    #   kn_judge_avg_relevance  (0~1, 越大越好) = judged 所有 LLM 评分均值
+    #   kn_judge_sample_count   (int)            = 本轮 judge 样本量，用于可信度判断
+    "kn_judge_relevant_rate", "kn_judge_avg_relevance", "kn_judge_sample_count",
 ]
+
+# KN Judge 子配置：控制健康巡检报告何时触发、最小样本量、最大耗时保护等
+KN_JUDGE_CFG = {
+    "enabled": True,                  # 集成开关（关了就走 kn_avg_score）
+    "sample_size": 200,               # 每次 judge 采样条数（最近 N 条）
+    "min_sample": 50,                 # 样本不足时跳过本轮 judge（避免小样本噪声干扰调优）
+    "parallel": 5,                    # 并发度（与 JUDGE_PARALLEL 一致）
+    "max_walltime_sec": 3600,         # 硬超时（1 小时），防止阻塞整个报告
+    "min_age_breakpoint_hours": 6,    # 本轮 date 窗口至少需要 6 小时数据才输出到 daily summary
+    "fallback_on_fail": True,        # judge 失败时用 kn_avg_score/recall kept 粗估写回，防止反馈断裂
+}
 
 # 收敛/锁定/暂停阈值
 NO_CHANGE_LOCK_THRESHOLD = 3
