@@ -118,7 +118,7 @@ class KnowledgeNavigationConfig:
 
     # Circuit breaker
     circuit_breaker_threshold: int = field(default=3)
-    circuit_breaker_cooldown: int = field(default=120)
+    circuit_breaker_cooldown: int = field(default=90)  # 默认 2 分钟太长，缩短到 90 秒加快熔断自动恢复
 
     # Evaluation
     eval_queries_path: str = field(default="/root/.hermes/data/eval_queries.json")
@@ -127,16 +127,16 @@ class KnowledgeNavigationConfig:
 
     # Causal chain boost
     enable_causal_chain: bool = field(default=True)
-    causal_boost_alpha: float = field(default=0.15)  # 提权系数
-    causal_boost_cap: float = field(default=1.3)     # 最大提权上限
+    causal_boost_alpha: float = field(default=0.05)  # 提权系数：默认 0.15 过于激进，调小到 0.05（可被 ENV 覆盖）
+    causal_boost_cap: float = field(default=1.10)     # 提权上限倍率：1.3→1.1，最多 +10%，避免因果链把低相关条目顶前排
 
     # MMR diversity
-    lambda_mrr: float = field(default=0.5)  # MMR λ，越大越重相关性
+    lambda_mrr: float = field(default=0.55)  # MMR λ：默认 0.5→0.55，略加强相关性
 
     # CE score span compression
     enable_score_span_compress: bool = field(default=True)  # 启用 CE 分数跨度压缩
-    score_span_top3_threshold: float = field(default=0.9)   # top-3 阈值
-    score_span_half_threshold: float = field(default=0.7)    # 半切阈值
+    score_span_top3_threshold: float = field(default=0.85)  # top-3 阈值：0.9→0.85，更早触发压缩，提升多样性
+    score_span_half_threshold: float = field(default=0.65)  # 半切阈值：0.7→0.65，压缩曲线更平滑
 
     # Cross-domain dedup mode (2026-06-13)
     cross_domain_dedup_mode: str = field(default="text_only")  # text_only | text_embedding
@@ -174,11 +174,11 @@ class KnowledgeNavigationConfig:
     kn_skill_keyword_prescreen: bool = field(default=True)
 
     # Skill Matcher: Embedding 预筛选（Hybrid 模式，在关键词之后）
-    kn_skill_embedding_prescreen: bool = field(default=False)
+    kn_skill_embedding_prescreen: bool = field(default=True)  # 默认开启：先用 embedding 从全量 skill 库取 top-K 候选，再给 LLM，显著减少 skill 匹配的 LLM 调用量
     kn_skill_embedding_model: str = field(default="BAAI/bge-m3")
     kn_skill_embedding_url: str = field(default="https://api.siliconflow.cn/v1")
     kn_skill_embedding_api_key: str = field(default="")
-    kn_skill_embedding_top_k: int = field(default=20)  # embedding 筛选后的候选数
+    kn_skill_embedding_top_k: int = field(default=30)  # embedding 筛选后的候选数：默认 20→30，减少预筛阶段把潜在匹配技能过滤掉的概率
 
     # SAG API configuration
     sag_api_url: str = field(default="http://127.0.0.1:4173")
@@ -261,6 +261,7 @@ class KnowledgeNavigationConfig:
                 "score_span_top3_threshold": "score_span_top3_threshold",
                 "score_span_half_threshold": "score_span_half_threshold",
                 "enable_causal_chain": "enable_causal_chain",
+                "kn_lambda_mrr": "lambda_mrr",
                 "enable_token_budget": "enable_token_budget",
                 "enable_use_log": "enable_use_log",
                 "use_log_batch_size": "use_log_batch_size",
@@ -333,6 +334,16 @@ class KnowledgeNavigationConfig:
             values["circuit_breaker_cooldown"] = int(env_cb_cooldown)
         if env_causal := os.getenv("KN_ENABLE_CAUSAL_CHAIN"):
             values["enable_causal_chain"] = env_causal.lower() in ("1", "true", "yes")
+        if env := os.getenv("KN_CAUSAL_BOOST_ALPHA"):
+            values["causal_boost_alpha"] = float(env)
+        if env := os.getenv("KN_CAUSAL_BOOST_CAP"):
+            values["causal_boost_cap"] = float(env)
+        if env := os.getenv("KN_LAMBDA_MRR"):
+            values["lambda_mrr"] = float(env)
+        if env := os.getenv("KN_SCORE_SPAN_TOP3_THRESHOLD"):
+            values["score_span_top3_threshold"] = float(env)
+        if env := os.getenv("KN_SCORE_SPAN_HALF_THRESHOLD"):
+            values["score_span_half_threshold"] = float(env)
         if env_app_id := os.getenv("FEISHU_APP_ID"):
             values["feishu_app_id"] = env_app_id
         if env_app_secret := os.getenv("FEISHU_APP_SECRET"):
