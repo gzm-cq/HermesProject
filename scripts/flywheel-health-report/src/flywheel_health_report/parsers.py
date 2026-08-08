@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from .config import ACTIVE_CRON_JOBS
+from .config import ACTIVE_CRON_JOBS, JOBS_JSON_SUBPATH
 
 
 def _load_json(path: Path):
@@ -84,6 +84,50 @@ def parse_cron_states(cron_state_dir: Path) -> dict[str, dict]:
                 continue
             states[name] = data
     return states
+
+
+def parse_cron_jobs_json(hermes_home: Path,
+                         existing_states: dict[str, dict]) -> dict[str, dict]:
+    """Parse cron/jobs.json to supplement jobs that lack cron-state files.
+
+    Jobs tracked by cron_common.sh write rich state files to cron-state/.
+    Agent-based or standalone-script jobs (e.g. dream-daily, 每周深度研究)
+    only have their status in jobs.json. This function reads jobs.json and
+    returns entries for ACTIVE_CRON_JOBS not already in *existing_states*.
+    """
+    supplementary: dict[str, dict] = {}
+    jobs_path = hermes_home / JOBS_JSON_SUBPATH
+    data = _load_json(jobs_path)
+    if not data or not isinstance(data, dict):
+        return supplementary
+    jobs = data.get("jobs", [])
+    if not isinstance(jobs, list):
+        return supplementary
+
+    # Map jobs.json status → cron-state status
+    _STATUS_MAP = {"ok": "success", "error": "fail", "skipped": "skipped"}
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        name = job.get("name", "")
+        if not name or name not in ACTIVE_CRON_JOBS:
+            continue
+        if name in existing_states:
+            continue  # cron-state file already has richer data
+        if not job.get("enabled", True):
+            continue  # skip disabled jobs
+
+        last_status = job.get("last_status", "unknown")
+        supplementary[name] = {
+            "job_name": name,
+            "status": _STATUS_MAP.get(last_status, "unknown"),
+            "run_at": job.get("last_run_at", "—"),
+            "elapsed_seconds": 0,  # not tracked in jobs.json
+            "last_error": job.get("last_error") or "",
+            "source": "jobs.json",  # mark origin for report rendering
+        }
+    return supplementary
 
 
 def parse_trace_log(trace_path: Path,

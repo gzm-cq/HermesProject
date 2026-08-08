@@ -20,6 +20,7 @@ OUTPUT_SUBPATH = Path("logs") / "reports"
 SKILL_USAGE_SUBPATH = Path("skills") / ".usage.json"
 ERROR_LOG_SUBPATH = Path("logs") / "errors.log"
 MEMORY_DIR_SUBPATH = Path("memories")
+JOBS_JSON_SUBPATH = Path("cron") / "jobs.json"
 
 # === Thresholds ===
 TH = {
@@ -102,8 +103,10 @@ _TEST_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# === Active cron jobs — only core flywheel tasks ===
+# === Active cron jobs — all user cronjobs monitored by flywheel health report ===
+# 包括：核心飞轮 9 个 + 新增 3 个（dream-daily、每周深度研究、system-health-check）
 ACTIVE_CRON_JOBS = frozenset({
+    # 核心飞轮
     "memory-cleanup",
     "knowledge-navigation-baseline",
     "run-skill-eval",
@@ -113,11 +116,14 @@ ACTIVE_CRON_JOBS = frozenset({
     "clustering-analysis",
     "knowledge-tree-consolidate",
     "knowledge-tree-kvector",
+    # 新增：之前未跟踪的 job
+    "dream-daily",
+    "每周深度研究-知识树学习",
+    "system-health-check",
 })
 
-# 已知的非飞轮 state 文件白名单
+# 已知的非飞轮 state 文件白名单（cron 基础设施 job，不纳入巡检报告）
 EXCLUDED_STATE_FILES = frozenset({
-    "system-health-check",
     "cron-boot-detect",
     "cron-periodic-detect",
     "cron-periodic-dedup",
@@ -135,9 +141,12 @@ _CRON_TO_FLYWHEEL = {
     "knowledge-tree-consolidate": "知识树",
     "knowledge-tree-kvector": "知识树",
     "daily-learn": "知识路",
+    "dream-daily": "知识路",
+    "每周深度研究-知识树学习": "知识树",
+    "system-health-check": "系统",
 }
 
-_FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识路"]
+_FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识路", "系统"]
 
 # === Required output files for integrity check ===
 REQUIRED_OUTPUTS = {
@@ -171,12 +180,15 @@ FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "oc_f04a9f65d4b780511cc3f402c7
 #   param_name 必须与 KN config.py from_env() 读取的 ENV 变量名完全一致
 #   feedback_csv 列：自优化的改善反馈键，逗号分隔；每个键的方向由 _parse_feedback 解析
 #
-# 4 路召回覆盖：
+# 4 路召回 + 全局打分 全覆盖：
 #   Hindsight: KN_MIN_SCORE, KN_MAX_RESULTS, KN_MAX_TEXT_LENGTH, KN_TEMPORAL_HALFLIFE, KN_TEMPORAL_FLOOR_WEIGHT
 #   SAG:       KN_SAG_MAX_INJECT, KN_SAG_SEARCH_TOP_K, KN_SAG_MIN_SCORE, KN_SAG_POINTER_THRESHOLD
 #   KT:        KN_TOKEN_BUDGET_KT_RATIO
+#   Skill:     KN_TOKEN_BUDGET_SKILL_RATIO
 #   Token:     KN_TOKEN_BUDGET_TOTAL, KN_TOKEN_BUDGET_HINDSIGHT_RATIO
 #   跨域去重:  KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR
+#   全局打分:  KN_LAMBDA_MRR, KN_SCORE_SPAN_TOP3_THRESHOLD, KN_SCORE_SPAN_HALF_THRESHOLD
+#   因果链(按需启用): KN_CAUSAL_BOOST_ALPHA, KN_CAUSAL_BOOST_CAP
 PARAM_DEFS = [
     # === Hindsight 路 ===
     ("KN_MIN_SCORE",               0.50, 0.40, 0.65, 0.05, "kn_judge_relevant_rate,kn_judge_avg_relevance,router_empty_pct"),
@@ -189,21 +201,32 @@ PARAM_DEFS = [
     ("KN_SAG_SEARCH_TOP_K",        3,    3,    10,   1,    "sag_merge_zero_pct,sag_total_kept"),
     ("KN_SAG_MIN_SCORE",           0.5,  0.3,  0.8,  0.05, "sag_on_pct,sag_total_kept"),
     ("KN_SAG_POINTER_THRESHOLD",   300,  150,  800,  100,  "sag_total_kept,token_exhaust_pct"),
-    # === 知识树路（token 配额，与 hindsight_ratio 联动，和≈1.0）===
+    # === 知识树路（token 配额，与 hindsight/skill ratio 联动，三者和≈1.0）===
     ("KN_TOKEN_BUDGET_KT_RATIO",   0.4,  0.2,  0.5,  0.05, "memory_hindsight_count,sag_total_kept"),
+    # === Skill 路（token 配额，三向平衡之一，之前缺失导致调其他比例时挤占 skill 配额）===
+    ("KN_TOKEN_BUDGET_SKILL_RATIO",0.2,  0.1,  0.3,  0.05, "skill_used_count,kn_judge_relevant_rate"),
     # === Token 预算 ===
     ("KN_TOKEN_BUDGET_HINDSIGHT_RATIO", 0.4, 0.3, 0.6, 0.05, "memory_hindsight_count,sag_total_kept"),
     ("KN_TOKEN_BUDGET_TOTAL",      4000, 2000, 8000, 500,  "token_exhaust_pct"),
     # === 跨域去重 ===
     ("KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR", 0.5, 0.3, 0.8, 0.1, "kn_judge_relevant_rate,sag_total_kept"),
+    # === 全局打分 / 重排（高调优价值，近期补 ENV 支持）===
+    ("KN_LAMBDA_MRR",              0.55, 0.35, 0.70, 0.05, "kn_judge_relevant_rate,kn_judge_avg_relevance"),
+    ("KN_SCORE_SPAN_TOP3_THRESHOLD",0.85, 0.80, 0.95, 0.05, "kn_judge_avg_relevance"),
+    ("KN_SCORE_SPAN_HALF_THRESHOLD",0.65, 0.60, 0.85, 0.05, "kn_judge_avg_relevance"),
+    # === 因果链提权（只有 KN_ENABLE_CAUSAL_CHAIN=true 时生效，否则反馈为平→auto-tuner 自动锁定）===
+    ("KN_CAUSAL_BOOST_ALPHA",      0.05, 0.02, 0.20, 0.01, "kn_judge_relevant_rate"),
+    ("KN_CAUSAL_BOOST_CAP",        1.10, 1.05, 1.30, 0.05, "kn_judge_relevant_rate"),
 ]
 
 FEEDBACK_KEYS = [
     "kn_avg_score", "router_empty_pct", "sag_total_kept",
     "sag_merge_zero_pct", "memory_hindsight_count",
     "sag_on_pct", "token_exhaust_pct",
+    # Skill 路反馈（调 KN_TOKEN_BUDGET_SKILL_RATIO 用）
+    "skill_used_count",
     # KN LLM Judge 质量评估（collect_baseline.py --judge 产出），
-    # 作为 KN_MIN_SCORE 调优的主反馈：
+    # 作为 KN_MIN_SCORE / KN_LAMBDA_MRR / KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR 等调优的主反馈：
     #   kn_judge_relevant_rate  (0~1, 越大越好) = judged 中评分 >= 0.5 占比
     #   kn_judge_avg_relevance  (0~1, 越大越好) = judged 所有 LLM 评分均值
     #   kn_judge_sample_count   (int)            = 本轮 judge 样本量，用于可信度判断

@@ -65,6 +65,14 @@ test_outputs/
 *.db
 *.sqlite
 *.log
+data/
+logs/
+
+# === 临时脚本（tmp_ 前缀的一次性调试文件）===
+tmp_*.py
+tmp_*.sh
+tmp_*.bat
+tmp_*.md
 
 # === 临时文件 ===
 *.tmp

@@ -13,10 +13,11 @@ from .config import (
     TH, _CRON_TO_FLYWHEEL, _FLYWHEEL_ORDER,
     CRON_STATE_SUBPATH, CRON_LOG_SUBPATH, TRACE_LOG_SUBPATH,
     KN_BASELINE_SUBPATH, DATA_FLYWHEEL_SUBPATH, SKILL_USAGE_SUBPATH,
-    ERROR_LOG_SUBPATH, MEMORY_DIR_SUBPATH,
+    ERROR_LOG_SUBPATH, MEMORY_DIR_SUBPATH, EXCLUDED_STATE_FILES,
 )
 from .parsers import (
-    parse_cron_states, parse_trace_log, append_daily_summary, load_daily_summary,
+    parse_cron_states, parse_cron_jobs_json,
+    parse_trace_log, append_daily_summary, load_daily_summary,
 )
 from .utils import _resolve_trend_arrow
 from .integrity import (
@@ -35,6 +36,7 @@ from .analyzers.kn_baseline import analyze_kn_baseline, analyze_data_credibility
 from .analyzers.kn_judge import run_judge_within_window, summarize_param_tuning
 from .analyzers.memory_cleanup import analyze_memory_cleanup
 from .recommendations import generate_recommendations
+from .runner import load_runner_summary
 
 
 def format_7day_trend(data_flywheel: Path) -> list[str]:
@@ -99,8 +101,9 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     skill_usage_path = home / SKILL_USAGE_SUBPATH
     error_log_path = home / ERROR_LOG_SUBPATH
 
-    # Parse all data
+    # Parse all data — merge cron-state files (rich) with jobs.json (supplementary)
     cron_states = parse_cron_states(cron_state_dir)
+    cron_states.update(parse_cron_jobs_json(home, cron_states))
     trace = parse_trace_log(trace_path, filter_dates=data_windows)
 
     # Analyze
@@ -166,8 +169,10 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     report_type = detect_report_type(cron_state_dir, now)
     L.append(f"**Report type**: `{report_type}`")
     L.append(f"**Data window**: `{data_window}` (UTC, 完整 24h)")
-    zombie_total = len(list(cron_state_dir.glob("*.json"))) - len(cron_table) if cron_state_dir.is_dir() else 0
-    L.append(f"**Core cron tasks**: {len(cron_table)} 个（排除 {zombie_total} 个非飞轮）")
+    all_state_files = list(cron_state_dir.glob("*.json")) if cron_state_dir.is_dir() else []
+    excluded_count = sum(1 for f in all_state_files if f.stem in EXCLUDED_STATE_FILES)
+    zombie_total = len(zombie_files) + excluded_count
+    L.append(f"**Core cron tasks**: {len(cron_table)} 个（排除 {excluded_count} 个基础设施 + {len(zombie_files)} 个孤儿 state）")
     if dry_run:
         L.append("**Mode**: dry-run (no file written)")
     L.append("")
@@ -208,17 +213,49 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     L.append("")
 
     # === 类别一：任务可靠性 ===
+    # 合并 runner-summary（阶段 0 登记的内部执行任务），覆盖/补充 cron_table
+    runner_summary = load_runner_summary(home)
+    runner_tasks_override: dict[str, dict] = {}
+    if isinstance(runner_summary, dict) and runner_summary.get("stages"):
+        for stage_key, stage_info in runner_summary["stages"].items():
+            if not isinstance(stage_info, dict):
+                continue
+            for t in stage_info.get("tasks", []) or []:
+                if not isinstance(t, dict):
+                    continue
+                cname = t.get("cron_name", "")
+                if cname:
+                    runner_tasks_override[cname] = t
+
     L.append("## 📊 任务可靠性")
     L.append("")
     L.append("| 任务 | 飞轮 | 状态 | 上次运行 | 耗时 | 耗时异常 |")
     L.append("|------|------|------|---------|------|---------|")
-    for name, info in sorted(cron_table.items()):
-        icon = "✅" if info["status"] == "success" else "❌" if info["status"] == "fail" else "⚪"
-        fw = _CRON_TO_FLYWHEEL.get(name, name)
-        run_short = info["run_at"][:16] if info["run_at"] != "—" else "—"
-        elapsed_str = f"{info['elapsed']}s" if info['elapsed'] else "—"
-        ann = elapsed_ann.get(name, "—")
-        L.append(f"| {name} | {fw} | {icon} {info['status']} | {run_short} | {elapsed_str} | {ann} |")
+    all_names = sorted(set(cron_table.keys()) | set(runner_tasks_override.keys()))
+    for name in all_names:
+        # Runner 登记的内部任务优先（替换 cron-state 中的旧数据）
+        override = runner_tasks_override.get(name)
+        if override:
+            status_disp = "internal_running"
+            icon = "🔄"
+            fw = override.get("flywheel") or _CRON_TO_FLYWHEEL.get(name, name)
+            run_short = runner_summary.get("generated_at", "")[:16] or "本次"
+            elapsed_str = "—"
+            note = override.get("note", "")
+            loc = override.get("exec_location", "")
+            ann = f"本次内部执行 @ {loc}" if loc else "本次内部执行"
+            if note:
+                ann = f"{ann}｜{note}"
+        else:
+            info = cron_table[name]
+            status_disp = info["status"]
+            icon = "✅" if status_disp == "success" else "❌" if status_disp == "fail" else "⚪"
+            fw = _CRON_TO_FLYWHEEL.get(name, name)
+            run_short = info["run_at"][:16] if info["run_at"] != "—" else "—"
+            elapsed_str = f"{info['elapsed']}s" if info['elapsed'] else "—"
+            ann = elapsed_ann.get(name, "—")
+        status_text = {"internal_running": "内部执行中"}.get(status_disp, status_disp)
+        L.append(f"| {name} | {fw} | {icon} {status_text} | {run_short} | {elapsed_str} | {ann} |")
     L.append("")
 
     # === 类别二：产出明细 ===
@@ -308,8 +345,11 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
                           "KN_TEMPORAL_HALFLIFE", "KN_TEMPORAL_FLOOR_WEIGHT",
                           "KN_SAG_MAX_INJECT", "KN_SAG_SEARCH_TOP_K", "KN_SAG_MIN_SCORE",
                           "KN_SAG_POINTER_THRESHOLD", "KN_TOKEN_BUDGET_KT_RATIO",
+                          "KN_TOKEN_BUDGET_SKILL_RATIO",
                           "KN_TOKEN_BUDGET_HINDSIGHT_RATIO", "KN_TOKEN_BUDGET_TOTAL",
-                          "KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR"]:
+                          "KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR",
+                          "KN_LAMBDA_MRR", "KN_SCORE_SPAN_TOP3_THRESHOLD", "KN_SCORE_SPAN_HALF_THRESHOLD",
+                          "KN_CAUSAL_BOOST_ALPHA", "KN_CAUSAL_BOOST_CAP"]:
                 info = params.get(pname)
                 if not info:
                     continue

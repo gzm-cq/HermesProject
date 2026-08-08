@@ -21,6 +21,19 @@ fi
 cron_init "flywheel-health-report"
 CRON_SKIP_FINISH_NOTIFY=true
 
+# ===== 阶段 0：Runner 前置登记 =====
+# 声明式标记 report 阶段 1 将内部执行 KN LLM Judge，替代原 knowledge-navigation-baseline cron job
+# （防止 judge 被跑 2 次浪费 LLM token）。runner.run_all 本身不耗时（0.01s 级）。
+cron_section "Runner：阶段 0 登记"
+if python3 -m flywheel_health_report.runner --home "$HERMES_HOME"; then
+    cron_ok "Runner 登记 OK"
+    _STEP_RESULTS+=("✅ Runner 阶段 0")
+else
+    _RUNNER_RC=$?
+    cron_warn "Runner 登记异常 (exit=$_RUNNER_RC，不影响后续报告)"
+    _STEP_RESULTS+=("⚠️ Runner 阶段 0 异常")
+fi
+
 CHAT_ID="${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}"
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 REPORT_DIR="${HERMES_HOME}/logs/reports"
