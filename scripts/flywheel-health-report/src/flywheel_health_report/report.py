@@ -304,9 +304,12 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             L.append("")
             L.append("| 参数 | 当前值 | 区间 | 步长 | 初值→当前 | 历史 | 状态 | 说明 |")
             L.append("|------|--------|------|------|-----------|------|------|------|")
-            for pname in ["KN_MIN_SCORE", "sag_max_inject", "sag_search_top_k",
-                          "token_budget_hindsight_ratio", "sag_search_threshold",
-                          "token_budget"]:
+            for pname in ["KN_MIN_SCORE", "KN_MAX_RESULTS", "KN_MAX_TEXT_LENGTH",
+                          "KN_TEMPORAL_HALFLIFE", "KN_TEMPORAL_FLOOR_WEIGHT",
+                          "KN_SAG_MAX_INJECT", "KN_SAG_SEARCH_TOP_K", "KN_SAG_MIN_SCORE",
+                          "KN_SAG_POINTER_THRESHOLD", "KN_TOKEN_BUDGET_KT_RATIO",
+                          "KN_TOKEN_BUDGET_HINDSIGHT_RATIO", "KN_TOKEN_BUDGET_TOTAL",
+                          "KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR"]:
                 info = params.get(pname)
                 if not info:
                     continue

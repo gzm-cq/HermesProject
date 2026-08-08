@@ -168,17 +168,34 @@ FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "oc_f04a9f65d4b780511cc3f402c7
 
 # 参数池
 # 格式：(param_name, default, min, max, step, feedback_csv)
+#   param_name 必须与 KN config.py from_env() 读取的 ENV 变量名完全一致
 #   feedback_csv 列：自优化的改善反馈键，逗号分隔；每个键的方向由 _parse_feedback 解析
-#   KN_MIN_SCORE 的主反馈已从 kn_avg_score（rerank 机械分数）升级为 kn_judge_relevant_rate +
-#   kn_judge_avg_relevance（LLM judge 评估的实际相关率/平均相关度，200 条样本，v2 prompt），
-#   与其他参数优化保持一致：通过 daily-summary-history.jsonl 的字段驱动。
+#
+# 4 路召回覆盖：
+#   Hindsight: KN_MIN_SCORE, KN_MAX_RESULTS, KN_MAX_TEXT_LENGTH, KN_TEMPORAL_HALFLIFE, KN_TEMPORAL_FLOOR_WEIGHT
+#   SAG:       KN_SAG_MAX_INJECT, KN_SAG_SEARCH_TOP_K, KN_SAG_MIN_SCORE, KN_SAG_POINTER_THRESHOLD
+#   KT:        KN_TOKEN_BUDGET_KT_RATIO
+#   Token:     KN_TOKEN_BUDGET_TOTAL, KN_TOKEN_BUDGET_HINDSIGHT_RATIO
+#   跨域去重:  KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR
 PARAM_DEFS = [
+    # === Hindsight 路 ===
     ("KN_MIN_SCORE",               0.50, 0.40, 0.65, 0.05, "kn_judge_relevant_rate,kn_judge_avg_relevance,router_empty_pct"),
-    ("sag_max_inject",             3.0, 2.0, 6.0, 1.00, "sag_total_kept"),
-    ("sag_search_top_k",           3.0, 3.0, 10.0,1.00, "sag_merge_zero_pct"),
-    ("token_budget_hindsight_ratio",0.4,0.3, 0.6, 0.05, "memory_hindsight_count,sag_total_kept"),
-    ("sag_search_threshold",       0.5, 0.3, 0.8, 0.05, "sag_on_pct,sag_total_kept"),
-    ("token_budget",               4000,2000,8000,500,  "token_exhaust_pct"),
+    ("KN_MAX_RESULTS",             3,    2,    8,    1,    "kn_judge_relevant_rate,kn_judge_avg_relevance,memory_hindsight_count"),
+    ("KN_MAX_TEXT_LENGTH",         200,  120,  400,  50,   "token_exhaust_pct,kn_judge_relevant_rate"),
+    ("KN_TEMPORAL_HALFLIFE",       30,   14,   90,   7,    "kn_judge_relevant_rate,kn_judge_avg_relevance"),
+    ("KN_TEMPORAL_FLOOR_WEIGHT",   0.5,  0.3,  0.8,  0.1,  "kn_judge_relevant_rate"),
+    # === SAG 路 ===
+    ("KN_SAG_MAX_INJECT",          3.0,  2.0,  6.0,  1.00, "sag_total_kept"),
+    ("KN_SAG_SEARCH_TOP_K",        3,    3,    10,   1,    "sag_merge_zero_pct,sag_total_kept"),
+    ("KN_SAG_MIN_SCORE",           0.5,  0.3,  0.8,  0.05, "sag_on_pct,sag_total_kept"),
+    ("KN_SAG_POINTER_THRESHOLD",   300,  150,  800,  100,  "sag_total_kept,token_exhaust_pct"),
+    # === 知识树路（token 配额，与 hindsight_ratio 联动，和≈1.0）===
+    ("KN_TOKEN_BUDGET_KT_RATIO",   0.4,  0.2,  0.5,  0.05, "memory_hindsight_count,sag_total_kept"),
+    # === Token 预算 ===
+    ("KN_TOKEN_BUDGET_HINDSIGHT_RATIO", 0.4, 0.3, 0.6, 0.05, "memory_hindsight_count,sag_total_kept"),
+    ("KN_TOKEN_BUDGET_TOTAL",      4000, 2000, 8000, 500,  "token_exhaust_pct"),
+    # === 跨域去重 ===
+    ("KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR", 0.5, 0.3, 0.8, 0.1, "kn_judge_relevant_rate,sag_total_kept"),
 ]
 
 FEEDBACK_KEYS = [
