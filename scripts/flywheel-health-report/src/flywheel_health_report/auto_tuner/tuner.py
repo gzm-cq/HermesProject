@@ -841,11 +841,39 @@ def validate_step(old_val: float, new_val: float, step: float) -> bool:
 
 
 def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, float, float, float, str]]:
-    """按 PARAM_DEFS 顺序挑第一个未收敛、且近期尝试次数最少的。
-    (简单策略：顺序 + 未收敛优先，后续可扩展优先挑未尝试过的参数。)"""
-    # 第一优先级：从未 tun 过的（state 中没记录或 initial_value==None）
-    virgin: List[Tuple[str, float, float, float, float, str]] = []
-    remaining: List[Tuple[str, float, float, float, float, str]] = []
+    """Round 3 P1-D：选择调参顺序策略。
+
+    优先级链：
+    1) virgin（从未调过）先于 remaining（调过但未收敛）
+    2) 在 virgin / remaining 内部，先挑「今日反馈可信」的参数：
+       a) 参数 feedback 完全不依赖 kn_judge 主观键 → 任何时候都可信
+       b) 参数依赖主观键，但今日 kn_judge_sample_count >= _KN_JUDGE_MIN_SAMPLE → 可信
+       c) 其他（今日 judge 样本不足 + 参数依赖主观键）→ 作为未可信组，放可信组之后
+    3) 组内保留 PARAM_DEFS 顺序（保持确定性，便于调试）
+    """
+    # 先读今日 summary（本地 JSONL 快速，daily 报告若还没出会 fallback 到昨天）
+    today_str = _today_cn()
+    yesterday_str = _yesterday_cn()
+    rec_data = _extract_metrics_for_tuning(today_str, yesterday_str)
+    today_rec = rec_data.get("today") if isinstance(rec_data.get("today"), dict) else {}
+    yesterday_rec = rec_data.get("yesterday") if isinstance(rec_data.get("yesterday"), dict) else {}
+    judge_trusted, judge_sc = _kn_judge_trusted(today_rec, yesterday_rec)
+
+    def _feedback_trust_today(feedback_csv: str) -> bool:
+        subjective_hits = False
+        for name in (s.strip() for s in feedback_csv.split(",") if s.strip()):
+            if name in _KN_JUDGE_SUBJECTIVE_KEYS:
+                subjective_hits = True
+                break
+        if not subjective_hits:
+            return True  # 不依赖主观评估键 → 任何时刻可信
+        return judge_trusted
+
+    virgin_confident: List[Tuple[str, float, float, float, float, str]] = []
+    virgin_unconfident: List[Tuple[str, float, float, float, float, str]] = []
+    remaining_confident: List[Tuple[str, float, float, float, float, str]] = []
+    remaining_unconfident: List[Tuple[str, float, float, float, float, str]] = []
+
     for pdef in PARAM_DEFS:
         name = pdef[0]
         if _is_param_permanently_skipped(name):
@@ -854,16 +882,28 @@ def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, fl
         if is_param_converged(state, name):
             log_info(f"参数 {name} 已收敛，跳过")
             continue
+        fb_csv = pdef[5]
+        confident = _feedback_trust_today(fb_csv)
         pst = state.get(name) or {}
         if pst.get("initial_value") is None:
-            virgin.append(pdef)
+            (virgin_confident if confident else virgin_unconfident).append(pdef)
         else:
-            remaining.append(pdef)
-    if virgin:
-        return virgin[0]
-    if remaining:
-        return remaining[0]
-    return None
+            (remaining_confident if confident else remaining_unconfident).append(pdef)
+
+    def _pick(vc, vu, rc, ru):
+        order = (("virgin-confident", vc), ("virgin-unconfident", vu),
+                 ("remaining-confident", rc), ("remaining-unconfident", ru))
+        for label, bucket in order:
+            if bucket:
+                first = bucket[0]
+                log_info(f"  选参[{label}] → {first[0]}（今日 KN LLM Judge 样本={judge_sc}, trusted={judge_trusted}）")
+                return first
+        return None
+
+    picked = _pick(virgin_confident, virgin_unconfident, remaining_confident, remaining_unconfident)
+    if picked is None:
+        log_info("所有候选均收敛/跳过，本次无参数可调")
+    return picked
 
 
 # ============================================================
