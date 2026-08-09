@@ -98,6 +98,33 @@ def _is_param_permanently_skipped(name: str) -> bool:
     return False
 
 
+# KN LLM Judge 评估样本阈值：与 kn_judge.py KN_JUDGE_CFG.min_sample=50 严格对齐
+# 样本不足时 kn_judge_relevant_rate / avg_relevance 波动极大，不应驱动调优决策。
+_KN_JUDGE_MIN_SAMPLE = 50
+_KN_JUDGE_SUBJECTIVE_KEYS = frozenset({"kn_judge_relevant_rate", "kn_judge_avg_relevance"})
+
+
+def _kn_judge_trusted(rec_primary: Dict[str, Any],
+                      rec_secondary: Optional[Dict[str, Any]] = None) -> Tuple[bool, int]:
+    """判断 KN LLM Judge 反馈键是否可信。
+
+    规则：检查 records 中 kn_judge_sample_count，取最小的有效样本值；最小样本 >= _KN_JUDGE_MIN_SAMPLE 才可信。
+    传入 before + after 两份记录时，任一方不足即视为不可信（避免跨日比较的噪声驱动调优）。
+    返回: (is_trusted, actual_min_sample_count)。若 2 份都没 sample_count 字段则视为不可信（return False, 0）。
+    """
+    sc_list: List[int] = []
+    for r in (rec_primary, rec_secondary):
+        if not r: continue
+        sc = r.get("kn_judge_sample_count")
+        if sc is None: continue
+        try: sc_list.append(int(sc))
+        except (TypeError, ValueError): pass
+    if not sc_list:
+        return False, 0
+    sc = min(sc_list)
+    return (sc >= _KN_JUDGE_MIN_SAMPLE), sc
+
+
 # ============================================================
 # 2. 工具函数：日期 / 原子写入 / JSONL / .env
 # ============================================================
@@ -489,11 +516,20 @@ def handle_pending_restart() -> bool:
         no_change = (old_v == new_v)
         if pdef:
             feeds = _parse_feedback(pdef[5])
+            # Round 2 P0-B: 先判断今日 judge 样本可信度（所有主观反馈键前置过滤）
+            judge_trusted, judge_sc = _kn_judge_trusted(metrics_after, mb)
+            has_subjective_any = any(n in _KN_JUDGE_SUBJECTIVE_KEYS for n, _ in feeds)
+            skipped_untrusted = False
             ic = 0
             tc = 0
             has_any = False
             for name, d in feeds:
                 tc += 1
+                # 如果 judge 样本不足，跳过其主观反馈键，避免小样本噪声驱动方向
+                if name in _KN_JUDGE_SUBJECTIVE_KEYS and not judge_trusted:
+                    skipped_untrusted = True
+                    log_info(f"  忽略反馈 {name}: kn_judge_sample_count={judge_sc} < {_KN_JUDGE_MIN_SAMPLE}（评估样本不足，不纳入改善判定）")
+                    continue
                 om = mb.get(name)
                 nm = metrics_after.get(name)
                 if om is None or nm is None:
@@ -506,9 +542,22 @@ def handle_pending_restart() -> bool:
                 if _is_metric_improved(name, d, om_f, nm_f):
                     ic += 1
             if not has_any:
-                improved = True
+                # Round 2 P0-B: 若「所有反馈键被 judge 样本不足过滤掉」，不默认改善，走未知避免推到边界
+                if skipped_untrusted and has_subjective_any:
+                    improved = None
+                    log_warn("反馈缺失：所有可用反馈键均因 KN LLM Judge 样本不足被跳过 → 本次改善判定=未知（保持 pending_restart 状态直到样本充足）")
+                else:
+                    improved = True  # 原语义：完全无数据时默认改善
             else:
                 improved = ic >= max(tc / 2, 1)
+
+        # improved=None 时，handle_pending_restart 仍保留 pending_restart（不进 update_state）
+        if improved is None:
+            log_info(f"暂不确认上次调优（改善未知），下次继续观察；不进冷却，允许本次处理其它非 pending 任务（若有）")
+            # 回滚刚刚更新 log status=applied 的动作 → 改回 pending_restart，保持状态机一致
+            update_log_entry(param, tune_date, "pending_restart", None)
+            log_info("已回滚日志状态为 pending_restart，等待下一次有足够 judge 样本再确认")
+            return False  # 不再占冷却位，允许后续继续观察或调其它参数
 
         state = load_state()
         last_dir_osc = state.get(param, {}).get("last_direction")
@@ -705,8 +754,17 @@ def determine_direction(
         ic = 0
         tc = 0
         has_any = False
-        for name, d in _parse_feedback(feedback_csv):
+        # Round 2 P0-B: 先判断今日 judge 样本可信度（同 handle_pending_restart 逻辑保持一致）
+        judge_trusted, judge_sc = _kn_judge_trusted(ma if ma else {}, mb if mb else {})
+        feeds = _parse_feedback(feedback_csv)
+        has_subjective_any = any(n in _KN_JUDGE_SUBJECTIVE_KEYS for n, _ in feeds)
+        skipped_untrusted = False
+        for name, d in feeds:
             tc += 1
+            if name in _KN_JUDGE_SUBJECTIVE_KEYS and not judge_trusted:
+                skipped_untrusted = True
+                log_info(f"  方向决策忽略反馈 {name}: kn_judge_sample_count={judge_sc} < {_KN_JUDGE_MIN_SAMPLE}")
+                continue
             om = mb.get(name)
             nm = ma.get(name)
             if om is None or nm is None:
@@ -723,7 +781,12 @@ def determine_direction(
         if status == "pending_restart" and not has_any:
             improved = None  # 哨兵：未知，走首次位置策略
         elif not has_any:
-            improved = True  # 无反馈数据，默认改善
+            # Round 2 P0-B: 如果是因为「judge 样本不足导致所有反馈都过滤」，走 None 未知避免推边界
+            if skipped_untrusted and has_subjective_any:
+                improved = None
+                log_warn(f"  {param_name}: KN LLM Judge 样本不足导致反馈全跳过 → 改善判定=未知，走首次位置策略（避免错误同向）")
+            else:
+                improved = True  # 无反馈数据，默认改善
         else:
             improved = ic >= max(tc / 2, 1)
 
