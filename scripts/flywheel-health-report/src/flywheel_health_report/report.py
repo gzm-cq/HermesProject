@@ -240,8 +240,20 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         # Runner 登记的内部任务优先（替换 cron-state 中的旧数据）
         override = runner_tasks_override.get(name)
         if override:
-            status_disp = "internal_running"
-            icon = "🔄"
+            raw_status = override.get("status", "internal_running")
+            # 已执行的任务直接显示实际状态
+            if raw_status == "done":
+                status_disp = "success"
+                icon = "✅"
+            elif raw_status == "failed":
+                status_disp = "fail"
+                icon = "❌"
+            elif raw_status == "skipped":
+                status_disp = "skipped"
+                icon = "⚪"
+            else:
+                status_disp = "internal_running"
+                icon = "🔄"
             fw = override.get("flywheel") or _CRON_TO_FLYWHEEL.get(name, name)
             run_short = runner_summary.get("generated_at", "")[:16] or "本次"
             elapsed_str = "—"
@@ -258,7 +270,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             run_short = info["run_at"][:16] if info["run_at"] != "—" else "—"
             elapsed_str = f"{info['elapsed']}s" if info['elapsed'] else "—"
             ann = elapsed_ann.get(name, "—")
-        status_text = {"internal_running": "内部执行中"}.get(status_disp, status_disp)
+        status_text = {"internal_running": "内部执行中", "success": "成功", "fail": "失败", "skipped": "跳过"}.get(status_disp, status_disp)
         L.append(f"| {name} | {fw} | {icon} {status_text} | {run_short} | {elapsed_str} | {ann} |")
     L.append("")
 

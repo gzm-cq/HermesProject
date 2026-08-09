@@ -354,7 +354,7 @@ CRON_JOBS=(
   "clustering-analysis|clustering|clustering-analysis-v3/scripts/clustering-analysis-cron.sh|true|/root/.hermes/scripts"
   "知识树维护每日|knowledge_tree_consolidate|knowledge-tree-builder/scripts/knowledge-tree-consolidate.sh|true|/root/.hermes/scripts/knowledge-tree-builder"
   "知识导航评估基线|kn_baseline|knowledge-navigation-baseline.sh|true|/root/.hermes/plugins/knowledge-navigation"
-  "Skill Eval 评估|skill_eval|run-skill-eval.sh|true|"
+  # Skill Eval 评估已合并到 flywheel-health-report runner 阶段 0，不再需要独立 cron 任务
   "memory-cleanup-daily|memory_cleanup|memory-cleanup/daily_dryrun.sh|true|/root/.hermes/scripts/memory-cleanup"
   "知识导航 Router 健康巡检|router_health|kn-router-health-check.sh|true|"
   "skillopt-nightly-run|skill_optimization|skillopt-runner/skillopt-nightly-run.sh|true|/root/.hermes/skillopt-runner"

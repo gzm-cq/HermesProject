@@ -73,7 +73,7 @@ cron:
   clustering: "0 10 * * 1"
   knowledge_tree_consolidate: "0 11 * * 1"
   kn_baseline: "0 12 * * *"
-  skill_eval: "0 12 * * *"
+  # skill_eval 已合并到 flywheel-health-report runner 阶段 0，不再需要独立 cron 调度
   memory_cleanup: "0 13 * * *"
   router_health: "0 14 * * *"
   skill_optimization: "0 15 * * *"
