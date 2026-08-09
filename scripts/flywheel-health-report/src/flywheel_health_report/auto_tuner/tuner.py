@@ -468,7 +468,10 @@ def _extract_metrics_for_tuning(today_str: str, yesterday_str: str
         pass
 
     # fallback: 如果今天没 scheduled，取昨天当今天，yesterday=None
+    # 注意：此时 today_rec 与 yesterday_rec 指向同一条记录，
+    # 后续 P4 _metrics_unchanged 会检测到 metrics_after==metrics_before 并判为 unknown。
     if today_rec is None:
+        log_info("今日 scheduled 报告未找到，fallback 取昨日数据作为 today（metrics_before==metrics_after 风险由 P4 _metrics_unchanged 兜底）")
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 for line in f:
