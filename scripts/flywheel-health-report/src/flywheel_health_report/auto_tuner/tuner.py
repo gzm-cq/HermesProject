@@ -82,6 +82,160 @@ def log_step(msg: str) -> None:  print(f"{C_BLU}[step ]{C_RST} {msg}")
 # 关闭时直接跳过，避免占用"一次只动一个变量"的调优轮次。
 _CAUSAL_PARAM_NAMES = frozenset({"KN_CAUSAL_BOOST_ALPHA", "KN_CAUSAL_BOOST_CAP"})
 
+# Token 预算三比例：三者之和必须 ≈ 1.0
+# 调任一参数后需归一化，避免溢出（和>1）或留白（和<1）。
+_RATIO_TRIO_PARAMS = frozenset({
+    "KN_TOKEN_BUDGET_KT_RATIO",
+    "KN_TOKEN_BUDGET_SKILL_RATIO",
+    "KN_TOKEN_BUDGET_HINDSIGHT_RATIO",
+})
+
+
+def _get_ratio_trio_bounds() -> Dict[str, Tuple[float, float]]:
+    """从 PARAM_DEFS 提取三比例各自的 [pmin, pmax]，归一化时用于 clip。"""
+    out: Dict[str, Tuple[float, float]] = {}
+    for pdef in PARAM_DEFS:
+        name = pdef[0]
+        if name in _RATIO_TRIO_PARAMS:
+            out[name] = (float(pdef[2]), float(pdef[3]))
+    return out
+
+
+def normalize_ratio_trio(
+    tuned_param: str,
+    tuned_new_value: float,
+    other_current_values: Dict[str, float],
+) -> Dict[str, float]:
+    """Round 4 P1-C：三比例归一化。
+
+    输入：
+      - tuned_param: 本次被 auto-tuner 调整的参数名（三者之一）
+      - tuned_new_value: 调优后的新值（已由 determine_direction 算出）
+      - other_current_values: {另外两个参数名: 当前.env中的值}
+
+    输出：
+      {三个参数名: 归一化后的新值}，满足 sum(values) ≈ 1.0 且每个值 ∈ [pmin, pmax]
+
+    算法（按优先级）：
+      1) 先固定 tuned_param = tuned_new_value（尊重 auto-tuner 决策的主方向）
+      2) 剩余 1 - tuned_new_value 按「另外两个参数的当前比例」分摊
+      3) 若分摊后某参数超出自身 [pmin, pmax]，先 clip 到边界
+      4) clip 后还差的量，由另一个未 clip 的参数独自承担（若仍在其范围内）
+      5) 极端情况：两个都 clip 后总和仍 !=1.0 → 以「尽量满足 tuned_param 不变」为前提，
+         同等缩放两外两个直到 sum≈1 或都到边界；最后如果 tuned 本身也要让才达标，
+         才微调 tuned_param（保持与 PARAM_DEFS 边界一致）
+    """
+    if tuned_param not in _RATIO_TRIO_PARAMS:
+        raise ValueError(f"normalize_ratio_trio: {tuned_param} 不是比例三参数之一")
+    bounds = _get_ratio_trio_bounds()
+    if set(bounds.keys()) != _RATIO_TRIO_PARAMS:
+        raise RuntimeError(f"normalize_ratio_trio: PARAM_DEFS 中缺少比例参数定义: {bounds.keys()}")
+    others = [n for n in _RATIO_TRIO_PARAMS if n != tuned_param]
+    if set(others) != set(other_current_values.keys()):
+        raise ValueError(f"normalize_ratio_trio: other_current_values 必须恰好包含 {others}，当前={list(other_current_values.keys())}")
+
+    # ① 读出各参数边界
+    tp_min, tp_max = bounds[tuned_param]
+    o1, o2 = others[0], others[1]
+    o1_min, o1_max = bounds[o1]
+    o2_min, o2_max = bounds[o2]
+
+    # ② 先 clip tuned_new_value 自身到合法范围（防御性，理论上 determine_direction 已做）
+    tv = min(max(float(tuned_new_value), tp_min), tp_max)
+
+    # ③ 剩余预算，按两外两个参数的当前权重分配
+    remain = 1.0 - tv
+    if remain < 0:
+        # tv 本身太大（但已经 clip 过，这里只是保险），强行压到 tp_max 后再算
+        tv = tp_max
+        remain = 1.0 - tv
+    o1_cur = float(other_current_values[o1])
+    o2_cur = float(other_current_values[o2])
+    o_sum = o1_cur + o2_cur
+    if o_sum <= 1e-12:
+        # 两外两个当前都是 0（极端），按默认等权重
+        w1 = w2 = 0.5
+    else:
+        w1 = o1_cur / o_sum
+        w2 = o2_cur / o_sum
+    o1_val = remain * w1
+    o2_val = remain * w2
+
+    # ④ clip + 二次分摊（第一轮：先把超界的固定到边界）
+    o1_clipped = False
+    o2_clipped = False
+    if o1_val < o1_min:
+        o1_val = o1_min
+        o1_clipped = True
+    elif o1_val > o1_max:
+        o1_val = o1_max
+        o1_clipped = True
+    if o2_val < o2_min:
+        o2_val = o2_min
+        o2_clipped = True
+    elif o2_val > o2_max:
+        o2_val = o2_max
+        o2_clipped = True
+
+    # 把超/缺的量分给未 clip 的那个
+    cur_sum = tv + o1_val + o2_val
+    diff = 1.0 - cur_sum
+    if abs(diff) > 1e-9:
+        if not o1_clipped and not o2_clipped:
+            # 两者都未 clip：按权重补（一般不会到这里，clip 才会有 diff）
+            if o_sum > 1e-12:
+                o1_val += diff * w1
+                o2_val += diff * w2
+            else:
+                o1_val += diff * 0.5
+                o2_val += diff * 0.5
+        elif not o1_clipped and o2_clipped:
+            # o2 已 clip，diff 全给 o1
+            o1_val += diff
+        elif o1_clipped and not o2_clipped:
+            # o1 已 clip，diff 全给 o2
+            o2_val += diff
+        # else: 两者都 clip 了，后面再兜底
+
+        # 二次 clip 防止分摊后又越界
+        o1_val = min(max(o1_val, o1_min), o1_max)
+        o2_val = min(max(o2_val, o2_min), o2_max)
+
+    # ⑤ 兜底：如果两个 o* 都到边界还凑不齐 1.0，只能微调 tuned_param 本身
+    cur_sum = tv + o1_val + o2_val
+    diff = 1.0 - cur_sum
+    if abs(diff) > 1e-9:
+        tv_candidate = tv + diff
+        if tp_min - 1e-9 <= tv_candidate <= tp_max + 1e-9:
+            tv = min(max(tv_candidate, tp_min), tp_max)
+        else:
+            # 极端：tuned 也到边界了，此时三者都在边界但 sum !=1 → 放弃凑 1（返回最接近的合法组合）
+            # （实际 PARAM_DEFS 范围设置合理的话不会到这：0.2+0.1+0.3=0.6 最小，0.5+0.3+0.6=1.4 最大）
+            # 通过整体缩放让 sum=1（可能轻微越界，但 KN 代码内有 sum normalize 兜底）
+            total = tv + o1_val + o2_val
+            if total > 1e-12:
+                tv = tv / total
+                o1_val = o1_val / total
+                o2_val = o2_val / total
+
+    # 最终再 clip 一次 + 四舍五入 4 位（与 PARAM_DEFS step 精度一致）
+    result = {
+        tuned_param: round(min(max(tv, tp_min), tp_max), 4),
+        o1: round(min(max(o1_val, o1_min), o1_max), 4),
+        o2: round(min(max(o2_val, o2_min), o2_max), 4),
+    }
+    # 浮点数累计误差修正：总和 - 1.0 的残差加到数值最大的那个上（避免 0.4001+0.2+0.4=1.0001）
+    s = sum(result.values())
+    residual = round(1.0 - s, 4)
+    if abs(residual) >= 1e-4:
+        max_key = max(result, key=lambda k: result[k])
+        result[max_key] = round(result[max_key] + residual, 4)
+        # 最后保证不越界
+        for k, v in result.items():
+            mn, mx = bounds[k]
+            result[k] = round(min(max(v, mn), mx), 4)
+    return result
+
 
 def _causal_chain_enabled() -> bool:
     """读 ENV_FILE 中 KN_ENABLE_CAUSAL_CHAIN；与 KN config.py 默认 True 一致。"""
@@ -1066,6 +1220,49 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_warn("步幅超过安全阈值，跳过本次调优")
         return 0
 
+    # 10.5. Round 4 P1-C：三比例归一化（若选中参数是 token budget ratio 之一）
+    ratio_trio_result: Optional[Dict[str, float]] = None
+    ratio_trio_old: Optional[Dict[str, float]] = None
+    if name in _RATIO_TRIO_PARAMS:
+        others = [n for n in _RATIO_TRIO_PARAMS if n != name]
+        other_vals: Dict[str, float] = {}
+        default_vals_from_defs: Dict[str, float] = {
+            pdef[0]: float(pdef[1]) for pdef in PARAM_DEFS if pdef[0] in _RATIO_TRIO_PARAMS
+        }
+        for on in others:
+            ov = read_env_param(on)
+            if ov is not None:
+                try:
+                    other_vals[on] = float(ov)
+                except (TypeError, ValueError):
+                    other_vals[on] = default_vals_from_defs[on]
+            else:
+                other_vals[on] = default_vals_from_defs[on]
+        ratio_trio_old = {
+            name: float(current),
+            **{k: float(v) for k, v in other_vals.items()},
+        }
+        try:
+            ratio_trio_result = normalize_ratio_trio(name, new_val, other_vals)
+        except (ValueError, RuntimeError) as e:
+            log_warn(f"[Round4] 三比例归一化失败，跳过归一化（仅调 {name}）：{e}")
+            ratio_trio_result = None
+        if ratio_trio_result is not None:
+            # 归一化后，tuned 参数本身可能被兜底微调，更新 new_val
+            new_val = ratio_trio_result[name]
+            s_old = round(sum(ratio_trio_old.values()), 4)
+            s_new = round(sum(ratio_trio_result.values()), 4)
+            print("")
+            log_step("[Round 4] 三比例归一化结果:")
+            for k in sorted(_RATIO_TRIO_PARAMS):
+                marker = " ← 调优目标" if k == name else ""
+                ov = ratio_trio_old[k]
+                nv = ratio_trio_result[k]
+                arrow = "" if abs(ov - nv) < 1e-9 else f" → {nv}"
+                print(f"    {k}: {ov}{arrow}{marker}")
+            print(f"    归一化前总和: {s_old} → 归一化后总和: {s_new}")
+            print("")
+
     # 11. metrics_before（今天的报告，用于后续改善判断）
     metrics_before = _extract_metrics_before(today_rec)
 
@@ -1079,8 +1276,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  当前值:    {current} → 新值: {new_val}")
         print(f"  方向:      {direction}")
         print(f"  原因:      {reason}")
+        if ratio_trio_result is not None:
+            print(f"  [Round 4] 比例联动：三参数同步写入，总和={round(sum(ratio_trio_result.values()), 4)}")
+            for k in sorted(_RATIO_TRIO_PARAMS):
+                ov = ratio_trio_old[k]
+                nv = ratio_trio_result[k]
+                if abs(ov - nv) < 1e-9:
+                    continue
+                print(f"    联动: {k}: {ov} → {nv}")
         print(f"  备份:      {BACKUP_DIR}/env-*.bak")
         print(f"  操作:      修改 {ENV_FILE} → {name}={new_val}")
+        if ratio_trio_result is not None:
+            for k, v in ratio_trio_result.items():
+                if k == name:
+                    continue
+                ov = ratio_trio_old[k]
+                if abs(ov - v) < 1e-9:
+                    continue
+                print(f"  操作:      修改 {ENV_FILE} → {k}={v}（三比例归一化联动）")
         print(f"  操作:      手动重启 hermes-gateway（飞书通知）")
         print(f"  日志:      {LOG_FILE}")
         print("")
@@ -1097,6 +1310,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "status": "dry_run",
             "timestamp": _now_iso(),
         }
+        if ratio_trio_result is not None:
+            entry["ratio_trio_normalized"] = ratio_trio_result
+            entry["ratio_trio_old"] = ratio_trio_old
         _append_jsonl(LOG_FILE, entry)
         log_ok("DRY-RUN 完成，决策已写入日志")
         return 0
@@ -1111,6 +1327,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not ok:
         log_err(f"写入 .env 失败: {ENV_FILE}")
         return 2
+    # Round 4：若有归一化结果，联动写入另外两个比例
+    if ratio_trio_result is not None:
+        for k, v in ratio_trio_result.items():
+            if k == name:
+                continue
+            ov = ratio_trio_old[k]
+            if abs(ov - v) < 1e-9:
+                continue
+            log_step(f"[Round 4] 联动写入 {k}: {ov} → {v}（三比例归一化）")
+            ok2 = write_env_param(k, f"{v:g}")
+            if not ok2:
+                log_err(f"[Round 4] 联动写入失败: {k}={v}（.env 可能不完整，请手动核对）")
     log_ok(".env 已更新")
 
     # 通知重启（不自动重启，避免杀死 cronjob）
@@ -1133,6 +1361,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "backup_file": backup_file,
         "timestamp": _now_iso(),
     }
+    if ratio_trio_result is not None:
+        entry["ratio_trio_normalized"] = ratio_trio_result
+        entry["ratio_trio_old"] = ratio_trio_old
     _append_jsonl(LOG_FILE, entry)
 
     # **一定调用 update_state 并写回**（bash 版这里漏了）
