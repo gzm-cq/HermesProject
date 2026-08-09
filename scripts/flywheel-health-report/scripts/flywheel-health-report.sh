@@ -21,6 +21,16 @@ fi
 cron_init "flywheel-health-report"
 CRON_SKIP_FINISH_NOTIFY=true
 
+# ===== 环境变量（必须在 Runner 阶段 0 之前设置）=====
+HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
+CHAT_ID="${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}"
+REPORT_DIR="${HERMES_HOME}/logs/reports"
+
+# 设置 PYTHONPATH 指向包的 src 目录（Runner 和 CLI 都依赖此变量）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}"
+
 # ===== 阶段 0：Runner 前置登记 =====
 # 声明式标记 report 阶段 1 将内部执行 KN LLM Judge，替代原 knowledge-navigation-baseline cron job
 # （防止 judge 被跑 2 次浪费 LLM token）。runner.run_all 本身不耗时（0.01s 级）。
@@ -33,15 +43,6 @@ else
     cron_warn "Runner 登记异常 (exit=$_RUNNER_RC，不影响后续报告)"
     _STEP_RESULTS+=("⚠️ Runner 阶段 0 异常")
 fi
-
-CHAT_ID="${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}"
-HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
-REPORT_DIR="${HERMES_HOME}/logs/reports"
-
-# 设置 PYTHONPATH 指向包的 src 目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-export PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}"
 
 # P0/P1 通知最大行数（避免飞书消息过长）
 MAX_P0_LINES=5
