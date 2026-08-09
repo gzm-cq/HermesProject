@@ -746,44 +746,60 @@ def print_comparison_report(comparison: dict[str, Any]) -> None:
 # ========== LLM Relevance Judge ==========
 
 def collect_all_recalls(log_file: str) -> list[dict]:
-    """读取 trace.log 中所有 recall_success 记录（不限 eval 匹配）。"""
+    """读取 trace.log 中所有 recall_success 记录（不限 eval 匹配）。
+
+    同时读取 RotatingFileHandler 的轮转备份（trace.log.1 / trace.log.2），
+    避免 trace.log 超过 50MB 被 rotate 后当前文件只含最近少量记录，
+    导致 KN LLM Judge 样本骤减（如 200+ → 8）。
+    """
     if not log_file:
         log_file = find_log_file()
     path = Path(log_file).expanduser()
     if not path.exists():
         return []
 
+    # 待读取文件：trace.log + 轮转备份（数值越小越新）
+    files = [path]
+    for i in (1, 2, 3, 4, 5):
+        cand = path.with_name(f"{path.name}.{i}")
+        if cand.is_file():
+            files.append(cand)
+
     records: list[dict] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            if '"event": "recall_success"' not in line:
-                continue
-            try:
-                data = json.loads(line)
-                if is_test_trace_record(data):
-                    continue
-                ss = data.get("score_stats", {}) or {}
-                records.append({
-                    "timestamp": data.get("timestamp", ""),
-                    "query_trunc": data.get("query_trunc", ""),
-                    "kept_results": data.get("kept_results", 0),
-                    "total_results": data.get("total_results", 0),
-                    "excluded_marked": data.get("excluded_marked", 0),
-                    "injected_count": data.get("injected_count", 0),
-                    "avg_score": ss.get("avg", 0.0),
-                    "min_score": ss.get("min", 0.0),
-                    "max_score": ss.get("max", 0.0),
-                    "score_count": ss.get("count", 0),
-                    "latency_ms": data.get("latency_ms", 0),
-                    "recalled_ids": data.get("recalled_ids", []),
-                    "recalled_summaries": data.get("recalled_summaries", []),  # 新字段：每条召回的摘要
-                    "hs_kept": data.get("hs_kept", 0),
-                    "kt_kept": data.get("kt_kept", 0),
-                    "sag_kept": data.get("sag_kept", 0),
-                    "eval_query_id": data.get("eval_query_id", ""),
-                })
-            except (json.JSONDecodeError, TypeError):
-                continue
+    for fp in files:
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                for line in f:
+                    if '"event": "recall_success"' not in line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        if is_test_trace_record(data):
+                            continue
+                        ss = data.get("score_stats", {}) or {}
+                        records.append({
+                            "timestamp": data.get("timestamp", ""),
+                            "query_trunc": data.get("query_trunc", ""),
+                            "kept_results": data.get("kept_results", 0),
+                            "total_results": data.get("total_results", 0),
+                            "excluded_marked": data.get("excluded_marked", 0),
+                            "injected_count": data.get("injected_count", 0),
+                            "avg_score": ss.get("avg", 0.0),
+                            "min_score": ss.get("min", 0.0),
+                            "max_score": ss.get("max", 0.0),
+                            "score_count": ss.get("count", 0),
+                            "latency_ms": data.get("latency_ms", 0),
+                            "recalled_ids": data.get("recalled_ids", []),
+                            "recalled_summaries": data.get("recalled_summaries", []),  # 新字段：每条召回的摘要
+                            "hs_kept": data.get("hs_kept", 0),
+                            "kt_kept": data.get("kt_kept", 0),
+                            "sag_kept": data.get("sag_kept", 0),
+                            "eval_query_id": data.get("eval_query_id", ""),
+                        })
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+        except (OSError, UnicodeDecodeError):
+            continue
     return records
 
 

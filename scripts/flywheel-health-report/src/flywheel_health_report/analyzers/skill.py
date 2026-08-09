@@ -10,7 +10,15 @@ def analyze_skill_eval(data_flywheel: Path, kn_baseline_dir: Path) -> tuple[list
     # NOTE: upstream naming is counterintuitive:
     #   skill_eval_prev.json  = most recent run (latest)
     #   skill_eval_latest.json = previous run (older)
+    #
+    # P5 修复：skill_eval_prev.json 由 run-skill-eval.sh 从评估 stdout 拷贝而来，
+    # 若脚本失败 / 输出为空，prev.json 会变成空 {}，导致报告丢失 Skill F1。
+    # 此时回退读取插件 baselines/skill_eval_latest.json（run_skill_eval.py 直接写入的产物）。
     latest_data = _load_json(data_flywheel / "skill_eval_prev.json")
+    fallback_used = False
+    if not latest_data:
+        fallback_used = True
+        latest_data = _load_json(kn_baseline_dir / "skill_eval_latest.json")
     if not latest_data:
         return [], {"status": "no_data"}, {}
 
@@ -37,6 +45,8 @@ def analyze_skill_eval(data_flywheel: Path, kn_baseline_dir: Path) -> tuple[list
         "n_queries": n_queries,
         "timestamp": timestamp,
     }
+    if fallback_used:
+        results["source"] = "skill_eval_latest.json (prev.json 为空，回退)"
 
     # Trend: compare with baselines/skill_eval_latest.json (previous run)
     trend = {}

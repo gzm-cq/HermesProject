@@ -120,15 +120,19 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     memory_issues, memory_m, memory_trend = analyze_memory_cleanup(home / MEMORY_DIR_SUBPATH, data_window)
 
     # ===== KN LLM Judge：知识导航召回质量评估（KN_MIN_SCORE 调优主反馈）=====
-    #   since = 数据窗口（报告 date 对应 UTC 日当天 00:00）
-    #   until = since + 1 天，形成 24h 窗口
+    #   since = CN 昨天 00:00 (CST = UTC+8)，until = CN 今天 00:00
+    #   形成 CN 自然日切窗，trace.log 存储 UTC 时间戳，过滤时自动匹配。
     #   注意：只对 scheduled 报告（主流程）执行；catch-up 只跑轻量分析，避免重复 judge 耗 token
     import datetime as _dt
     kn_judge_m: dict[str, Any] = {}
     try:
-        _since = data_window
-        _dt_date = _dt.date.fromisoformat(data_window)
-        _until = (_dt_date + _dt.timedelta(days=1)).isoformat()
+        _cn_utc_offset = _dt.timedelta(hours=8)
+        _cn_now = _dt.datetime.now(_dt.timezone.utc) + _cn_utc_offset
+        _cn_today = _cn_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        _cn_yesterday = _cn_today - _dt.timedelta(days=1)
+        # CN 日期 → UTC 时间戳用于过滤 trace.log（存储 UTC timestamp）
+        _since = (_cn_yesterday - _cn_utc_offset).isoformat()
+        _until = (_cn_today - _cn_utc_offset).isoformat()
         kn_judge_m = run_judge_within_window(home, _since, _until)
     except Exception as _knj_exc:
         # judge 异常不影响整体报告，只在 kn_judge_m 里挂 error 字段

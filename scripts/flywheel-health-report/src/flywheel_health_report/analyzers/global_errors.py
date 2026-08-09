@@ -41,6 +41,11 @@ def analyze_global_errors(error_log_path: Path, filter_date: str) -> tuple[list[
             return True
         if "hindsight" in low and ("daemon" in low or "not ready" in low or "unavailable" in low):
             return True
+        # P3 修复：单点错误风暴抑制 —— "already running" 是重复启动网关触发，
+        # 同一错误每秒重复日志，会一次性产生数百条 ERROR，误导 error_count 趋势。
+        # 这类错误不代表系统质量恶化，应视为噪音。
+        if module == "gateway.run" and "already running" in low:
+            return True
         return False
 
     with open(error_log_path, encoding="utf-8", errors="replace") as f:

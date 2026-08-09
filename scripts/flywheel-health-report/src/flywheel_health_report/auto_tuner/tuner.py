@@ -283,26 +283,32 @@ def _kn_judge_trusted(rec_primary: Dict[str, Any],
 # 2. 工具函数：日期 / 原子写入 / JSONL / .env
 # ============================================================
 
-def _today_cn() -> str:
-    """Asia/Shanghai 日期，与飞轮报告一致。Linux 可用 TZ，Windows 回退本地。"""
+def _report_date_today() -> str:
+    """返回与 daily-summary 'date' 字段一致的日期。
+
+    飞轮报告在 CN 08:00 (= UTC 00:00) 生成，data_window = UTC 昨天。
+    daily-summary 的 date 字段 = data_window。
+    所以调参器用相同的日期基准，才能匹配到 daily-summary 记录。
+    """
     try:
-        # 优先用 UTC+8 算法（不受运行环境 TZ 影响）
-        now = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=8)
-        return now.strftime("%Y-%m-%d")
+        utc_now = _dt.datetime.now(_dt.timezone.utc)
+        # data_window = UTC 昨天（匹配 report.py generate_report L92）
+        return (utc_now - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
     except Exception:
         return _dt.date.today().strftime("%Y-%m-%d")
 
 
-def _yesterday_cn() -> str:
+def _report_date_yesterday() -> str:
+    """返回与 daily-summary data_window_prev 一致的日期。"""
     try:
-        now = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=8, days=-1)
-        return now.strftime("%Y-%m-%d")
+        utc_now = _dt.datetime.now(_dt.timezone.utc)
+        return (utc_now - _dt.timedelta(days=2)).strftime("%Y-%m-%d")
     except Exception:
         return (_dt.date.today() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def _now_iso() -> str:
-    return _dt.datetime.now().isoformat()
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 
 def _atomic_write_json(path: str, obj: Any) -> None:
@@ -521,7 +527,10 @@ def _get_last_tune_any() -> Optional[Dict[str, Any]]:
 
 
 def verify_restart(tune_timestamp: str) -> bool:
-    """对比 gateway 启动时间 vs 调优 timestamp。"""
+    """对比 gateway 启动时间 vs 调优 timestamp。
+
+    手动解析 systemctl 输出中的 CST 为 +0800（避免 strptime %Z 跨平台歧义）。
+    """
     try:
         out, _, rc = _run_shell(
             'systemctl show hermes-gateway --property=ActiveEnterTimestamp',
@@ -533,8 +542,25 @@ def verify_restart(tune_timestamp: str) -> bool:
         if not val:
             return False
         try:
-            # e.g. "Sun 2026-07-26 03:12:45 CST"
-            gw_epoch = _dt.datetime.strptime(val, "%a %Y-%m-%d %H:%M:%S %Z").timestamp()
+            # e.g. "Sun 2026-07-26 03:12:45 CST" → split 得 4 段
+            parts = val.split()
+            if len(parts) < 3:
+                return False
+            date_part = parts[1]  # 2026-07-26
+            time_part = parts[2]  # 03:12:45
+            tz_part = parts[3] if len(parts) >= 4 else ""
+            # CST = China Standard Time = UTC+8
+            tz_offset = _dt.timedelta(hours=8) if tz_part == "CST" else _dt.timedelta(hours=0)
+            if tz_part and tz_part != "CST":
+                # 尝试用 strptime 兜底（非 CST 时区）
+                try:
+                    gw_epoch = _dt.datetime.strptime(val, "%a %Y-%m-%d %H:%M:%S %Z").timestamp()
+                except Exception:
+                    return False
+            else:
+                dt_naive = _dt.datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
+                gw_dt = dt_naive.replace(tzinfo=_dt.timezone(tz_offset))
+                gw_epoch = gw_dt.timestamp()
         except Exception:
             return False
         try:
@@ -579,6 +605,9 @@ def update_log_entry(param_name: str, tune_date: str, new_status: str,
     rec["status"] = new_status
     if metrics_after is not None:
         rec["metrics_after"] = metrics_after
+    else:
+        # 显式传 None → 清除 metrics_after（improved=None 回滚时避免残留旧值误导后续判定）
+        rec.pop("metrics_after", None)
     lines[last_match_idx] = json.dumps(rec, ensure_ascii=False)
     _atomic_write_lines(LOG_FILE, lines)
 
@@ -622,6 +651,22 @@ def _is_metric_improved(name: str, direction: str, old_v: float, new_v: float) -
     return True  # old_v 是 0，按没变化处理
 
 
+def _metrics_unchanged(mb: Dict[str, Any], ma: Dict[str, Any]) -> bool:
+    """判断 metrics_after 是否与 metrics_before 完全一致（重启后指标无任何变化）。
+
+    当 due to 日期错配 / gateway 未实际重启 / 报告未更新时，ma 与 mb 指向同一条记录，
+    导致所有 _is_metric_improved 都返回 True（同值=stable 改善），direction 永远同向，
+    degradation_count 永远不会增长。此哨兵用于把这种情况判为「未知」而非「改善」。
+    """
+    if not mb or not ma:
+        return False
+    # 只比较两字典都存在的数值键
+    keys = [k for k in mb if k in ma and isinstance(mb[k], (int, float)) and isinstance(ma[k], (int, float))]
+    if not keys:
+        return False
+    return all(abs(float(mb[k]) - float(ma[k])) < 1e-9 for k in keys)
+
+
 def handle_pending_restart() -> bool:
     """main() 第一步调用。
     返回 True = 有 pending / 刚处理完生效的，本次 **跳过新调优**。
@@ -632,7 +677,7 @@ def handle_pending_restart() -> bool:
     status = last.get("status", "")
     if status != "pending_restart":
         # 上次不是 pending_restart；但如果是今天 applied 的，也走冷却
-        if status == "applied" and last.get("date") == _today_cn() and COOLDOWN_DAYS_AFTER_APPLY >= 0:
+        if status == "applied" and last.get("date") == _report_date_today() and COOLDOWN_DAYS_AFTER_APPLY >= 0:
             log_info(f"上次调优({last.get('parameter')})今天刚确认生效，进入冷却期，跳过新调优")
             return True
         return False
@@ -647,8 +692,8 @@ def handle_pending_restart() -> bool:
 
     if verify_restart(ts):
         log_ok(f"上次调优已生效（gateway 已重启）: {param}")
-        today_str = _today_cn()
-        yesterday_str = _yesterday_cn()
+        today_str = _report_date_today()
+        yesterday_str = _report_date_yesterday()
         data = _extract_metrics_for_tuning(today_str, yesterday_str)
         today_rec = data.get("today") or {}
         metrics_after = _extract_metrics_before(today_rec) if isinstance(today_rec, dict) else {}
@@ -668,7 +713,15 @@ def handle_pending_restart() -> bool:
         pdef = next((p for p in PARAM_DEFS if p[0] == param), None)
         improved = True
         no_change = (old_v == new_v)
-        if pdef:
+        # P4（重大修复）：metrics_after 与 metrics_before 完全一致 → 重启后指标无任何变化。
+        # 这通常意味着「gateway 未实际重启」或「日期错配导致指向同一报告」，
+        # 此时同值会让所有 _is_metric_improved 返回 True（同值=stable 改善），
+        # 使 direction 永远同向、degradation_count 永远不增长。
+        # 判为「未知」而非「改善」，避免把假改善当成真改善。
+        if _metrics_unchanged(mb, metrics_after):
+            improved = None
+            log_info("检测到 metrics_after == metrics_before（重启后指标无变化），判定=未知，不否认为改善，保持 pending_restart 观察")
+        elif pdef:
             feeds = _parse_feedback(pdef[5])
             # Round 2 P0-B: 先判断今日 judge 样本可信度（所有主观反馈键前置过滤）
             judge_trusted, judge_sc = _kn_judge_trusted(metrics_after, mb)
@@ -941,6 +994,10 @@ def determine_direction(
                 log_warn(f"  {param_name}: KN LLM Judge 样本不足导致反馈全跳过 → 改善判定=未知，走首次位置策略（避免错误同向）")
             else:
                 improved = True  # 无反馈数据，默认改善
+        elif _metrics_unchanged(mb, ma):
+            # P4：metrics_after == metrics_before → 重启后无变化，判未知
+            improved = None
+            log_info(f"  {param_name}: metrics_after == metrics_before（重启后指标无变化），改善判定=未知，走首次位置策略")
         else:
             improved = ic >= max(tc / 2, 1)
 
@@ -1006,8 +1063,8 @@ def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, fl
     3) 组内保留 PARAM_DEFS 顺序（保持确定性，便于调试）
     """
     # 先读今日 summary（本地 JSONL 快速，daily 报告若还没出会 fallback 到昨天）
-    today_str = _today_cn()
-    yesterday_str = _yesterday_cn()
+    today_str = _report_date_today()
+    yesterday_str = _report_date_yesterday()
     rec_data = _extract_metrics_for_tuning(today_str, yesterday_str)
     today_rec = rec_data.get("today") if isinstance(rec_data.get("today"), dict) else {}
     yesterday_rec = rec_data.get("yesterday") if isinstance(rec_data.get("yesterday"), dict) else {}
@@ -1091,7 +1148,7 @@ def check_pause() -> bool:
         return True
     if pause_until:
         try:
-            today = _dt.date.fromisoformat(_today_cn())
+            today = _dt.date.fromisoformat(_report_date_today())
             target = _dt.date.fromisoformat(pause_until)
         except Exception:
             return True
@@ -1123,7 +1180,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     dry_run: bool = args.dry_run
 
-    today = _today_cn()
+    today = _report_date_today()
     print("")
     print("============================================")
     print(f"  Auto-Tuner 开始 — {today}{' (DRY-RUN)' if dry_run else ''}")
@@ -1145,8 +1202,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # 4. 提取今天/昨天指标
-    log_info(f"获取指标数据: {today} / {_yesterday_cn()}")
-    mdata = _extract_metrics_for_tuning(today, _yesterday_cn())
+    log_info(f"获取指标数据: {today} / {_report_date_yesterday()}")
+    mdata = _extract_metrics_for_tuning(today, _report_date_yesterday())
     today_rec = mdata.get("today")
     if not isinstance(today_rec, dict) or not today_rec:
         log_warn("未找到今天的指标数据，跳过本次调优")
