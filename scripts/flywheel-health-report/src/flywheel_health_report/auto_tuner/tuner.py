@@ -78,6 +78,26 @@ def log_err(msg: str) -> None:   print(f"{C_RED}[error]{C_RST} {msg}", file=sys.
 def log_step(msg: str) -> None:  print(f"{C_BLU}[step ]{C_RST} {msg}")
 
 
+# 因果链提权参数：只有 KN_ENABLE_CAUSAL_CHAIN=true 时才生效；
+# 关闭时直接跳过，避免占用"一次只动一个变量"的调优轮次。
+_CAUSAL_PARAM_NAMES = frozenset({"KN_CAUSAL_BOOST_ALPHA", "KN_CAUSAL_BOOST_CAP"})
+
+
+def _causal_chain_enabled() -> bool:
+    """读 ENV_FILE 中 KN_ENABLE_CAUSAL_CHAIN；与 KN config.py 默认 True 一致。"""
+    raw = read_env_param("KN_ENABLE_CAUSAL_CHAIN")
+    if raw is None:
+        return True  # 默认启用（与 KN plugin from_env() 默认 True 对齐）
+    return str(raw).lower() in ("1", "true", "yes", "on")
+
+
+def _is_param_permanently_skipped(name: str) -> bool:
+    """功能级死参数（依赖的全局开关关闭，调了白调）直接永久 skip。"""
+    if name in _CAUSAL_PARAM_NAMES and not _causal_chain_enabled():
+        return True
+    return False
+
+
 # ============================================================
 # 2. 工具函数：日期 / 原子写入 / JSONL / .env
 # ============================================================
@@ -542,7 +562,12 @@ def is_param_converged(state: Dict[str, Any], param_name: str) -> bool:
 
 
 def are_all_params_converged(state: Dict[str, Any]) -> bool:
-    return all(is_param_converged(state, p[0]) for p in PARAM_DEFS)
+    def _eligible(pdef):
+        name = pdef[0]
+        if _is_param_permanently_skipped(name):
+            return True  # 死参数视为收敛（不阻塞「全部收敛 → 跳过」的语义）
+        return is_param_converged(state, name)
+    return all(_eligible(p) for p in PARAM_DEFS)
 
 
 def update_state(
@@ -760,6 +785,9 @@ def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, fl
     remaining: List[Tuple[str, float, float, float, float, str]] = []
     for pdef in PARAM_DEFS:
         name = pdef[0]
+        if _is_param_permanently_skipped(name):
+            log_info(f"参数 {name} 永久跳过（KN_ENABLE_CAUSAL_CHAIN=false，因果链关闭，调了无效）")
+            continue
         if is_param_converged(state, name):
             log_info(f"参数 {name} 已收敛，跳过")
             continue
