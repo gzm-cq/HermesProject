@@ -71,4 +71,23 @@ tuner.LOG_FILE = LOG_ORIG
 os.unlink(tmp_path)
 print("✅ P1B update_log_entry：metrics_after=None 清除字段")
 
+# 5. 新增：_get_last_tune_for 过滤 dry_run 记录
+import tempfile as _tf, json as _json
+_ORIG_LOG = tuner.LOG_FILE
+with _tf.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as _tf2:
+    # dry_run 记录在前，真实记录在后
+    _tf2.write(_json.dumps({"parameter": "KN_MIN_SCORE", "date": "2026-08-08", "status": "applied",
+                             "dry_run": True, "new_value": 0.50}) + "\n")
+    _tf2.write(_json.dumps({"parameter": "KN_MIN_SCORE", "date": "2026-08-07", "status": "applied",
+                             "new_value": 0.45}) + "\n")
+    _tmp_path = _tf2.name
+tuner.LOG_FILE = _tmp_path
+last = tuner._get_last_tune_for("KN_MIN_SCORE")
+assert last is not None, "应找到真实记录"
+assert last.get("new_value") == 0.45, f"应为真实记录 (0.45)，实际 {last.get('new_value')}"
+assert last.get("dry_run") is None or last.get("dry_run") is False, "不应返回 dry_run 记录"
+tuner.LOG_FILE = _ORIG_LOG
+os.unlink(_tmp_path)
+print("✅ _get_last_tune_for 过滤 dry_run：正确返回非 dry_run 记录")
+
 print("\n🟢 全部单测通过")

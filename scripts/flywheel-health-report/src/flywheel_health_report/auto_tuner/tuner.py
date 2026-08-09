@@ -935,6 +935,8 @@ def _get_last_tune_for(param_name: str) -> Optional[Dict[str, Any]]:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if rec.get("dry_run"):
+                    continue
                 if rec.get("parameter") == param_name:
                     last = rec
     except FileNotFoundError:
