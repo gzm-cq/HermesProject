@@ -109,3 +109,54 @@ class TestGenerateRecommendations:
         )
         sag_recs = [r for r in recs if "SAG" in r.get("flywheel", "") or "sag" in r.get("desc", "").lower()]
         assert len(sag_recs) >= 1
+
+    def test_kn_low_score_dims_merged(self) -> None:
+        """多个低分维度应合并为一条推荐，并标注样本量不足的维度。"""
+        (router_m, skill_m, kn_m, kt_m, cluster_m,
+         token_m, sag_contr_m, skill_usage_m, error_m) = self._empty_metrics()
+        kn_m.update({
+            "status": "ok",
+            "unknown_dim_pct": 10.0,
+            "dim_summary": {
+                "entity": {"count": 10, "avg_score": 0.4386},   # 样本 < 20，应标注
+                "debug": {"count": 23, "avg_score": 0.4445},
+            },
+        })
+        recs = generate_recommendations(
+            router_m, skill_m, kn_m, kt_m, cluster_m,
+            [], {}, [], [],
+            token_m, sag_contr_m, skill_usage_m, error_m,
+        )
+        kn_recs = [r for r in recs if r.get("flywheel") == "KN"]
+        dim_recs = [r for r in kn_recs if "均分" in r.get("desc", "")]
+        # 应只有 1 条合并的低分维度推荐
+        assert len(dim_recs) == 1, f"应合并为 1 条，实际 {len(dim_recs)}: {dim_recs}"
+        desc = dim_recs[0]["desc"]
+        # 合并描述应包含两个维度
+        assert "entity" in desc and "debug" in desc
+        # 样本不足的 entity 应被标注（debug 样本充足不应标注）
+        assert "样本量偏小" in desc
+        assert "entity样本量偏小" in desc or "entity, " in desc.split("样本量偏小")[0] or "其中entity" in desc
+        assert "debug" not in desc.split("样本量偏小")[0].split("其中")[-1]
+
+    def test_kn_single_low_score_dim(self) -> None:
+        """单个低分维度应生成单条推荐并带样本量。"""
+        (router_m, skill_m, kn_m, kt_m, cluster_m,
+         token_m, sag_contr_m, skill_usage_m, error_m) = self._empty_metrics()
+        kn_m.update({
+            "status": "ok",
+            "unknown_dim_pct": 10.0,
+            "dim_summary": {
+                "entity": {"count": 30, "avg_score": 0.4386},
+            },
+        })
+        recs = generate_recommendations(
+            router_m, skill_m, kn_m, kt_m, cluster_m,
+            [], {}, [], [],
+            token_m, sag_contr_m, skill_usage_m, error_m,
+        )
+        kn_recs = [r for r in recs if r.get("flywheel") == "KN"]
+        dim_recs = [r for r in kn_recs if "均分" in r.get("desc", "")]
+        assert len(dim_recs) == 1
+        assert "entity" in dim_recs[0]["desc"]
+        assert "30 条查询" in dim_recs[0]["desc"]

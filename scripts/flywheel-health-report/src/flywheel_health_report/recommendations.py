@@ -100,11 +100,27 @@ def generate_recommendations(
         if unknown_pct > REC_TH["kn_unknown_dim_high_pct"]:
             recs.append({"flywheel": "KN", "desc": f"unknown 维度占比 {unknown_pct}%，建议优化维度分类器或扩充基线查询覆盖"})
         dim_summary = kn_m.get("dim_summary", {})
+        # 收集所有均分偏低的维度，合并为一条推荐（避免 entity/debug 各出 1 条重复）
+        low_score_dims: list[tuple[str, dict]] = []
         for dim, s in dim_summary.items():
             if dim == "unknown" or s.get("count", 0) < REC_TH["kn_dim_min_sample"]:
                 continue
             if s.get("avg_score", 1) < TH["kn_avg_score_low"]:
-                recs.append({"flywheel": "KN", "desc": f"dimension={dim} 均分 {s['avg_score']} 偏低，建议针对性增加该维度召回源或调整权重"})
+                low_score_dims.append((dim, s))
+        if len(low_score_dims) == 1:
+            dim, s = low_score_dims[0]
+            recs.append({"flywheel": "KN",
+                         "desc": f"dimension={dim} 均分 {s['avg_score']}（{s['count']} 条查询），建议针对性增加该维度召回源或调整权重"})
+        elif len(low_score_dims) > 1:
+            parts = []
+            small_dims = []
+            for dim, s in low_score_dims:
+                parts.append(f"{dim}(均分{s['avg_score']}, {s['count']}条)")
+                if s.get("count", 0) < 20:
+                    small_dims.append(dim)
+            note = f"（其中{'/'.join(small_dims)}样本量偏小，建议关注）" if small_dims else ""
+            recs.append({"flywheel": "KN",
+                         "desc": f"部分维度均分偏低：{'；'.join(parts)}{note}，建议针对性增加召回源或调整权重"})
 
     # --- 知识树 ---
     if kt_m.get("status") != "no_data":
