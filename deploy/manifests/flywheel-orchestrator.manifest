@@ -1,0 +1,9 @@
+# flywheel-orchestrator 部署清单
+# 源: scripts/flywheel-orchestrator/
+# 标: /root/.hermes/scripts/flywheel-orchestrator/
+
+src/flywheel_orchestrator/**/*.py
+pyproject.toml
+
+!**/__pycache__/**
+!**/*.pyc
