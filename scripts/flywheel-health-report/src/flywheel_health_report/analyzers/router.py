@@ -94,8 +94,45 @@ def analyze_router(trace: dict[str, list[dict]],
     sag_p50 = _percentile(sag_latencies, 0.50)
     sag_p95 = _percentile(sag_latencies, 0.95)
 
+    # === Router 决策质量统计（confidence / fallback_reason，来自 router_mask 事件 meta）===
+    # 阈值与 router.py 的 fallback 判定一致（confidence < 0.3 视为低置信度）
+    _CONF_LOW = 0.3
+    _FALLBACK_HIGH_PCT = 5.0  # fallback 率异常阈值（局部常量，避免改动全局 TH）
+    confidences = [
+        m.get("confidence") for m in real_masks
+        if isinstance(m.get("confidence"), (int, float))
+    ]
+    router_confidence_avg = round(sum(confidences) / len(confidences), 4) if confidences else None
+    router_confidence_low_pct = round(
+        sum(1 for c in confidences if c < _CONF_LOW) / len(confidences) * 100, 1
+    ) if confidences else 0
+
+    fallback_masks = [m for m in real_masks if m.get("is_fallback")]
+    router_fallback_total = len(fallback_masks)
+    router_fallback_pct = round(router_fallback_total / real_total * 100, 1) if real_total else 0
+    fb_reasons: dict[str, int] = {}
+    for m in fallback_masks:
+        r = m.get("fallback_reason") or "unknown"
+        fb_reasons[r] = fb_reasons.get(r, 0) + 1
+
     issues = []
     full_off_pct = (full_off / real_total * 100) if real_total else 0
+    # Router 决策 fallback 率异常升高（可能为 Router API 质量/超时问题，而非参数问题）
+    if router_fallback_pct > _FALLBACK_HIGH_PCT:
+        issues.append({
+            "severity": "P1",
+            "flywheel": "Router",
+            "desc": f"Router 决策 fallback 率 {router_fallback_pct:.1f}% (阈值 {_FALLBACK_HIGH_PCT}%)",
+            "detail": f"{router_fallback_total}/{real_total} 次决策走 fallback；原因分布: {fb_reasons or '未知'}",
+        })
+    # 低置信度决策占比异常（Router 模型输出 confidence<0.3 被强制 fallback）
+    if confidences and router_confidence_low_pct > _FALLBACK_HIGH_PCT:
+        issues.append({
+            "severity": "P2",
+            "flywheel": "Router",
+            "desc": f"Router 低置信度决策率 {router_confidence_low_pct:.1f}% (阈值 {_FALLBACK_HIGH_PCT}%)",
+            "detail": f"{sum(1 for c in confidences if c < _CONF_LOW)}/{len(confidences)} 次 confidence<{_CONF_LOW}，Router 模型输出质量待评估",
+        })
     if full_off_pct > TH["router_full_off_pct"]:
         issues.append({
             "severity": "P0",
@@ -170,6 +207,11 @@ def analyze_router(trace: dict[str, list[dict]],
         "sag_avg_latency_ms": round(sag_avg_lat),
         "sag_p50_latency_ms": round(sag_p50),
         "sag_p95_latency_ms": round(sag_p95),
+        "router_confidence_avg": router_confidence_avg,
+        "router_confidence_low_pct": router_confidence_low_pct,
+        "router_fallback_total": router_fallback_total,
+        "router_fallback_pct": router_fallback_pct,
+        "router_fallback_reasons": fb_reasons,
     }
 
     # === Trend: compare with router_prev.json ===
@@ -196,6 +238,14 @@ def analyze_router(trace: dict[str, list[dict]],
         if prev_sag_kept is not None and prev_sag_kept > 0:
             delta = sag_total_kept - prev_sag_kept
             trend["SAG 召回量"] = f"{prev_sag_kept} → {sag_total_kept} ({delta:+d})"
+        prev_fb = prev_router.get("router_fallback_pct")
+        if prev_fb is not None and router_fallback_pct is not None:
+            delta = router_fallback_pct - prev_fb
+            trend["Router 决策 fallback 率"] = f"{prev_fb:.1f}% → {router_fallback_pct:.1f}% ({delta:+.1f}%)"
+        prev_conf = prev_router.get("router_confidence_avg")
+        if prev_conf is not None and router_confidence_avg is not None:
+            delta = router_confidence_avg - prev_conf
+            trend["Router 平均置信度"] = f"{prev_conf:.3f} → {router_confidence_avg:.3f} ({delta:+.3f})"
 
     # Save current snapshot for next comparison
     _save_json(data_flywheel / "router_prev.json", {
@@ -205,6 +255,8 @@ def analyze_router(trace: dict[str, list[dict]],
         "sag_on_pct": metrics["sag_on_pct"],
         "sag_total_kept": sag_total_kept,
         "sag_avg_latency_ms": round(sag_avg_lat),
+        "router_fallback_pct": router_fallback_pct,
+        "router_confidence_avg": router_confidence_avg,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 

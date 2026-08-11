@@ -490,10 +490,17 @@ def _pass_gates(session_id: str, user_message: str, platform: str, is_first_turn
 
 
 def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
-    """调用 Router 决策四路 mask，异常时 fallback 全开。"""
+    """调用 Router 决策四路 mask，异常时 fallback 全开。
+
+    兼容 _router_route 返回纯 mask（旧）或 (mask, meta)（新）两种形式，
+    并将决策诊断 meta（confidence / fallback_reason / is_fallback / latency_ms）
+    写入 trace.log 的 router_mask 事件，供飞轮健康巡检量化决策质量。
+    """
+    mask: dict[str, bool]
+    meta: dict = {}
     try:
         timeout = int(os.getenv("KN_ROUTER_TIMEOUT", str(CONFIG.router_timeout)))
-        mask = _router_route(
+        _r = _router_route(
             session_id,
             user_message,
             CONFIG.router_model,
@@ -501,6 +508,10 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
             CONFIG.router_api_key,
             timeout,
         )
+        if isinstance(_r, tuple):
+            mask, meta = _r
+        else:
+            mask = _r
         mask.setdefault("h", True)
         mask.setdefault("kt", True)
         mask.setdefault("s", True)
@@ -508,10 +519,14 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
     except Exception as e:
         logger.warning("Router 调用异常 (%s)，fallback 三路全开，SAG 关闭", e)
         mask = {"h": True, "kt": True, "s": True, "sag": False}
+        meta = {"confidence": 0.0, "fallback_reason": "exception", "is_fallback": True}
+    log_extra: dict = {"session_id": session_id, "event": "router_mask", "mask": mask}
+    # 合并决策诊断 meta（过滤 None，避免 trace 噪音）
+    log_extra.update({k: v for k, v in meta.items() if v is not None})
     logger.info(
         "Router mask: h=%s kt=%s s=%s sag=%s",
         mask["h"], mask["kt"], mask["s"], mask["sag"],
-        extra={"session_id": session_id, "event": "router_mask", "mask": mask},
+        extra=log_extra,
     )
     return mask
 

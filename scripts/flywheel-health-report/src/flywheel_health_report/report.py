@@ -298,6 +298,13 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         L.append(f"- 平均延迟: {router_m['avg_latency_ms']}ms | p50: {router_m['p50_latency_ms']}ms | "
                  f"p95: {router_m['p95_latency_ms']}ms | p99: {router_m['p99_latency_ms']}ms | 最大: {router_m['max_latency_ms']}ms")
         L.append(f"- 平均得分: {router_m['avg_score']} | 多跳展开: {router_m['multi_hop_count']} 次")
+        # Router 决策质量（confidence / fallback_reason，来自 router_mask 事件 meta）
+        _conf_avg = router_m.get("router_confidence_avg")
+        _conf_disp = f"{_conf_avg:.3f}" if _conf_avg is not None else "N/A"
+        L.append(f"- 决策置信度: {_conf_disp} | 低置信度率: {router_m.get('router_confidence_low_pct', 0)}% | "
+                 f"决策 fallback 率: {router_m.get('router_fallback_pct', 0)}% "
+                 f"({router_m.get('router_fallback_total', 0)} 次) "
+                 f"原因: {router_m.get('router_fallback_reasons') or '无'}")
         L.append("")
         L.append("**Token 实际消耗（纯观测，无预算控制）:**")
         if token_m.get("status") == "no_data":

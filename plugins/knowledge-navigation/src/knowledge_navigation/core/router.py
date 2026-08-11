@@ -65,8 +65,13 @@ def _incr_fallback(key: str) -> None:
         _FALLBACK_COUNTER[key] = _FALLBACK_COUNTER.get(key, 0) + 1
 
 
-def _parse_mask(text: str) -> dict[str, bool] | None:
-    """从 LLM 响应解析 mask JSON，含 JSON 块提取和字段缺失兜底。"""
+def _parse_mask(text: str) -> tuple[dict[str, bool] | None, float]:
+    """从 LLM 响应解析 mask JSON，含 JSON 块提取和字段缺失兜底。
+
+    返回 (mask, confidence)：
+      - mask 为 None 表示解析失败（走 fallback）
+      - confidence 为 LLM 决策置信度（解析失败/无效时取 0.0）
+    """
     data: dict | None = None
 
     # 1) Try direct JSON parse
@@ -174,23 +179,23 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
                 data[k] = False
 
     if not isinstance(data, dict):
-        return None
+        return None, 0.0
 
     try:
         confidence = float(data.get("confidence", 0.5))
     except (TypeError, ValueError):
         logger.debug("Router confidence invalid, applying fallback h/kt/s 全开+sag关")
-        return {"h": True, "kt": True, "s": True, "sag": False}
+        return {"h": True, "kt": True, "s": True, "sag": False}, 0.0
     if confidence < 0.3:
         logger.debug("Router confidence=%.2f < 0.3, applying fallback h/kt/s 全开+sag关", confidence)
-        return {"h": True, "kt": True, "s": True, "sag": False}
+        return {"h": True, "kt": True, "s": True, "sag": False}, confidence
 
     return {
         "h": bool(data.get("h", False)),
         "kt": bool(data.get("kt", False)),
         "s": bool(data.get("s", False)),
         "sag": bool(data.get("sag", False)),
-    }
+    }, confidence
 
 
 _CORE_TECH_KEYWORDS = frozenset({
@@ -252,8 +257,13 @@ def route(
     api_url: str,
     api_key: str,
     timeout: int,
-) -> dict[str, bool]:
-    """LLM Router 决策三路 mask。
+) -> tuple[dict[str, bool], dict]:
+    """LLM Router 决策四路 mask。
+
+    返回 (mask, meta)：
+      - mask：{h, kt, s, sag} 四路布尔
+      - meta：决策诊断信息 {confidence, fallback_reason, is_fallback, latency_ms}
+        供 trace.log 采集，量化 Router 决策质量（成功/fallback/置信度）。
 
     缓存 key=(session_id, message) 精确匹配，同轮 tool call 复用，新 message 重走。
 
@@ -262,6 +272,14 @@ def route(
 
     遇到 401 Unauthorized 会自动重试一次（刷新 API key）。
     """
+    def _meta(confidence: float, reason: str, latency_ms: int | None) -> dict:
+        return {
+            "confidence": round(confidence, 4) if confidence is not None else None,
+            "fallback_reason": reason,
+            "is_fallback": reason not in ("success", "success_all_off", "cache_hit"),
+            "latency_ms": latency_ms,
+        }
+
     if not api_key:
         api_key = _fetch_api_key()
     if timeout <= 0:
@@ -270,7 +288,7 @@ def route(
     cache_key = (session_id, message)
     cached = _cache_get(cache_key)
     if cached is not None:
-        return cached
+        return cached, _meta(None, "cache_hit", None)
 
     safe_msg = message[:300] + message[-200:] if len(message) > 500 else message
     safe_msg = safe_msg.replace("\n", " ").replace("\r", " ")
@@ -318,9 +336,10 @@ def route(
                     raw = rc
             raw = raw.strip()
 
-            mask = _parse_mask(raw)
+            mask, confidence = _parse_mask(raw)
             if mask is None:
                 fallback_reason = "json_parse"
+                confidence = 0.0
                 _incr_fallback("json_parse")
                 logger.warning("Router JSON 解析失败, fallback h/kt/s 全开+sag关, raw: %s", raw[:200])
                 mask = dict(FALLBACK_MASK)
@@ -340,7 +359,8 @@ def route(
             logger.info("Router 调用成功, mask=%s, duration=%.2fs", mask, duration)
 
             _cache_put(cache_key, mask)
-            return mask
+            latency_ms = int((time.time() - start_time) * 1000)
+            return mask, _meta(confidence, fallback_reason, latency_ms)
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
@@ -373,4 +393,5 @@ def route(
 
     mask = dict(FALLBACK_MASK)
     _cache_put(cache_key, mask)
-    return mask
+    latency_ms = int((time.time() - start_time) * 1000)
+    return mask, _meta(0.0, fallback_reason, latency_ms)

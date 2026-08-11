@@ -63,3 +63,58 @@ class TestAnalyzeRouter:
         error_issues = [i for i in issues if "错误率" in i.get("desc", "")]
         assert len(error_issues) >= 1
         assert error_issues[0]["severity"] == "P1"
+
+    def test_router_decision_quality_metrics(self, tmp_path: Path) -> None:
+        """router_mask 事件带 confidence/fallback_reason 时应统计决策质量指标。"""
+        trace = {
+            "router_mask": [
+                # 一次正常决策（高置信度）
+                {"mask": {"h": True, "kt": False, "s": False, "sag": False},
+                 "confidence": 0.85, "fallback_reason": "success", "is_fallback": False},
+                # 一次超时 fallback（is_fallback=True）
+                {"mask": {"h": True, "kt": True, "s": True, "sag": False},
+                 "confidence": 0.0, "fallback_reason": "api_timeout", "is_fallback": True},
+                # 一次低置信度强制 fallback（confidence<0.3，is_fallback 因 reason=success 为 False）
+                {"mask": {"h": True, "kt": True, "s": True, "sag": False},
+                 "confidence": 0.2, "fallback_reason": "success", "is_fallback": False},
+            ],
+            "recall_success": [{"latency_ms": 100, "score_stats": {"avg": 0.8}}],
+            "recall_empty_results": [],
+            "recall_timeout": [],
+            "recall_error": [],
+            "hindsight_fail_kt_fallback": [],
+            "recall_sag": [],
+            "multi_hop_expand": [],
+        }
+        issues, metrics, _ = analyze_router(trace, tmp_path)
+        # 平均置信度 = (0.85 + 0.0 + 0.2) / 3 ≈ 0.35
+        assert metrics["router_confidence_avg"] == round((0.85 + 0.0 + 0.2) / 3, 4)
+        # 低置信度数 = 2（0.0 与 0.2 均 < 0.3），低置信度率 = 2/3 ≈ 66.7
+        assert metrics["router_confidence_low_pct"] == 66.7
+        # fallback 仅 1 次（api_timeout），fallback 率 = 1/3 ≈ 33.3
+        assert metrics["router_fallback_total"] == 1
+        assert metrics["router_fallback_pct"] == 33.3
+        assert metrics["router_fallback_reasons"] == {"api_timeout": 1}
+        # fallback 率 > 5% 应触发 P1 issue
+        fb_issues = [i for i in issues if "fallback 率" in i.get("desc", "")]
+        assert len(fb_issues) == 1
+        assert fb_issues[0]["severity"] == "P1"
+
+    def test_router_decision_quality_no_meta(self, tmp_path: Path) -> None:
+        """router_mask 事件无 confidence/fallback meta（旧格式）时指标应安全降级。"""
+        trace = {
+            "router_mask": [{"mask": {"h": True, "kt": True, "s": True, "sag": False}}],
+            "recall_success": [{"latency_ms": 100, "score_stats": {"avg": 0.8}}],
+            "recall_empty_results": [],
+            "recall_timeout": [],
+            "recall_error": [],
+            "hindsight_fail_kt_fallback": [],
+            "recall_sag": [],
+            "multi_hop_expand": [],
+        }
+        _, metrics, _ = analyze_router(trace, tmp_path)
+        assert metrics["router_confidence_avg"] is None
+        assert metrics["router_confidence_low_pct"] == 0
+        assert metrics["router_fallback_total"] == 0
+        assert metrics["router_fallback_pct"] == 0
+        assert metrics["router_fallback_reasons"] == {}
