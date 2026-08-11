@@ -58,6 +58,8 @@ desktop.ini
 
 # === 项目运行时产物 ===
 state/
+# 熔断器运行时状态文件（自动更新，不应纳入版本控制）
+circuit_breaker.json
 search_cache/
 memory/
 test_output.txt
