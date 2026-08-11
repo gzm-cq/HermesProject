@@ -111,7 +111,8 @@ def _multi_hop_recall(*args: object, **kwargs: object) -> list:
 HAS_KNOWLEDGE_TREE = False
 
 # 共享线程池
-_recall_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="recall")
+# 扩容：原 4 worker 在 Hindsight 重试导致僵尸线程时被占满，连坐拖垮 kt/sag 召回
+_recall_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="recall")
 
 
 # ========== C-P1-1: 轻量级 Compaction ==========

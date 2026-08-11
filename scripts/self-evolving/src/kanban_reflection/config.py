@@ -50,7 +50,14 @@ class KanbanReflectionConfig:
 
         if env_url := os.getenv("KN_REFLECTION_API_URL"):
             values["llm_api_url"] = env_url
+        # 继承链：KN_REFLECTION_MODEL → SELF_EVOLVING_LLM_MODEL → LLM_MODEL_LIGHT → LLM_MODEL_MAIN
         if env_model := os.getenv("KN_REFLECTION_MODEL"):
+            values["llm_model"] = env_model
+        elif env_model := os.getenv("SELF_EVOLVING_LLM_MODEL"):
+            values["llm_model"] = env_model
+        elif env_model := os.getenv("LLM_MODEL_LIGHT"):
+            values["llm_model"] = env_model
+        elif env_model := os.getenv("LLM_MODEL_MAIN"):
             values["llm_model"] = env_model
         if env_key := os.getenv("KN_REFLECTION_API_KEY"):
             values["llm_api_key"] = env_key

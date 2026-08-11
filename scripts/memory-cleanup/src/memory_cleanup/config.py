@@ -272,7 +272,12 @@ class AppConfig:
             values["llm_url"] = v
         if v := os.getenv("LITELLM_MASTER_KEY"):
             values["llm_key"] = v
+        # 继承链：MEMORY_CLEANUP_LLM_MODEL → LLM_MODEL_LIGHT → LLM_MODEL_MAIN
         if v := os.getenv("MEMORY_CLEANUP_LLM_MODEL"):
+            values["llm_model"] = v
+        elif v := os.getenv("LLM_MODEL_LIGHT"):
+            values["llm_model"] = v
+        elif v := os.getenv("LLM_MODEL_MAIN"):
             values["llm_model"] = v
         if v := os.getenv("MEMORY_CLEANUP_HINDSIGHT_URL"):
             values["hindsight_url"] = v

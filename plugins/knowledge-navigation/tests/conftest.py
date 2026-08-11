@@ -83,7 +83,7 @@ def mock_router_and_eval() -> Generator[None, Any, Any]:
         return {"h": True, "kt": True, "s": True}
 
     with patch.object(kn_router, "_router_route", side_effect=_fake_router), \
-         patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
+         patch.object(kn_router, "_ensure_kt_imported", return_value=True):
         yield
 
 

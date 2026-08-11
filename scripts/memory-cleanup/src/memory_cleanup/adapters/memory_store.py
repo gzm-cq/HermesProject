@@ -5,6 +5,7 @@ import importlib.util
 import logging
 import re
 import shutil
+import sys
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from datetime import datetime
@@ -114,6 +115,11 @@ class MemoryFileStore:
         if spec is None or spec.loader is None:
             raise ImportError(f"Cannot load MemoryStore module from {memory_tool_path}")
         module = importlib.util.module_from_spec(spec)
+        # add hermes-agent root to sys.path so memory_tool.py can import
+        # hermes_constants and utils (cron PYTHONPATH may not include it)
+        agent_root = str(agent_path.resolve())
+        if agent_root not in sys.path:
+            sys.path.insert(0, agent_root)
         spec.loader.exec_module(module)
         MemoryStore = module.MemoryStore  # type: ignore[assignment]
 
@@ -173,10 +179,28 @@ class MemoryFileStore:
         for m in merge_list:
             merged = m.get("合并为", "")
             indices = m.get("indices", [])
-            if merged and _add(merged):
-                for j in indices:
-                    if j < len(entries):
-                        _remove(j)
+            if not merged:
+                continue
+            added = False
+            removed_ok: list[int] = []
+            try:
+                if _add(merged):
+                    added = True
+                    for j in indices:
+                        if j < len(entries):
+                            if not _remove(j):
+                                raise Exception(f"remove failed at index {j}")
+                            removed_ok.append(j)
+            except Exception:
+                if added:
+                    store.remove(target, merged)
+                    # 恢复已成功删除的条目，保证原子性（要么全成，要么回到原状）
+                    for j in removed_ok:
+                        try:
+                            store.add(target, entries[j])
+                        except Exception:
+                            pass
+                results["fail"].append((source, indices, "merge rollback triggered"))
 
         # 2. Compress（先 add 再 remove，防止 add 失败导致数据丢失）
         for c in compress_list:
@@ -184,11 +208,18 @@ class MemoryFileStore:
             compressed = c.get("精简为", "")
             if idx < 0 or idx >= len(entries) or not compressed:
                 continue
-            if _add(compressed):
-                if _remove(idx):
-                    results["ok"].append((source, idx, "compress"))
-                else:
-                    results["fail"].append((source, idx, "compress: remove failed after add"))
+            added = False
+            try:
+                if _add(compressed):
+                    added = True
+                    if _remove(idx):
+                        results["ok"].append((source, idx, "compress"))
+                    else:
+                        raise Exception("compress remove failed after add")
+            except Exception:
+                if added:
+                    store.remove(target, compressed)
+                results["fail"].append((source, idx, "compress rollback triggered"))
 
         # 3+4. 收集 retain 任务（corrected + correct）
         retain_tasks: list[tuple[int, str, str]] = []

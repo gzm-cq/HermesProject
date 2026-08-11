@@ -122,9 +122,15 @@ class RecombinationConfig:
 
     @classmethod
     def from_env(cls) -> "RecombinationConfig":
+        # 继承链：KN_REFLECTION_MODEL → SELF_EVOLVING_LLM_MODEL → LLM_MODEL_LIGHT → LLM_MODEL_MAIN
+        llm_model = os.getenv("KN_REFLECTION_MODEL") or \
+                    os.getenv("SELF_EVOLVING_LLM_MODEL") or \
+                    os.getenv("LLM_MODEL_LIGHT") or \
+                    os.getenv("LLM_MODEL_MAIN") or \
+                    cls.llm_model
         return cls(
             llm_api_url=os.getenv("KN_REFLECTION_API_URL", cls.llm_api_url),
-            llm_model=os.getenv("KN_REFLECTION_MODEL", cls.llm_model),
+            llm_model=llm_model,
         )
 
 

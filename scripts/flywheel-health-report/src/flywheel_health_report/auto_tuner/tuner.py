@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config import (
     HERMES_HOME, ENV_FILE, HISTORY_FILE, LOG_FILE, PAUSE_FILE,
     BACKUP_DIR, STATE_FILE, CRON_LIB, FEISHU_CHAT_ID,
-    PARAM_DEFS, FEEDBACK_KEYS,
+    PARAM_DEFS, FEEDBACK_KEYS, KN_JUDGE_CFG,
     NO_CHANGE_LOCK_THRESHOLD, CONSECUTIVE_DEGRADATION_SUSPEND_THRESHOLD,
     COOLDOWN_DAYS_AFTER_APPLY,
 )
@@ -82,160 +82,6 @@ def log_step(msg: str) -> None:  print(f"{C_BLU}[step ]{C_RST} {msg}")
 # 关闭时直接跳过，避免占用"一次只动一个变量"的调优轮次。
 _CAUSAL_PARAM_NAMES = frozenset({"KN_CAUSAL_BOOST_ALPHA", "KN_CAUSAL_BOOST_CAP"})
 
-# Token 预算三比例：三者之和必须 ≈ 1.0
-# 调任一参数后需归一化，避免溢出（和>1）或留白（和<1）。
-_RATIO_TRIO_PARAMS = frozenset({
-    "KN_TOKEN_BUDGET_KT_RATIO",
-    "KN_TOKEN_BUDGET_SKILL_RATIO",
-    "KN_TOKEN_BUDGET_HINDSIGHT_RATIO",
-})
-
-
-def _get_ratio_trio_bounds() -> Dict[str, Tuple[float, float]]:
-    """从 PARAM_DEFS 提取三比例各自的 [pmin, pmax]，归一化时用于 clip。"""
-    out: Dict[str, Tuple[float, float]] = {}
-    for pdef in PARAM_DEFS:
-        name = pdef[0]
-        if name in _RATIO_TRIO_PARAMS:
-            out[name] = (float(pdef[2]), float(pdef[3]))
-    return out
-
-
-def normalize_ratio_trio(
-    tuned_param: str,
-    tuned_new_value: float,
-    other_current_values: Dict[str, float],
-) -> Dict[str, float]:
-    """Round 4 P1-C：三比例归一化。
-
-    输入：
-      - tuned_param: 本次被 auto-tuner 调整的参数名（三者之一）
-      - tuned_new_value: 调优后的新值（已由 determine_direction 算出）
-      - other_current_values: {另外两个参数名: 当前.env中的值}
-
-    输出：
-      {三个参数名: 归一化后的新值}，满足 sum(values) ≈ 1.0 且每个值 ∈ [pmin, pmax]
-
-    算法（按优先级）：
-      1) 先固定 tuned_param = tuned_new_value（尊重 auto-tuner 决策的主方向）
-      2) 剩余 1 - tuned_new_value 按「另外两个参数的当前比例」分摊
-      3) 若分摊后某参数超出自身 [pmin, pmax]，先 clip 到边界
-      4) clip 后还差的量，由另一个未 clip 的参数独自承担（若仍在其范围内）
-      5) 极端情况：两个都 clip 后总和仍 !=1.0 → 以「尽量满足 tuned_param 不变」为前提，
-         同等缩放两外两个直到 sum≈1 或都到边界；最后如果 tuned 本身也要让才达标，
-         才微调 tuned_param（保持与 PARAM_DEFS 边界一致）
-    """
-    if tuned_param not in _RATIO_TRIO_PARAMS:
-        raise ValueError(f"normalize_ratio_trio: {tuned_param} 不是比例三参数之一")
-    bounds = _get_ratio_trio_bounds()
-    if set(bounds.keys()) != _RATIO_TRIO_PARAMS:
-        raise RuntimeError(f"normalize_ratio_trio: PARAM_DEFS 中缺少比例参数定义: {bounds.keys()}")
-    others = [n for n in _RATIO_TRIO_PARAMS if n != tuned_param]
-    if set(others) != set(other_current_values.keys()):
-        raise ValueError(f"normalize_ratio_trio: other_current_values 必须恰好包含 {others}，当前={list(other_current_values.keys())}")
-
-    # ① 读出各参数边界
-    tp_min, tp_max = bounds[tuned_param]
-    o1, o2 = others[0], others[1]
-    o1_min, o1_max = bounds[o1]
-    o2_min, o2_max = bounds[o2]
-
-    # ② 先 clip tuned_new_value 自身到合法范围（防御性，理论上 determine_direction 已做）
-    tv = min(max(float(tuned_new_value), tp_min), tp_max)
-
-    # ③ 剩余预算，按两外两个参数的当前权重分配
-    remain = 1.0 - tv
-    if remain < 0:
-        # tv 本身太大（但已经 clip 过，这里只是保险），强行压到 tp_max 后再算
-        tv = tp_max
-        remain = 1.0 - tv
-    o1_cur = float(other_current_values[o1])
-    o2_cur = float(other_current_values[o2])
-    o_sum = o1_cur + o2_cur
-    if o_sum <= 1e-12:
-        # 两外两个当前都是 0（极端），按默认等权重
-        w1 = w2 = 0.5
-    else:
-        w1 = o1_cur / o_sum
-        w2 = o2_cur / o_sum
-    o1_val = remain * w1
-    o2_val = remain * w2
-
-    # ④ clip + 二次分摊（第一轮：先把超界的固定到边界）
-    o1_clipped = False
-    o2_clipped = False
-    if o1_val < o1_min:
-        o1_val = o1_min
-        o1_clipped = True
-    elif o1_val > o1_max:
-        o1_val = o1_max
-        o1_clipped = True
-    if o2_val < o2_min:
-        o2_val = o2_min
-        o2_clipped = True
-    elif o2_val > o2_max:
-        o2_val = o2_max
-        o2_clipped = True
-
-    # 把超/缺的量分给未 clip 的那个
-    cur_sum = tv + o1_val + o2_val
-    diff = 1.0 - cur_sum
-    if abs(diff) > 1e-9:
-        if not o1_clipped and not o2_clipped:
-            # 两者都未 clip：按权重补（一般不会到这里，clip 才会有 diff）
-            if o_sum > 1e-12:
-                o1_val += diff * w1
-                o2_val += diff * w2
-            else:
-                o1_val += diff * 0.5
-                o2_val += diff * 0.5
-        elif not o1_clipped and o2_clipped:
-            # o2 已 clip，diff 全给 o1
-            o1_val += diff
-        elif o1_clipped and not o2_clipped:
-            # o1 已 clip，diff 全给 o2
-            o2_val += diff
-        # else: 两者都 clip 了，后面再兜底
-
-        # 二次 clip 防止分摊后又越界
-        o1_val = min(max(o1_val, o1_min), o1_max)
-        o2_val = min(max(o2_val, o2_min), o2_max)
-
-    # ⑤ 兜底：如果两个 o* 都到边界还凑不齐 1.0，只能微调 tuned_param 本身
-    cur_sum = tv + o1_val + o2_val
-    diff = 1.0 - cur_sum
-    if abs(diff) > 1e-9:
-        tv_candidate = tv + diff
-        if tp_min - 1e-9 <= tv_candidate <= tp_max + 1e-9:
-            tv = min(max(tv_candidate, tp_min), tp_max)
-        else:
-            # 极端：tuned 也到边界了，此时三者都在边界但 sum !=1 → 放弃凑 1（返回最接近的合法组合）
-            # （实际 PARAM_DEFS 范围设置合理的话不会到这：0.2+0.1+0.3=0.6 最小，0.5+0.3+0.6=1.4 最大）
-            # 通过整体缩放让 sum=1（可能轻微越界，但 KN 代码内有 sum normalize 兜底）
-            total = tv + o1_val + o2_val
-            if total > 1e-12:
-                tv = tv / total
-                o1_val = o1_val / total
-                o2_val = o2_val / total
-
-    # 最终再 clip 一次 + 四舍五入 4 位（与 PARAM_DEFS step 精度一致）
-    result = {
-        tuned_param: round(min(max(tv, tp_min), tp_max), 4),
-        o1: round(min(max(o1_val, o1_min), o1_max), 4),
-        o2: round(min(max(o2_val, o2_min), o2_max), 4),
-    }
-    # 浮点数累计误差修正：总和 - 1.0 的残差加到数值最大的那个上（避免 0.4001+0.2+0.4=1.0001）
-    s = sum(result.values())
-    residual = round(1.0 - s, 4)
-    if abs(residual) >= 1e-4:
-        max_key = max(result, key=lambda k: result[k])
-        result[max_key] = round(result[max_key] + residual, 4)
-        # 最后保证不越界
-        for k, v in result.items():
-            mn, mx = bounds[k]
-            result[k] = round(min(max(v, mn), mx), 4)
-    return result
-
 
 def _causal_chain_enabled() -> bool:
     """读 ENV_FILE 中 KN_ENABLE_CAUSAL_CHAIN；与 KN config.py 默认 True 一致。"""
@@ -252,27 +98,95 @@ def _is_param_permanently_skipped(name: str) -> bool:
     return False
 
 
-# KN LLM Judge 评估样本阈值：与 kn_judge.py KN_JUDGE_CFG.min_sample=50 严格对齐
-# 样本不足时 kn_judge_relevant_rate / avg_relevance 波动极大，不应驱动调优决策。
-_KN_JUDGE_MIN_SAMPLE = 50
-_KN_JUDGE_SUBJECTIVE_KEYS = frozenset({"kn_judge_relevant_rate", "kn_judge_avg_relevance"})
+# KN LLM Judge 评估样本阈值（与 kn_judge.py KN_JUDGE_CFG 对齐，由配置驱动）
+_KN_JUDGE_MIN_SAMPLE = int(KN_JUDGE_CFG.get("min_sample", 20))
+_KN_JUDGE_MASK_MIN_SAMPLE = int(KN_JUDGE_CFG.get("mask_min_sample", 12))
+# 首次调优用更大步幅快速探明梯度方向（粗→细搜索的第一步）
+COARSE_STEP_FACTOR = 2.0
+
+# 所有 KN Judge 主观反馈键（全局 + mask 级），这些键需要样本量可信门控
+_KN_JUDGE_SUBJECTIVE_KEYS = frozenset({
+    "kn_judge_relevant_rate", "kn_judge_avg_relevance",
+    "kn_judge_relevant_rate_h", "kn_judge_avg_relevance_h",
+    "kn_judge_relevant_rate_kt", "kn_judge_avg_relevance_kt",
+    "kn_judge_relevant_rate_sag", "kn_judge_avg_relevance_sag",
+})
+
+
+def _feedback_key_trusted(name: str,
+                         rec_primary: Optional[Dict[str, Any]],
+                         rec_secondary: Optional[Dict[str, Any]] = None) -> bool:
+    """单个反馈键是否可信：检查其对应样本量是否达标。
+
+    - 全局键(kn_judge_relevant_rate / avg_relevance) → kn_judge_sample_count >= min_sample
+    - mask 键(*_h / *_kt / *_sag) → kn_judge_sample_count_<short> >= mask_min_sample
+    传入 before + after 两份记录时，任一方不足即视为不可信（避免跨日噪声驱动调优）。
+    """
+    short = None
+    for s in ("_h", "_kt", "_sag"):
+        if name.endswith(s):
+            short = s[1:]
+            break
+    if short:
+        sample_keys = [f"kn_judge_sample_count_{short}"]
+        threshold = _KN_JUDGE_MASK_MIN_SAMPLE
+    else:
+        sample_keys = ["kn_judge_sample_count"]
+        threshold = _KN_JUDGE_MIN_SAMPLE
+    counts: List[int] = []
+    for r in (rec_primary, rec_secondary):
+        if not r:
+            continue
+        for k in sample_keys:
+            c = r.get(k)
+            if c is None:
+                continue
+            try:
+                counts.append(int(c))
+            except (TypeError, ValueError):
+                pass
+    if not counts:
+        return False
+    return min(counts) >= threshold
+
+
+def _param_judge_trusted(feedback_csv: str,
+                        rec_primary: Optional[Dict[str, Any]],
+                        rec_secondary: Optional[Dict[str, Any]] = None) -> bool:
+    """参数级别的 judge 可信度：只要其任一主观键有样本即视为可信（有某路信号就能调）。"""
+    keys = [n for n in (s.strip() for s in feedback_csv.split(",") if s.strip())]
+    subj = [k for k in keys if k in _KN_JUDGE_SUBJECTIVE_KEYS]
+    if not subj:
+        return True
+    return any(_feedback_key_trusted(k, rec_primary, rec_secondary) for k in subj)
 
 
 def _kn_judge_trusted(rec_primary: Dict[str, Any],
-                      rec_secondary: Optional[Dict[str, Any]] = None) -> Tuple[bool, int]:
-    """判断 KN LLM Judge 反馈键是否可信。
+                      rec_secondary: Optional[Dict[str, Any]] = None,
+                      feedback_keys: Optional[List[str]] = None) -> Tuple[bool, int]:
+    """兼容旧调用 + 支持按反馈键集合判定。
 
-    规则：检查 records 中 kn_judge_sample_count，取最小的有效样本值；最小样本 >= _KN_JUDGE_MIN_SAMPLE 才可信。
-    传入 before + after 两份记录时，任一方不足即视为不可信（避免跨日比较的噪声驱动调优）。
-    返回: (is_trusted, actual_min_sample_count)。若 2 份都没 sample_count 字段则视为不可信（return False, 0）。
+    - 给定 feedback_keys 时：任一主观键可信即视为可信（只要有某路信号就能调）；
+    - 未给定时：退化为全局样本量检查。
+    返回 (is_trusted, actual_min_sample_count)。
     """
+    if feedback_keys:
+        subj = [k for k in feedback_keys if k in _KN_JUDGE_SUBJECTIVE_KEYS]
+        if not subj:
+            return True, 0
+        trusted = _param_judge_trusted(",".join(subj), rec_primary, rec_secondary)
+        return trusted, 0
     sc_list: List[int] = []
     for r in (rec_primary, rec_secondary):
-        if not r: continue
+        if not r:
+            continue
         sc = r.get("kn_judge_sample_count")
-        if sc is None: continue
-        try: sc_list.append(int(sc))
-        except (TypeError, ValueError): pass
+        if sc is None:
+            continue
+        try:
+            sc_list.append(int(sc))
+        except (TypeError, ValueError):
+            pass
     if not sc_list:
         return False, 0
     sc = min(sc_list)
@@ -423,6 +337,48 @@ def backup_env() -> str:
     backup_file = os.path.join(BACKUP_DIR, f"env-{ts}.bak")
     shutil.copy2(ENV_FILE, backup_file)
     return backup_file
+
+
+def rollback_param_to_baseline(param_name: str, baseline_value: Any) -> bool:
+    """把 .env 中的 param_name 还原为首次调优前的基线值 initial_value。
+
+    在参数因「连续恶化」被 suspend 时调用：suspend 只是停止继续调这个参数，
+    如果不把 .env 改回去，运行时会一直停留在最后一次（最差的）取值上。
+
+    返回 True 表示 .env 现在处于 baseline（含「本来就等于 baseline」的情况）。
+    绝不抛异常——回滚失败不能阻断 auto-tuner 的状态保存。
+    """
+    if baseline_value is None:
+        log_warn(f"回滚跳过：{param_name} 无 initial_value 基线（状态文件里从未记录）")
+        return False
+    try:
+        target_f = float(baseline_value)
+    except (TypeError, ValueError):
+        log_warn(f"回滚跳过：{param_name} 的 initial_value={baseline_value!r} 不是合法数值")
+        return False
+    target = f"{target_f:g}"
+
+    current = read_env_param(param_name)
+    if current is not None:
+        try:
+            if abs(float(current) - target_f) < 1e-9:
+                log_info(f"回滚跳过：{param_name} 当前已是基线值 {target}")
+                return True
+        except (TypeError, ValueError):
+            pass  # 当前值不可解析 → 照常覆写为基线
+
+    try:
+        bak = backup_env()
+        log_info(f"回滚前已备份 .env → {bak}")
+    except (OSError, PermissionError, shutil.Error) as e:
+        log_warn(f"回滚前备份 .env 失败（{e}），仍继续尝试写入")
+
+    if not write_env_param(param_name, target):
+        log_err(f"回滚失败：无法写入 {param_name}={target} 到 {ENV_FILE}")
+        return False
+
+    log_ok(f"已回滚 {param_name}: {current} → {target}（连续恶化触发暂停）")
+    return True
 
 
 def _run_shell(cmd: str, timeout: int = 10) -> Tuple[str, str, int]:
@@ -620,11 +576,13 @@ def _parse_feedback(feedback_csv: str) -> List[Tuple[str, str]]:
     direction 是 'up_better' / 'down_better' / 'stable_ok'。"""
     out: List[Tuple[str, str]] = []
     for name in (s.strip() for s in feedback_csv.split(",") if s.strip()):
-        if name in ("kn_avg_score",
-                    # KN LLM Judge 反馈：都是越高越好
-                    "kn_judge_relevant_rate",
-                    "kn_judge_avg_relevance",
-                    "kn_judge_sample_count"):
+        # KN LLM Judge 反馈（全局 + mask 级）：越高越好
+        if (name.startswith("kn_judge_relevant_rate")
+                or name.startswith("kn_judge_avg_relevance")
+                or name.startswith("kn_judge_sample_count")):
+            out.append((name, "up_better"))
+            continue
+        if name in ("kn_avg_score",):
             out.append((name, "up_better"))
         elif name in ("router_empty_pct", "sag_merge_zero_pct"):
             out.append((name, "down_better"))
@@ -635,7 +593,7 @@ def _parse_feedback(feedback_csv: str) -> List[Tuple[str, str]]:
                       "memory_compress_count", "memory_hindsight_count"):
             # 产出/贡献类：稳定或向上不恶化就算改善
             out.append((name, "stable_ok"))
-        elif name in ("token_exhaust_pct", "router_error_rate",
+        elif name in ("router_error_rate",
                       "error_count", "warning_count"):
             out.append((name, "down_better"))
         else:
@@ -726,8 +684,7 @@ def handle_pending_restart() -> bool:
             log_info("检测到 metrics_after == metrics_before（重启后指标无变化），判定=未知，不否认为改善，保持 pending_restart 观察")
         elif pdef:
             feeds = _parse_feedback(pdef[5])
-            # Round 2 P0-B: 先判断今日 judge 样本可信度（所有主观反馈键前置过滤）
-            judge_trusted, judge_sc = _kn_judge_trusted(metrics_after, mb)
+            # mask 级改造：逐反馈键检查其对应路样本量是否可信（全局键查全局样本，mask 键查该路样本）
             has_subjective_any = any(n in _KN_JUDGE_SUBJECTIVE_KEYS for n, _ in feeds)
             skipped_untrusted = False
             ic = 0
@@ -735,10 +692,10 @@ def handle_pending_restart() -> bool:
             has_any = False
             for name, d in feeds:
                 tc += 1
-                # 如果 judge 样本不足，跳过其主观反馈键，避免小样本噪声驱动方向
-                if name in _KN_JUDGE_SUBJECTIVE_KEYS and not judge_trusted:
+                # 如果对应路 judge 样本不足，跳过该主观反馈键，避免小样本噪声驱动方向
+                if name in _KN_JUDGE_SUBJECTIVE_KEYS and not _feedback_key_trusted(name, mb, metrics_after):
                     skipped_untrusted = True
-                    log_info(f"  忽略反馈 {name}: kn_judge_sample_count={judge_sc} < {_KN_JUDGE_MIN_SAMPLE}（评估样本不足，不纳入改善判定）")
+                    log_info(f"  忽略反馈 {name}: 对应路 KN Judge 样本不足（不纳入改善判定）")
                     continue
                 om = mb.get(name)
                 nm = metrics_after.get(name)
@@ -771,6 +728,7 @@ def handle_pending_restart() -> bool:
 
         state = load_state()
         last_dir_osc = state.get(param, {}).get("last_direction")
+        prev_suspended = bool((state.get(param) or {}).get("suspended", False))
         new_state = update_state(
             state, param, last_dir, new_v,
             metrics_improved=improved, no_change=no_change,
@@ -778,6 +736,20 @@ def handle_pending_restart() -> bool:
             old_value=old_v,
             last_direction_record=last_dir_osc,
         )
+        # 连续恶化触发 suspend 的「上升沿」→ 把 .env 还原到 initial_value 基线。
+        # 用上升沿（False→True）而非 now_suspended 判定，保证只回滚一次：
+        # 参数保持 suspended 的后续轮次不会重复写 .env。
+        now_suspended = bool((new_state.get(param) or {}).get("suspended", False))
+        if now_suspended and not prev_suspended:
+            pstate = new_state.setdefault(param, {})
+            # 连续恶化回滚到「历史最佳值」优先，否则回退到首次调优前的基线值
+            baseline = pstate.get("best_value")
+            if baseline is None:
+                baseline = pstate.get("initial_value")
+            rollback_ok = rollback_param_to_baseline(param, baseline)
+            pstate["rolled_back_at"] = _now_iso()
+            pstate["rolled_back_to"] = baseline
+            pstate["rollback_ok"] = rollback_ok
         save_state(new_state)
         log_ok(f"状态已更新: improved={improved}, no_change={no_change}")
         # 冷却：今天刚确认生效，跳过新调优
@@ -893,6 +865,7 @@ def update_state(
 
     if int(p.get("no_change_count", 0)) >= NO_CHANGE_LOCK_THRESHOLD:
         p["locked"] = True
+        p["suspended"] = False  # 稳定（无变化）→ 解除之前的恶化暂停
         p["no_change_count"] = 0
         p["degradation_count"] = 0
         p["consecutive_degradation_count"] = 0
@@ -902,13 +875,22 @@ def update_state(
         p["degradation_count"] = int(p.get("degradation_count", 0)) + 1
         p["consecutive_degradation_count"] = int(p.get("consecutive_degradation_count", 0)) + 1
         if int(p["consecutive_degradation_count"]) >= CONSECUTIVE_DEGRADATION_SUSPEND_THRESHOLD:
-            # 连续恶化 → 回滚 initial_value + 暂停
+            # 连续恶化 → 暂停该参数。
+            # 注意：本函数是纯状态计算，**不碰 .env**。实际把 .env 还原到
+            # initial_value 的动作由调用点 handle_pending_restart() 在检测到
+            # suspended 的 False→True 上升沿时调用 rollback_param_to_baseline() 完成。
             p["suspended"] = True
             p["locked"] = True
             p["consecutive_degradation_count"] = 0
     else:
         p["degradation_count"] = 0
         p["consecutive_degradation_count"] = 0
+        p["suspended"] = False  # 指标改善 → 解除恶化暂停
+        # 改善时记录历史最佳值（best-so-far 记忆），连续恶化时优先回滚到此而非初始基线
+        try:
+            p["best_value"] = float(new_value)
+        except (TypeError, ValueError):
+            pass
         # 改善时也顺带清 no_change，别因为震荡给的 2 次误锁了真改善
         if int(p.get("no_change_count", 0)) < NO_CHANGE_LOCK_THRESHOLD:
             pass  # 清不清都行，保留震荡惩罚是合理的
@@ -950,6 +932,7 @@ def determine_direction(
     pmin: float, pmax: float, step: float,
     feedback_csv: str,
     last_tune: Optional[Dict[str, Any]],
+    summary_rec: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """返回 {"direction":"up"/"down", "new_value": float, "reason": str}；无法调返回 None。"""
     direction = "up"
@@ -966,16 +949,20 @@ def determine_direction(
         ic = 0
         tc = 0
         has_any = False
-        # Round 2 P0-B: 先判断今日 judge 样本可信度（同 handle_pending_restart 逻辑保持一致）
-        judge_trusted, judge_sc = _kn_judge_trusted(ma if ma else {}, mb if mb else {})
+        # mask 级改造：逐反馈键检查对应路样本量是否可信（全局键查全局样本，mask 键查该路样本）
         feeds = _parse_feedback(feedback_csv)
         has_subjective_any = any(n in _KN_JUDGE_SUBJECTIVE_KEYS for n, _ in feeds)
         skipped_untrusted = False
         for name, d in feeds:
             tc += 1
-            if name in _KN_JUDGE_SUBJECTIVE_KEYS and not judge_trusted:
+            # 信任门控须从「当日完整 summary 记录」取样本计数键
+            # （kn_judge_sample_count_<short> 只存在于 summary 全量记录，不在
+            #  tune 日志的 metrics_before/after 里）。若只用 mb/ma 会导致永远查不到
+            #  样本量 → 永远判不可信 → mask 反馈被跳过 → 退化成位置游走（伪优化器）。
+            trust_src = summary_rec if isinstance(summary_rec, dict) else None
+            if name in _KN_JUDGE_SUBJECTIVE_KEYS and not _feedback_key_trusted(name, trust_src, None):
                 skipped_untrusted = True
-                log_info(f"  方向决策忽略反馈 {name}: kn_judge_sample_count={judge_sc} < {_KN_JUDGE_MIN_SAMPLE}")
+                log_info(f"  方向决策忽略反馈 {name}: 对应路 KN Judge 样本不足，跳过")
                 continue
             om = mb.get(name)
             nm = ma.get(name)
@@ -1028,15 +1015,21 @@ def determine_direction(
             direction = "up"
             reason = "当前值离最小值较近，向上调整"
 
+    # 粗→细搜索：首次调优（无历史）用更大步幅快速探明梯度方向，后续用正常步幅精调
+    eff_step = step
+    if last_tune is None:
+        eff_step = step * COARSE_STEP_FACTOR
+        reason += f"（首次调优用粗步幅 {eff_step:g} 探方向）"
+
     # 边界修正
-    if direction == "up" and (current_val + step) > pmax + 1e-9:
+    if direction == "up" and (current_val + eff_step) > pmax + 1e-9:
         direction = "down"
         reason = f"已达上限({pmax})，只能向下调整"
-    elif direction == "down" and (current_val - step) < pmin - 1e-9:
+    elif direction == "down" and (current_val - eff_step) < pmin - 1e-9:
         direction = "up"
         reason = f"已达下限({pmin})，只能向上调整"
 
-    new_val = min(current_val + step, pmax) if direction == "up" else max(current_val - step, pmin)
+    new_val = min(current_val + eff_step, pmax) if direction == "up" else max(current_val - eff_step, pmin)
     if abs(new_val - current_val) < 1e-9:
         return None
     return {"direction": direction, "new_value": round(new_val, 4), "reason": reason}
@@ -1073,17 +1066,10 @@ def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, fl
     rec_data = _extract_metrics_for_tuning(today_str, yesterday_str)
     today_rec = rec_data.get("today") if isinstance(rec_data.get("today"), dict) else {}
     yesterday_rec = rec_data.get("yesterday") if isinstance(rec_data.get("yesterday"), dict) else {}
-    judge_trusted, judge_sc = _kn_judge_trusted(today_rec, yesterday_rec)
 
     def _feedback_trust_today(feedback_csv: str) -> bool:
-        subjective_hits = False
-        for name in (s.strip() for s in feedback_csv.split(",") if s.strip()):
-            if name in _KN_JUDGE_SUBJECTIVE_KEYS:
-                subjective_hits = True
-                break
-        if not subjective_hits:
-            return True  # 不依赖主观评估键 → 任何时刻可信
-        return judge_trusted
+        """mask 级改造：只要参数任一主观键今日有样本（该路可信）即视为可信，可参与调优。"""
+        return _param_judge_trusted(feedback_csv, today_rec, yesterday_rec)
 
     virgin_confident: List[Tuple[str, float, float, float, float, str]] = []
     virgin_unconfident: List[Tuple[str, float, float, float, float, str]] = []
@@ -1112,7 +1098,7 @@ def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, fl
         for label, bucket in order:
             if bucket:
                 first = bucket[0]
-                log_info(f"  选参[{label}] → {first[0]}（今日 KN LLM Judge 样本={judge_sc}, trusted={judge_trusted}）")
+                log_info(f"  选参[{label}] → {first[0]}（今日 KN LLM Judge 样本可信度按各路分别判定）")
                 return first
         return None
 
@@ -1247,8 +1233,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 8. 上次调优记录（同参数）
     last_tune = _get_last_tune_for(name)
 
-    # 9. 方向决策
-    decision = determine_direction(name, current, pmin, pmax, step, fb_csv, last_tune)
+    # 9. 方向决策（传入当日完整 summary 记录，供 mask 信任门控读取样本计数）
+    decision = determine_direction(name, current, pmin, pmax, step, fb_csv, last_tune, summary_rec=today_rec)
     if not decision:
         log_warn("无法确定调优方向（可能已到边界），跳过")
         # 同步 bash 版约束：到边界也调用 update_state(no_change=True)，
@@ -1282,49 +1268,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_warn("步幅超过安全阈值，跳过本次调优")
         return 0
 
-    # 10.5. Round 4 P1-C：三比例归一化（若选中参数是 token budget ratio 之一）
-    ratio_trio_result: Optional[Dict[str, float]] = None
-    ratio_trio_old: Optional[Dict[str, float]] = None
-    if name in _RATIO_TRIO_PARAMS:
-        others = [n for n in _RATIO_TRIO_PARAMS if n != name]
-        other_vals: Dict[str, float] = {}
-        default_vals_from_defs: Dict[str, float] = {
-            pdef[0]: float(pdef[1]) for pdef in PARAM_DEFS if pdef[0] in _RATIO_TRIO_PARAMS
-        }
-        for on in others:
-            ov = read_env_param(on)
-            if ov is not None:
-                try:
-                    other_vals[on] = float(ov)
-                except (TypeError, ValueError):
-                    other_vals[on] = default_vals_from_defs[on]
-            else:
-                other_vals[on] = default_vals_from_defs[on]
-        ratio_trio_old = {
-            name: float(current),
-            **{k: float(v) for k, v in other_vals.items()},
-        }
-        try:
-            ratio_trio_result = normalize_ratio_trio(name, new_val, other_vals)
-        except (ValueError, RuntimeError) as e:
-            log_warn(f"[Round4] 三比例归一化失败，跳过归一化（仅调 {name}）：{e}")
-            ratio_trio_result = None
-        if ratio_trio_result is not None:
-            # 归一化后，tuned 参数本身可能被兜底微调，更新 new_val
-            new_val = ratio_trio_result[name]
-            s_old = round(sum(ratio_trio_old.values()), 4)
-            s_new = round(sum(ratio_trio_result.values()), 4)
-            print("")
-            log_step("[Round 4] 三比例归一化结果:")
-            for k in sorted(_RATIO_TRIO_PARAMS):
-                marker = " ← 调优目标" if k == name else ""
-                ov = ratio_trio_old[k]
-                nv = ratio_trio_result[k]
-                arrow = "" if abs(ov - nv) < 1e-9 else f" → {nv}"
-                print(f"    {k}: {ov}{arrow}{marker}")
-            print(f"    归一化前总和: {s_old} → 归一化后总和: {s_new}")
-            print("")
-
     # 11. metrics_before（今天的报告，用于后续改善判断）
     metrics_before = _extract_metrics_before(today_rec)
 
@@ -1338,24 +1281,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  当前值:    {current} → 新值: {new_val}")
         print(f"  方向:      {direction}")
         print(f"  原因:      {reason}")
-        if ratio_trio_result is not None:
-            print(f"  [Round 4] 比例联动：三参数同步写入，总和={round(sum(ratio_trio_result.values()), 4)}")
-            for k in sorted(_RATIO_TRIO_PARAMS):
-                ov = ratio_trio_old[k]
-                nv = ratio_trio_result[k]
-                if abs(ov - nv) < 1e-9:
-                    continue
-                print(f"    联动: {k}: {ov} → {nv}")
         print(f"  备份:      {BACKUP_DIR}/env-*.bak")
         print(f"  操作:      修改 {ENV_FILE} → {name}={new_val}")
-        if ratio_trio_result is not None:
-            for k, v in ratio_trio_result.items():
-                if k == name:
-                    continue
-                ov = ratio_trio_old[k]
-                if abs(ov - v) < 1e-9:
-                    continue
-                print(f"  操作:      修改 {ENV_FILE} → {k}={v}（三比例归一化联动）")
         print(f"  操作:      手动重启 hermes-gateway（飞书通知）")
         print(f"  日志:      {LOG_FILE}")
         print("")
@@ -1372,9 +1299,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             "status": "dry_run",
             "timestamp": _now_iso(),
         }
-        if ratio_trio_result is not None:
-            entry["ratio_trio_normalized"] = ratio_trio_result
-            entry["ratio_trio_old"] = ratio_trio_old
         _append_jsonl(LOG_FILE, entry)
         log_ok("DRY-RUN 完成，决策已写入日志")
         return 0
@@ -1389,18 +1313,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not ok:
         log_err(f"写入 .env 失败: {ENV_FILE}")
         return 2
-    # Round 4：若有归一化结果，联动写入另外两个比例
-    if ratio_trio_result is not None:
-        for k, v in ratio_trio_result.items():
-            if k == name:
-                continue
-            ov = ratio_trio_old[k]
-            if abs(ov - v) < 1e-9:
-                continue
-            log_step(f"[Round 4] 联动写入 {k}: {ov} → {v}（三比例归一化）")
-            ok2 = write_env_param(k, f"{v:g}")
-            if not ok2:
-                log_err(f"[Round 4] 联动写入失败: {k}={v}（.env 可能不完整，请手动核对）")
     log_ok(".env 已更新")
 
     # 通知重启（不自动重启，避免杀死 cronjob）
@@ -1423,9 +1335,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         "backup_file": backup_file,
         "timestamp": _now_iso(),
     }
-    if ratio_trio_result is not None:
-        entry["ratio_trio_normalized"] = ratio_trio_result
-        entry["ratio_trio_old"] = ratio_trio_old
     _append_jsonl(LOG_FILE, entry)
 
     # **一定调用 update_state 并写回**（bash 版这里漏了）

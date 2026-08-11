@@ -25,19 +25,73 @@ from knowledge_navigation.core.env_loader import get_env, get_env_int
 logger = logging.getLogger(__name__)
 
 SKILLS_HOME = Path.home() / ".hermes" / "skills"
-_TOP_K = 3
-_MAX_SKILLS = 500
-_PRESCREEN_TOP_K = 30  # 关键词预筛选候选数
-_EMBEDDING_TOP_K = 20  # Embedding 预筛选候选数
-_EMBEDDING_BATCH_SIZE = 20  # Embedding 批量调用每批数量（避免 token 超限）
 
-_LLM_TIMEOUT = get_env_int("KN_SKILL_MATCH_TIMEOUT", 45)  # 默认 45s（keyword-prescreen 后 prompt ~30 项，但预筛本身需 embedding 时间）
+
+# ══════════════════════════════════════════════════════════════════
+# 可调参数：运行期读取（支持热更新）
+# ══════════════════════════════════════════════════════════════════
+# 以下 accessor 在**每次调用时**经 get_env_int() 读取，配合 env_loader 的
+# 60s TTL 缓存，修改 .env 中的 KN_SKILL_* 后最多 60s 自动生效，无需重启 gateway。
+#
+# 运行时代码一律使用 _get_xxx() accessor；下方的模块级常量仅为「导入期快照」，
+# 保留用于向后兼容（测试与外部引用），不参与运行时决策。
+#
+# 所有参数统一 clamp 到 >= 1：误配 0 或负数时回退默认值，
+# 避免 range(step=0) 抛 ValueError、或切片 [:0] 静默返回空结果。
+
+def _clamp_positive(value: int, fallback: int) -> int:
+    """调优参数保护：非正数视为误配，回退默认值。"""
+    return value if value >= 1 else fallback
+
+
+def _get_top_k() -> int:
+    """LLM 精排最终返回的 skill 数量。"""
+    return _clamp_positive(get_env_int("KN_SKILL_TOP_K", 3), 3)
+
+
+def _get_max_skills() -> int:
+    """建索引时扫描的 SKILL.md 数量上限。"""
+    return _clamp_positive(get_env_int("KN_SKILL_MAX_SKILLS", 500), 500)
+
+
+def _get_prescreen_top_k() -> int:
+    """关键词预筛保留的候选数量。"""
+    return _clamp_positive(get_env_int("KN_SKILL_PRESCREEN_TOP_K", 30), 30)
+
+
+def _get_embedding_top_k() -> int:
+    """Embedding 预筛保留的候选数量。"""
+    return _clamp_positive(get_env_int("KN_SKILL_EMBEDDING_TOP_K", 20), 20)
+
+
+def _get_embedding_batch_size() -> int:
+    """调用 embedding API 的单批文本数量。"""
+    return _clamp_positive(get_env_int("KN_SKILL_EMBEDDING_BATCH_SIZE", 20), 20)
+
+
+def _get_llm_timeout() -> int:
+    """LLM 精排请求超时（秒）。
+
+    默认 45s：keyword-prescreen 后 prompt 约 30 项，但预筛本身需 embedding 时间。
+    """
+    return _clamp_positive(get_env_int("KN_SKILL_MATCH_TIMEOUT", 45), 45)
+
+
+# ── 导入期快照（向后兼容，勿用于运行时决策）──
+_TOP_K = _get_top_k()
+_MAX_SKILLS = _get_max_skills()
+_PRESCREEN_TOP_K = _get_prescreen_top_k()
+_EMBEDDING_TOP_K = _get_embedding_top_k()
+_EMBEDDING_BATCH_SIZE = _get_embedding_batch_size()
+_LLM_TIMEOUT = _get_llm_timeout()
 
 _STOPWORDS = {
     "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
     "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好",
     "自己", "这", "那", "他", "她", "它", "们", "什么", "怎么", "为什么", "如何",
     "是的", "不是", "可以", "可能", "应该", "需要", "知道", "这个", "那个",
+    "但", "还", "或", "如果", "因为", "所以", "但是", "而且", "不过", "只是",
+    "啊", "呢", "吗", "吧", "哦", "嗯", "呀", "啦", "呗", "喽",
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could",
     "should", "may", "might", "can", "shall",
@@ -54,6 +108,8 @@ _STOPWORDS = {
     "what", "which", "who", "whom", "whose", "where", "when", "how",
     "if", "then", "else", "than", "because", "as", "until", "while",
     "about", "against", "between", "through", "during", "before", "after",
+    "just", "up", "out", "off", "away", "back", "down", "over", "under",
+    "don", "now", "get", "got", "go", "going", "make", "made", "like",
 }
 
 # ── 模块级缓存 ──
@@ -136,7 +192,7 @@ def _get_embedding_config() -> tuple[str, str, str, int]:
     if cfg_top_k:
         cfg_top_k = int(cfg_top_k)
     else:
-        cfg_top_k = CONFIG.kn_skill_embedding_top_k or _EMBEDDING_TOP_K
+        cfg_top_k = CONFIG.kn_skill_embedding_top_k or _get_embedding_top_k()
     return (model, url, api_key, cfg_top_k)
 
 
@@ -197,8 +253,9 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
 
     import httpx
 
-    for i in range(0, len(texts_to_fetch), _EMBEDDING_BATCH_SIZE):
-        batch = texts_to_fetch[i:i + _EMBEDDING_BATCH_SIZE]
+    batch_size = _get_embedding_batch_size()
+    for i in range(0, len(texts_to_fetch), batch_size):
+        batch = texts_to_fetch[i:i + batch_size]
         paths = [p for p, _ in batch]
         texts = [t for _, t in batch]
 
@@ -231,18 +288,21 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
 def _embedding_prescreen(
     query: str,
     candidates: list[dict[str, Any]],
-    top_k: int = _EMBEDDING_TOP_K,
+    top_k: int | None = None,
 ) -> list[dict[str, Any]]:
     """Embedding 相似度预筛选：从候选中选出 top_k 个最相似的 skill。
 
     Args:
         query: 用户查询
         candidates: 关键词预筛选结果
-        top_k: 返回候选数量
+        top_k: 返回候选数量；None 表示运行期读取 KN_SKILL_EMBEDDING_TOP_K
 
     Returns:
         按 embedding 相似度降序排列的 top_k 个 skill
     """
+    if top_k is None:
+        top_k = _get_embedding_top_k()
+
     if not candidates:
         return []
 
@@ -381,8 +441,9 @@ def _build_full_index_locked() -> bool:
 
     t0 = time.time()
     skill_files = list(SKILLS_HOME.rglob("SKILL.md"))
-    if len(skill_files) > _MAX_SKILLS:
-        skill_files = skill_files[:_MAX_SKILLS]
+    max_skills = _get_max_skills()
+    if len(skill_files) > max_skills:
+        skill_files = skill_files[:max_skills]
 
     index: dict[str, dict[str, Any]] = {}
     n_skipped = 0
@@ -421,8 +482,9 @@ def _update_incremental_locked() -> bool:
 
     t0 = time.time()
     skill_files = list(SKILLS_HOME.rglob("SKILL.md"))
-    if len(skill_files) > _MAX_SKILLS:
-        skill_files = skill_files[:_MAX_SKILLS]
+    max_skills = _get_max_skills()
+    if len(skill_files) > max_skills:
+        skill_files = skill_files[:max_skills]
 
     current_paths = {str(fp) for fp in skill_files}
     indexed_paths = set(_skill_index.keys())
@@ -545,7 +607,7 @@ def _extract_keywords(text: str) -> set[str]:
 def _keyword_prescreen(
     query: str,
     index: list[dict[str, Any]],
-    top_k: int = _PRESCREEN_TOP_K,
+    top_k: int | None = None,
 ) -> list[dict[str, Any]]:
     """关键词预筛选：从全量 skill 中快速选出 top_k 个候选。
 
@@ -558,11 +620,14 @@ def _keyword_prescreen(
     Args:
         query: 用户查询
         index: skill 索引列表
-        top_k: 返回候选数量
+        top_k: 返回候选数量；None 表示运行期读取 KN_SKILL_PRESCREEN_TOP_K
 
     Returns:
         按得分降序排列的 top_k 个 skill，每个 skill 附带 _score 字段
     """
+    if top_k is None:
+        top_k = _get_prescreen_top_k()
+
     if not index:
         return []
 
@@ -641,16 +706,19 @@ def _build_skill_prompt(index: list[dict[str, Any]]) -> str:
 
 def _llm_match(
     query: str,
-    top_k: int = _TOP_K,
+    top_k: int | None = None,
     candidates: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """LLM 语义精排。从候选中选出 top_k 个技能。
 
     Args:
         query: 用户查询
-        top_k: 最多返回数量
+        top_k: 最多返回数量；None 表示运行期读取 KN_SKILL_TOP_K
         candidates: 候选 skill 列表（预筛选结果），None 表示用全量索引
     """
+    if top_k is None:
+        top_k = _get_top_k()
+
     if not _skill_index:
         return []
 
@@ -730,17 +798,19 @@ def _llm_match(
         try:
             import httpx
             api_key = get_env("LITELLM_MASTER_KEY", "")
+            skill_url = get_env("KN_SKILL_MATCHER_API_URL") or CONFIG.skill_matcher_api_url
+            skill_model = get_env("KN_SKILL_MATCHER_MODEL") or CONFIG.skill_matcher_model
             resp = httpx.post(
-                "http://127.0.0.1:4142/v1/chat/completions",
+                f"{skill_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 json={
-                    "model": "s-deepseek-v4-flash",
+                    "model": skill_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 2048,
                     "temperature": 0.1,
                     "thinking": {"type": "disabled"},
                 },
-                timeout=_LLM_TIMEOUT,
+                timeout=_get_llm_timeout(),
             )
             resp.raise_for_status()
             body = resp.json()
@@ -816,7 +886,7 @@ def _llm_match(
 
 def match_skills(
     query: str,
-    top_k: int = _TOP_K,
+    top_k: int | None = None,
     enable_keyword_prescreen: bool = True,
 ) -> list[dict[str, str]]:
     """技能匹配：关键词预筛 + Embedding 预筛 + LLM 精排。
@@ -829,13 +899,16 @@ def match_skills(
 
     Args:
         query: 用户消息
-        top_k: 最多返回数量
+        top_k: 最多返回数量；None 表示运行期读取 KN_SKILL_TOP_K
         enable_keyword_prescreen: 是否启用关键词预筛（默认 True）
 
     Returns:
         [{name, description, score, path}, ...]
         调用方可用 path + strip_frontmatter 读 SKILL.md 正文。
     """
+    if top_k is None:
+        top_k = _get_top_k()
+
     if not ensure_index():
         return []
 
@@ -847,7 +920,7 @@ def match_skills(
 
     # Stage 1: 关键词预筛
     if enable_keyword_prescreen:
-        kw_candidates = _keyword_prescreen(query, skill_list, top_k=_PRESCREEN_TOP_K)
+        kw_candidates = _keyword_prescreen(query, skill_list, top_k=_get_prescreen_top_k())
         if not kw_candidates:
             logger.debug("Skill match: keyword prescreen returned empty")
             return []
@@ -859,7 +932,7 @@ def match_skills(
     if enable_keyword_prescreen and not _embedding_circuit_breaker():
         _, _, emb_api_key, _ = _get_embedding_config()
         if emb_api_key:
-            emb_candidates = _embedding_prescreen(query, skill_list, top_k=_EMBEDDING_TOP_K)
+            emb_candidates = _embedding_prescreen(query, skill_list, top_k=_get_embedding_top_k())
             # 降级检查：返回的候选没有 _emb_score 说明 embedding 失败，跳过
             if emb_candidates and not any("_emb_score" in c for c in emb_candidates):
                 logger.debug("Skill match: embedding prescreen degraded, skipping")

@@ -25,7 +25,7 @@ class TestParseTraceLog:
         # 所有关键事件键必须存在（即使为空）
         for key in ("router_mask", "recall_success", "recall_error",
                     "recall_empty", "hindsight_fail_kt_fallback",
-                    "token_budget", "recall_sag", "sag_merge"):
+                    "token_usage", "recall_sag", "sag_merge"):
             assert key in result
             assert result[key] == []
 
@@ -41,7 +41,7 @@ class TestParseTraceLog:
             {"timestamp": "2026-07-10T10:05:00Z", "event": "hindsight_fail_kt_fallback", "kt_count": 2},
             {"timestamp": "2026-07-10T10:06:00Z", "event": "recall_timeout"},
             {"timestamp": "2026-07-10T10:07:00Z", "event": "multi_hop_expand"},
-            {"timestamp": "2026-07-10T10:08:00Z", "event": "token_budget", "hs_tokens_before": 1000, "hs_tokens_after": 500},
+            {"timestamp": "2026-07-10T10:08:00Z", "event": "token_usage", "hs_tokens": 72, "sag_tokens": 0, "kt_tokens": 340, "skill_tokens": 4266, "total_tokens": 4678},
             {"timestamp": "2026-07-10T10:09:00Z", "event": "recall_sag", "count": 3},
             {"timestamp": "2026-07-10T10:10:00Z", "event": "sag_merge", "count": 2},
             # 以下事件已从 whitelist 移除（无 analyze 函数消费 / 冗余日志）
@@ -65,7 +65,7 @@ class TestParseTraceLog:
         assert len(result["hindsight_fail_kt_fallback"]) == 1
         assert len(result["recall_timeout"]) == 1
         assert len(result["multi_hop_expand"]) == 1
-        assert len(result["token_budget"]) == 1
+        assert len(result["token_usage"]) == 1
         assert len(result["recall_sag"]) == 1
         assert len(result["sag_merge"]) == 1
         # 已移除的事件不应出现在 result 中

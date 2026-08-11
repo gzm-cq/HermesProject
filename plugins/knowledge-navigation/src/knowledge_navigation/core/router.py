@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 
 import httpx
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 # 线程安全：Router 缓存与计数器被 4-worker ThreadPoolExecutor 并发读写，
 # 必须加锁保护，否则 dict 迭代时被修改会触发 RuntimeError。
 _router_lock = threading.Lock()
-_router_cache: dict[tuple[str, str], dict[str, bool]] = {}
+_router_cache: OrderedDict[tuple[str, str], dict[str, bool]] = OrderedDict()
 _ROUTER_CACHE_MAX = 64
 _ROUTER_CACHE_TTL = 300
 
@@ -38,23 +39,24 @@ def _clean_expired_cache() -> None:
 
 
 def _cache_get(cache_key: tuple[str, str]) -> dict[str, bool] | None:
-    """线程安全的缓存读取。"""
+    """线程安全的缓存读取（读取时标记为最近使用）。"""
     with _router_lock:
         _clean_expired_cache()
-        return _router_cache.get(cache_key)
+        val = _router_cache.get(cache_key)
+        if val is not None:
+            _router_cache.move_to_end(cache_key)
+        return val
 
 
 def _cache_put(cache_key: tuple[str, str], mask: dict[str, bool]) -> None:
-    """线程安全的缓存写入（含 LRU 淘汰）。"""
+    """线程安全的缓存写入（LRU 淘汰：超出容量时淘汰最久未使用）。"""
     with _router_lock:
         _router_cache[cache_key] = mask
+        _router_cache.move_to_end(cache_key)
         _router_cache_timestamps[cache_key] = time.time()
-        if len(_router_cache) > _ROUTER_CACHE_MAX:
-            _evict = _ROUTER_CACHE_MAX // 2
-            evict_keys = list(_router_cache.keys())[:_evict]
-            for k in evict_keys:
-                _router_cache.pop(k, None)
-                _router_cache_timestamps.pop(k, None)
+        while len(_router_cache) > _ROUTER_CACHE_MAX:
+            evict_key, _ = _router_cache.popitem(last=False)
+            _router_cache_timestamps.pop(evict_key, None)
 
 
 def _incr_fallback(key: str) -> None:
@@ -83,11 +85,39 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
                 pass
 
     # 3) Try first { ... } object (handles inline JSON, markdown text, etc.)
+    #    用嵌套花括号计数替代非贪婪正则——LLM 输出嵌套对象（如 {"h": true, "extra": {"detail": 1}}）
+    #    时，非贪婪 `\{[^{}]*\}` 会过早停在内层 `}`，导致解析失败。
     if data is None:
-        m = re.search(r"\{[^{}]*\}", text)
+        m = re.search(r"\{", text)
         if m:
             try:
-                data = json.loads(m.group(0))
+                start = m.start()
+                depth = 0
+                in_str = False
+                escape = False
+                end = -1
+                for i, ch in enumerate(text[start:], start=start):
+                    if escape:
+                        escape = False
+                        continue
+                    if ch == "\\":
+                        escape = True
+                        continue
+                    if ch == '"':
+                        in_str = not in_str
+                        continue
+                    if in_str:
+                        continue
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if end > start:
+                    candidate = text[start:end]
+                    data = json.loads(candidate)
             except (json.JSONDecodeError, ValueError):
                 pass
 
@@ -135,10 +165,13 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
         if len(fields) == 4:
             data = fields
 
-    # After salvage, require all 4 mask keys present — partial mask is dangerous
-    # (missing key → False → route closed when it should be open)
-    if isinstance(data, dict) and not all(k in data for k in ('h', 'kt', 's', 'sag')):
-        return None
+    # After salvage, default missing keys to False (conservative)
+    # rather than discarding the entire mask — LLM may omit sag when
+    # it judges SAG irrelevant, but h/kt/s are still valid
+    if isinstance(data, dict):
+        for k in ('h', 'kt', 's', 'sag'):
+            if k not in data:
+                data[k] = False
 
     if not isinstance(data, dict):
         return None
@@ -148,8 +181,8 @@ def _parse_mask(text: str) -> dict[str, bool] | None:
     except (TypeError, ValueError):
         logger.debug("Router confidence invalid, applying fallback h/kt/s 全开+sag关")
         return {"h": True, "kt": True, "s": True, "sag": False}
-    if confidence < 0.5:
-        logger.debug("Router confidence=%.2f < 0.5, applying fallback h/kt/s 全开+sag关", confidence)
+    if confidence < 0.3:
+        logger.debug("Router confidence=%.2f < 0.3, applying fallback h/kt/s 全开+sag关", confidence)
         return {"h": True, "kt": True, "s": True, "sag": False}
 
     return {
@@ -269,7 +302,14 @@ def route(
                 timeout=timeout,
             )
             resp.raise_for_status()
-            choice = resp.json()["choices"][0]["message"]
+            data = resp.json()
+            choices = data.get("choices", [])
+            if not choices:
+                _incr_fallback("empty_choices")
+                logger.warning("Router LLM 返回空 choices, fallback h/kt/s 全开+sag关")
+                fallback_reason = "empty_choices"
+                break
+            choice = choices[0].get("message", {})
             raw = choice.get("content") or ""
             if not raw.strip():
                 rc = choice.get("reasoning_content", "") or ""

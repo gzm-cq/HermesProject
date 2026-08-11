@@ -48,8 +48,6 @@ TH = {
     # Skill 真实使用
     "skill_unused_warn_days": 30,
     "skill_unused_warn_count": 20,
-    # Token 预算
-    "token_budget_exhaust_pct": 10,
     # 全局错误
     "error_rate_high_pct": 5,
     # SAG 贡献
@@ -71,9 +69,6 @@ REC_TH = {
     "sag_on_high_pct": 30,
     "sag_latency_high_ms": 3000,
     "sag_merge_zero_high_pct": 50,
-    # Token
-    "token_avg_usage_high_ratio": 0.8,
-    "token_exhaust_ratio": 0.95,
     # Skill
     "skill_f1_moderate": 0.6,
     "skill_pr_imbalance_ratio": 0.7,
@@ -173,7 +168,7 @@ BACKUP_DIR = os.path.join(HERMES_HOME, "backups", "auto-tuner")
 STATE_FILE = os.path.join(HERMES_HOME, "data", "flywheel", "auto-tuner-state.json")
 
 CRON_LIB = os.environ.get("CRON_LIB", "/root/.hermes/lib/cron_common.sh")
-FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "oc_f04a9f65d4b780511cc3f402c7d54ac3")
+FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "")
 
 # 参数池
 # 格式：(param_name, default, min, max, step, feedback_csv)
@@ -183,61 +178,63 @@ FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "oc_f04a9f65d4b780511cc3f402c7
 # 4 路召回 + 全局打分 全覆盖：
 #   Hindsight: KN_MIN_SCORE, KN_MAX_RESULTS, KN_MAX_TEXT_LENGTH, KN_TEMPORAL_HALFLIFE, KN_TEMPORAL_FLOOR_WEIGHT
 #   SAG:       KN_SAG_MAX_INJECT, KN_SAG_SEARCH_TOP_K, KN_SAG_MIN_SCORE, KN_SAG_POINTER_THRESHOLD
-#   KT:        KN_TOKEN_BUDGET_KT_RATIO
-#   Skill:     KN_TOKEN_BUDGET_SKILL_RATIO
-#   Token:     KN_TOKEN_BUDGET_TOTAL, KN_TOKEN_BUDGET_HINDSIGHT_RATIO
 #   跨域去重:  KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR
 #   全局打分:  KN_LAMBDA_MRR, KN_SCORE_SPAN_TOP3_THRESHOLD, KN_SCORE_SPAN_HALF_THRESHOLD
 #   因果链(按需启用): KN_CAUSAL_BOOST_ALPHA, KN_CAUSAL_BOOST_CAP
+#
+# 已移除：KN_TOKEN_BUDGET_TOTAL / _KT_RATIO / _SKILL_RATIO / _HINDSIGHT_RATIO。
+#   产品决策为「不做 token 预算控制，只记录实际消耗」，消费侧不再有截断逻辑，
+#   其反馈键 token_exhaust_pct 也已随之下线；继续自动调这 4 个参数只会把噪声
+#   计入 degradation_count / direction_history，污染整个 Router 飞轮的方向判据。
 PARAM_DEFS = [
-    # === Hindsight 路 ===
-    ("KN_MIN_SCORE",               0.50, 0.40, 0.65, 0.05, "kn_judge_relevant_rate,kn_judge_avg_relevance,router_empty_pct"),
-    ("KN_MAX_RESULTS",             3,    2,    8,    1,    "kn_judge_relevant_rate,kn_judge_avg_relevance,memory_hindsight_count"),
-    ("KN_MAX_TEXT_LENGTH",         200,  120,  400,  50,   "token_exhaust_pct,kn_judge_relevant_rate"),
-    ("KN_TEMPORAL_HALFLIFE",       30,   14,   90,   7,    "kn_judge_relevant_rate,kn_judge_avg_relevance"),
-    ("KN_TEMPORAL_FLOOR_WEIGHT",   0.5,  0.3,  0.8,  0.1,  "kn_judge_relevant_rate"),
-    # === SAG 路 ===
-    ("KN_SAG_MAX_INJECT",          3.0,  2.0,  6.0,  1.00, "sag_total_kept"),
-    ("KN_SAG_SEARCH_TOP_K",        3,    3,    10,   1,    "sag_merge_zero_pct,sag_total_kept"),
-    ("KN_SAG_MIN_SCORE",           0.5,  0.3,  0.8,  0.05, "sag_on_pct,sag_total_kept"),
-    ("KN_SAG_POINTER_THRESHOLD",   300,  150,  800,  100,  "sag_total_kept,token_exhaust_pct"),
-    # === 知识树路（token 配额，与 hindsight/skill ratio 联动，三者和≈1.0）===
-    ("KN_TOKEN_BUDGET_KT_RATIO",   0.4,  0.2,  0.5,  0.05, "memory_hindsight_count,sag_total_kept"),
-    # === Skill 路（token 配额，三向平衡之一，之前缺失导致调其他比例时挤占 skill 配额）===
-    ("KN_TOKEN_BUDGET_SKILL_RATIO",0.2,  0.1,  0.3,  0.05, "skill_used_count,kn_judge_relevant_rate"),
-    # === Token 预算 ===
-    ("KN_TOKEN_BUDGET_HINDSIGHT_RATIO", 0.4, 0.3, 0.6, 0.05, "memory_hindsight_count,sag_total_kept"),
-    ("KN_TOKEN_BUDGET_TOTAL",      4000, 2000, 8000, 500,  "token_exhaust_pct"),
-    # === 跨域去重 ===
-    ("KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR", 0.5, 0.3, 0.8, 0.1, "kn_judge_relevant_rate,sag_total_kept"),
-    # === 全局打分 / 重排（高调优价值，近期补 ENV 支持）===
-    ("KN_LAMBDA_MRR",              0.55, 0.35, 0.70, 0.05, "kn_judge_relevant_rate,kn_judge_avg_relevance"),
-    ("KN_SCORE_SPAN_TOP3_THRESHOLD",0.85, 0.80, 0.95, 0.05, "kn_judge_avg_relevance"),
-    ("KN_SCORE_SPAN_HALF_THRESHOLD",0.65, 0.60, 0.85, 0.05, "kn_judge_avg_relevance"),
+    # === Hindsight 路（因果绑定到 relevant_rate_h / avg_relevance_h）===
+    ("KN_MIN_SCORE",               0.50, 0.40, 0.65, 0.05, "kn_judge_relevant_rate_h,kn_judge_relevant_rate_kt,kn_judge_avg_relevance_h,router_empty_pct"),
+    ("KN_MAX_RESULTS",             3,    2,    8,    1,    "kn_judge_relevant_rate_h,kn_judge_relevant_rate_kt,kn_judge_avg_relevance_h,memory_hindsight_count"),
+    ("KN_MAX_TEXT_LENGTH",         200,  120,  400,  50,   "kn_judge_relevant_rate_h,kn_judge_relevant_rate_kt"),
+    ("KN_TEMPORAL_HALFLIFE",       30,   14,   90,   7,    "kn_judge_relevant_rate_h,kn_judge_relevant_rate_kt,kn_judge_avg_relevance_h"),
+    ("KN_TEMPORAL_FLOOR_WEIGHT",   0.5,  0.3,  0.8,  0.1,  "kn_judge_relevant_rate_h,kn_judge_relevant_rate_kt"),
+    # === SAG 路（因果绑定到 relevant_rate_sag）===
+    ("KN_SAG_MAX_INJECT",          3.0,  2.0,  6.0,  1.00, "kn_judge_relevant_rate_sag,sag_total_kept"),
+    ("KN_SAG_SEARCH_TOP_K",        3,    3,    10,   1,    "kn_judge_relevant_rate_sag,sag_total_kept"),
+    ("KN_SAG_MIN_SCORE",           0.5,  0.3,  0.8,  0.05, "kn_judge_relevant_rate_sag,sag_on_pct,sag_total_kept"),
+    ("KN_SAG_POINTER_THRESHOLD",   300,  150,  800,  100,  "kn_judge_relevant_rate_sag,sag_total_kept"),
+    # === 跨域去重（影响 hindsight 命中 + sag 回流）===
+    ("KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR", 0.5, 0.3, 0.8, 0.1, "kn_judge_relevant_rate_h,kn_judge_relevant_rate_sag,sag_total_kept"),
+    # === 全局打分 / 重排（因果绑定到 h/kt 质量）===
+    ("KN_LAMBDA_MRR",              0.55, 0.35, 0.70, 0.05, "kn_judge_relevant_rate_h,kn_judge_relevant_rate_kt,kn_judge_avg_relevance_h"),
+    ("KN_SCORE_SPAN_TOP3_THRESHOLD",0.85, 0.80, 0.95, 0.05, "kn_judge_avg_relevance_h,kn_judge_avg_relevance_kt"),
+    ("KN_SCORE_SPAN_HALF_THRESHOLD",0.65, 0.60, 0.85, 0.05, "kn_judge_avg_relevance_h,kn_judge_avg_relevance_kt"),
     # === 因果链提权（只有 KN_ENABLE_CAUSAL_CHAIN=true 时生效，否则反馈为平→auto-tuner 自动锁定）===
-    ("KN_CAUSAL_BOOST_ALPHA",      0.05, 0.02, 0.20, 0.01, "kn_judge_relevant_rate"),
-    ("KN_CAUSAL_BOOST_CAP",        1.10, 1.05, 1.30, 0.05, "kn_judge_relevant_rate"),
+    ("KN_CAUSAL_BOOST_ALPHA",      0.05, 0.02, 0.20, 0.01, "kn_judge_relevant_rate_h"),
+    ("KN_CAUSAL_BOOST_CAP",        1.10, 1.05, 1.30, 0.05, "kn_judge_relevant_rate_h"),
 ]
 
 FEEDBACK_KEYS = [
     "kn_avg_score", "router_empty_pct", "sag_total_kept",
     "sag_merge_zero_pct", "memory_hindsight_count",
-    "sag_on_pct", "token_exhaust_pct",
-    # Skill 路反馈（调 KN_TOKEN_BUDGET_SKILL_RATIO 用）
+    "sag_on_pct",
+    # Skill 路真实使用反馈
     "skill_used_count",
     # KN LLM Judge 质量评估（collect_baseline.py --judge 产出），
-    # 作为 KN_MIN_SCORE / KN_LAMBDA_MRR / KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR 等调优的主反馈：
-    #   kn_judge_relevant_rate  (0~1, 越大越好) = judged 中评分 >= 0.5 占比
-    #   kn_judge_avg_relevance  (0~1, 越大越好) = judged 所有 LLM 评分均值
-    #   kn_judge_sample_count   (int)            = 本轮 judge 样本量，用于可信度判断
+    # 作为 KN_* 调优的主反馈。mask 级（_h/_kt/_sag）实现「参数 → 其影响的那一路质量」因果绑定：
+    #   kn_judge_relevant_rate[_h|_kt|_sag]  (0~1, 越大越好) = 该路 judged 中评分 >= 0.5 占比
+    #   kn_judge_avg_relevance[_h|_kt|_sag]  (0~1, 越大越好) = 该路 judged 所有 LLM 评分均值
+    #   kn_judge_sample_count[_h|_kt|_sag]   (int)            = 该路样本量，用于可信度判断
+    #   kn_judge_relevant_rate / avg_relevance / sample_count  为全局键（兼容旧绑定）
     "kn_judge_relevant_rate", "kn_judge_avg_relevance", "kn_judge_sample_count",
+    "kn_judge_relevant_rate_h", "kn_judge_avg_relevance_h", "kn_judge_sample_count_h",
+    "kn_judge_relevant_rate_kt", "kn_judge_avg_relevance_kt", "kn_judge_sample_count_kt",
+    "kn_judge_relevant_rate_sag", "kn_judge_avg_relevance_sag", "kn_judge_sample_count_sag",
 ]
 
 # KN Judge 子配置：控制健康巡检报告何时触发、最小样本量、最大耗时保护等
 KN_JUDGE_CFG = {
     "enabled": True,                  # 集成开关（关了就走 kn_avg_score）
     "sample_size": 200,               # 每次 judge 采样条数（最近 N 条）
-    "min_sample": 50,                 # 样本不足时跳过本轮 judge（避免小样本噪声干扰调优）
+    "min_sample": 20,                 # 全局键最小样本量（滚动窗口下约 40 条，此为可行阈值）
+    "mask_window_days": 30,           # mask 级 judge 滚动聚合窗口（天）：保证各路有足够样本，
+                                      #   解决每日窗口样本不足导致 kn_judge 长期为 None 的根因
+    "mask_min_sample": 12,            # 单路（h/kt/sag）最小样本量，低于则对应 mask 键不可信
     "parallel": 5,                    # 并发度（与 JUDGE_PARALLEL 一致）
     "max_walltime_sec": 3600,         # 硬超时（1 小时），防止阻塞整个报告
     "min_age_breakpoint_hours": 6,    # 本轮 date 窗口至少需要 6 小时数据才输出到 daily summary

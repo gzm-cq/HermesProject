@@ -5,11 +5,12 @@ health-check-run.py — 全量健康巡检 + 飞书推送
 输出：stdout 摘要，通过 lark-cli --markdown 推送到飞书
 """
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 
-LARK_CHAT_ID = "oc_f04a9f65d4b780511cc3f402c7d54ac3"
+LARK_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "")
 SCRIPT = "/root/.hermes/scripts/health-check-all.py"
 STATUS_EMOJI = {"ok": "✅", "warn": "⚠️", "fail": "🔴"}
 
@@ -30,12 +31,12 @@ def run_checks() -> dict:
         sys.exit(1)
 
 
-def format_summary(data: dict) -> str:
+def format_summary(data: dict) -> tuple[str, bool]:
     meta = data.pop("_meta", {})
     ts = meta.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     local_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    services = ["hermes", "bifrost", "hindsight", "sag", "postgres", "mcp", "moonbridge", "orphan_scan", "memory_files"]
+    services = ["hermes", "bifrost", "hindsight", "sag", "postgres", "dashboard", "mcp", "moonbridge", "orphan_scan", "memory_files"]
     lines = [f"# 🏥 系统健康巡检报告", f"**时间**: {local_time}", ""]
 
     results = {}
@@ -142,8 +143,8 @@ def format_summary(data: dict) -> str:
 
     lines.append("")
     lines.append("---")
-    lines.append("_自动巡检 · 每日 9:00_")
-    return "\n".join(lines)
+    lines.append("_自动巡检 · 每日 8:00_")
+    return "\n".join(lines), all_ok
 
 
 def push_to_feishu(summary: str, dry_run: bool = False):
@@ -151,6 +152,10 @@ def push_to_feishu(summary: str, dry_run: bool = False):
         print("\n--- DRY RUN ---\n")
         print(summary)
         print("\n--- DRY RUN END ---\n")
+        return
+
+    if not LARK_CHAT_ID:
+        print("⚠️ 未配置 FEISHU_CHAT_ID，跳过飞书推送", file=sys.stderr)
         return
 
     # 用 lark-cli 推送 markdown 内容（--markdown 接受文本内容，非文件路径）
@@ -174,7 +179,14 @@ if __name__ == "__main__":
     data = run_checks()
     print(f"✅ 巡检完成，生成摘要...")
 
-    summary = format_summary(data)
-    push_to_feishu(summary, dry_run=dry_run)
+    summary, all_ok = format_summary(data)
+
+    if dry_run or not all_ok:
+        push_to_feishu(summary, dry_run=dry_run)
+        if not dry_run:
+            issues_count = sum(1 for svc in data if data.get(svc, {}).get("status") != "ok")
+            print(f"⚠️ 检测到 {issues_count} 项异常，已推送飞书通知")
+    else:
+        print(f"✅ 所有服务正常，跳过飞书通知 (no-news-good-news)")
 
     print(f"✅ 完成: {datetime.now().strftime('%H:%M:%S')}")

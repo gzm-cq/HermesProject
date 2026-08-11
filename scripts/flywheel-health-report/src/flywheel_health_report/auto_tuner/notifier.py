@@ -54,6 +54,9 @@ def _has_cron_notify() -> bool:
 def _send_lark(title: str, msg: str) -> None:
     """尽力发送飞书（markdown 格式），失败只 warn。
     lark-cli v1.0.31 不支持 --title，改用 --markdown。"""
+    if not FEISHU_CHAT_ID:
+        log_info("未配置 FEISHU_CHAT_ID，跳过飞书通知")
+        return
     # 优先：如果环境里有 cron_notify（通过 bash -lc 调用），走这里；
     # 否则 fallback 到 lark-cli。
     if _has_cron_notify():

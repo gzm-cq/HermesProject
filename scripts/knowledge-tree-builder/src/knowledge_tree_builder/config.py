@@ -114,6 +114,7 @@ def load_config(config_path: str) -> dict[str, Any]:
 
     env_mapping = {
         "db_url": "KT_DB_URL",
+        "llm_model": "KT_LLM_MODEL",
         "llm_api_key": "LITELLM_MASTER_KEY",
         "embed_api_key": "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
         # Phase A 新增
@@ -167,5 +168,14 @@ def load_config(config_path: str) -> dict[str, Any]:
     for key in _bool_env_fields:
         if key in config and isinstance(config[key], str):
             config[key] = config[key].lower() in ("true", "1", "yes")
+
+    # 继承链：KT_LLM_MODEL → LLM_MODEL_LIGHT → LLM_MODEL_MAIN
+    # env_mapping 已处理 KT_LLM_MODEL，此处处理 LIGHT/MAIN 兜底
+    # 仅在子系统专属 ENV 未设置时才应用继承链（覆盖 config.yaml 默认值）
+    if "KT_LLM_MODEL" not in os.environ:
+        if v := os.environ.get("LLM_MODEL_LIGHT"):
+            config["llm_model"] = v
+        elif v := os.environ.get("LLM_MODEL_MAIN"):
+            config["llm_model"] = v
 
     return config

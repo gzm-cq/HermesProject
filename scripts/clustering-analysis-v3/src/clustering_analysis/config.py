@@ -166,4 +166,13 @@ def load_config(config_path: str) -> dict[str, Any]:
             else:
                 config[key] = value
 
+    # 继承链：CLUSTERING_LLM_MODEL → LLM_MODEL_LIGHT → LLM_MODEL_MAIN
+    # env_mapping 已处理 CLUSTERING_LLM_MODEL，此处处理 LIGHT/MAIN 兜底
+    # 仅在子系统专属 ENV 未设置时才应用继承链（覆盖 config.yaml 默认值）
+    if "CLUSTERING_LLM_MODEL" not in os.environ:
+        if v := os.environ.get("LLM_MODEL_LIGHT"):
+            config["llm_model"] = v
+        elif v := os.environ.get("LLM_MODEL_MAIN"):
+            config["llm_model"] = v
+
     return config

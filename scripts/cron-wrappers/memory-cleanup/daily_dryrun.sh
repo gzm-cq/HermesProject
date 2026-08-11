@@ -27,6 +27,9 @@ fi
 # ===== 初始化 =====
 cron_init "memory-cleanup"
 
+# LLM 模型继承链兜底：MEMORY_CLEANUP_LLM_MODEL → LLM_MODEL_LIGHT
+export MEMORY_CLEANUP_LLM_MODEL="${MEMORY_CLEANUP_LLM_MODEL:-${LLM_MODEL_LIGHT:-}}"
+
 # ===== 执行清理 =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"

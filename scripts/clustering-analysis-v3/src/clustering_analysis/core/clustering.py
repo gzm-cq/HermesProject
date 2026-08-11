@@ -612,6 +612,12 @@ def process_clusters(
 ) -> tuple[list[dict], list[dict], list[dict], dict[str, list[str]]]:
     """处理聚类结果，生成写入计划。
 
+    跨组因果去重：
+        seen_pairs 作为 process_clusters 范围内的共享 set，在 LLM 路径
+        (convert_llm_causal_pairs) 与正则路径 (_detect_causal_in_group)
+        中都通过 `if key not in seen_pairs` 检查 + `seen_pairs.add(key)` 更新，
+        防止同一对 unit 在不同聚类之间被重复写入。键为 (from_id, to_id, link_type)。
+
     Returns:
         (entity_write_plan, unit_entity_write_plan, memory_link_plan, enriched_texts)
     """

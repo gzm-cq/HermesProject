@@ -16,7 +16,7 @@
 #   cron_finish                                     # 汇总 + 状态文件 + 飞书通知 + 退出
 #
 # 环境变量（可选）：
-#   FEISHU_CHAT_ID      飞书群 chat_id（默认 oc_f04a9f65d4b780511cc3f402c7d54ac3）
+#   FEISHU_CHAT_ID      飞书群 chat_id（必填，未配置则跳过飞书通知）
 #   FEISHU_WEBHOOK_URL   飞书 Webhook 地址（lark-cli 不可用时的降级通道）
 #   CRON_LOG_DIR         日志目录（默认 /root/.hermes/logs/cron）
 #   CRON_LOCK_DIR        锁文件目录（默认 /tmp/hermes-cron-locks）
@@ -237,20 +237,38 @@ cron_run_step_retry() {
 cron_notify() {
     local subject="$1"
     local message="$2"
-    local chat_id="${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}"
+    local chat_id="${FEISHU_CHAT_ID:-}"
     local full_msg
     full_msg=$(printf '%b\n%b' "$subject" "$message")
 
-    # 通道 1：lark-cli
-    if command -v lark-cli &>/dev/null; then
-        if lark-cli im +messages-send \
+    # 注意：chat_id 仅通道 1（lark-cli）需要；通道 2（webhook）自带目标群，
+    # 因此这里不做函数级早退，否则会误伤 webhook 降级链路。
+    if [[ -z "$chat_id" ]]; then
+        cron_warn "未配置 FEISHU_CHAT_ID，跳过 lark-cli 通道，尝试 webhook 降级"
+    fi
+
+    # 通道 1：lark-cli（优先 markdown，支持富文本）
+    if [[ -n "$chat_id" ]] && command -v lark-cli &>/dev/null; then
+        local _lark_out _lark_rc
+        # 临时关闭 errexit：保证 lark-cli 失败时仍执行错误码诊断与 webhook 降级，不被 set -e 直接中止
+        set +e
+        _lark_out=$(lark-cli im +messages-send \
             --chat-id "$chat_id" \
-            --text "$full_msg" \
-            --as bot &>/dev/null; then
-            cron_ok "飞书通知已发送（lark-cli）"
+            --markdown "$full_msg" \
+            --as bot 2>&1)
+        _lark_rc=$?
+        set -e
+        if [[ $_lark_rc -eq 0 ]]; then
+            cron_ok "飞书通知已发送（lark-cli markdown）"
             return 0
+        fi
+        # 解析错误码辅助诊断
+        local _lark_code
+        _lark_code=$(echo "$_lark_out" | grep -oP '"code"\s*:\s*\K\d+' || echo "")
+        if [[ -n "$_lark_code" ]]; then
+            cron_warn "飞书通知失败（lark-cli code=$_lark_code），尝试 webhook 降级"
         else
-            cron_warn "飞书通知失败（lark-cli），尝试 webhook 降级"
+            cron_warn "飞书通知失败（lark-cli rc=$_lark_rc），尝试 webhook 降级"
         fi
     fi
 
@@ -290,7 +308,7 @@ PY
             cron_warn "飞书通知发送失败（webhook）"
         fi
     else
-        cron_warn "未配置 lark-cli 或 FEISHU_WEBHOOK_URL，跳过飞书通知"
+        cron_warn "未配置 FEISHU_CHAT_ID+lark-cli 或 FEISHU_WEBHOOK_URL，跳过飞书通知"
     fi
     return 1
 }

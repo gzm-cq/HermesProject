@@ -32,7 +32,7 @@ def test_knowledge_tree_candidates_have_final_scores_in_score_stats(
         {"id": 102, "text": "知识树结果B", "score": 0.6},
     ]
 
-    with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True), \
+    with patch.object(kn_router, "_ensure_kt_imported", return_value=True), \
          patch.object(kn_router, "_do_kt_recall", return_value=kt_results), \
          patch.object(CONFIG, "eval_match_enabled", False):
         caplog.set_level("INFO")

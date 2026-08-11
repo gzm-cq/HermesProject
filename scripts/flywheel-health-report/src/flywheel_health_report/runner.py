@@ -3,8 +3,8 @@
 硬血缘分析（已确认）：
   - kn_judge_relevant_rate/avg_relevance/sample_count → report.py 内建 run_judge_within_window() 直接产出
   - skill_used_count → ~/.hermes/skills/.usage.json（report 扫 .usage.json）
-  - 其余 8 个反馈键 → trace.log 扫描（report 内 analyze_* 模块直接算）
-  - skillopt-nightly-run → Skill 优化自闭环，不写 KN_TOKEN_BUDGET_SKILL_RATIO 反馈字段
+  - 其余反馈键 → trace.log 扫描（report 内 analyze_* 模块直接算）
+  - skillopt-nightly-run → Skill 优化自闭环，不写任何 auto-tuner 反馈字段
   - knowledge-navigation-baseline cron job = 重复跑 judge（和 report 内建重复），已在 jobs.json 中禁用
   - run-skill-eval cron job → 合并到跑轮 runner 阶段 0 实际执行，避免独立 cron 12:00 跑
 

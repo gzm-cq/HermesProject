@@ -42,7 +42,7 @@ cleanup() {
 trap cleanup EXIT
 
 python3 <<PY > "$ANALYSIS_FILE"
-import json, os
+import json, os, hashlib
 from datetime import datetime, timezone
 
 JOBS_FILE = os.path.expanduser("~/.hermes/cron/jobs.json")
@@ -91,8 +91,11 @@ for job in jobs_data:
     sched = job.get("schedule_display", "")
     st = load_state(jname)
     # state file 的 status 更准确：jobs.json last_status 可能缓存为 ok
+    # partial = 部分通过，视为正常（不是 error）
     if st.get("status") in ("fail", "error"):
         ls = "error"
+    elif st.get("status") == "partial":
+        ls = "ok"
     exhausted = st.get("overall_retries_exhausted", False)
     last_error = st.get("last_error", "")
 
@@ -144,7 +147,8 @@ recovered = []
 
 for j in all_jobs:
     if j["status"] == "error":
-        error_key = j.get("last_error", "")[:60] or f"error-{j['name']}"
+        raw_error = j.get("last_error", "")
+        error_key = hashlib.md5(raw_error.encode()).hexdigest() if raw_error else f"error-{j['name']}"
         prev = dedup.get(j["name"], {})
         prev_key = prev.get("error_key", "")
         prev_ts = prev.get("alerted_at", 0)

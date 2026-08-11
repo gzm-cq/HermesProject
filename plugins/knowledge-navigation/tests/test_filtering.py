@@ -1,13 +1,14 @@
 """过滤逻辑测试。"""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
+from knowledge_navigation.config import CONFIG
 from knowledge_navigation.core.filtering import (
     _char_ngram_jaccard,
     _cosine_similarity_vec,
-    apply_token_budget,
     calculate_score_stats,
     calculate_time_score,
     cross_domain_dedup,
@@ -279,15 +280,17 @@ class TestExcludeMarked:
 
     def test_exclude_and_sort(self, sample_raw_results: list[dict], sample_rerank_map: dict[str, float]) -> None:
         """测试排除标记后排序仍正确。"""
-        # 给 node1 加标记，验证它被排除
-        sample_raw_results[0]["text"] = "[标记: 错误] " + sample_raw_results[0]["text"]
-        filtered, excluded = exclude_marked(sample_raw_results)
-        assert excluded == 1
-        assert len(filtered) == 4
-        # MMR 多样性重排后：node5(0.88) > node2(0.75) — 前两个按分数
-        # node4(0.0) 与 node3(0.55) 在 MMR 下 node4 因多样性得分更高排第三
-        kept, _, _ = filter_by_score(filtered, sample_rerank_map, min_score=0.0, max_results=10)
-        assert [r["id"] for r in kept] == ["node5", "node2", "node4", "node3"]
+        # 显式固定 lambda_mrr=0.5，避免环境变量 KN_LAMBDA_MRR 覆盖导致 MMR 排序断言失效
+        with patch.object(CONFIG, "lambda_mrr", 0.5):
+            # 给 node1 加标记，验证它被排除
+            sample_raw_results[0]["text"] = "[标记: 错误] " + sample_raw_results[0]["text"]
+            filtered, excluded = exclude_marked(sample_raw_results)
+            assert excluded == 1
+            assert len(filtered) == 4
+            # MMR 多样性重排后：node5(0.88) > node2(0.75) — 前两个按分数
+            # node4(0.0) 与 node3(0.55) 在 MMR 下 node4 因多样性得分更高排第三
+            kept, _, _ = filter_by_score(filtered, sample_rerank_map, min_score=0.0, max_results=10)
+            assert [r["id"] for r in kept] == ["node5", "node2", "node4", "node3"]
 
 
 class TestCalculateTimeScore:
@@ -610,135 +613,3 @@ class TestEstimateTokens:
         assert tokens == int(2 * 1.3)
 
 
-class TestApplyTokenBudget:
-    """测试 token 预算裁剪逻辑。"""
-
-    def test_within_budget_keeps_all(self) -> None:
-        """预算充足时保留所有结果。"""
-        hs = [
-            {"id": "h1", "text": "短文本", "final_score": 0.9},
-            {"id": "h2", "text": "另一段", "final_score": 0.8},
-        ]
-        kt = [
-            {"id": "k1", "text": "知识", "score": 0.7},
-        ]
-        skill = [
-            {"text": "技能内容", "final_score": 1.0},
-        ]
-        hs_kept, kt_kept, skill_kept = apply_token_budget(
-            hs, kt, skill,
-            total_budget=10000,
-            hindsight_ratio=0.4,
-            kt_ratio=0.4,
-            skill_ratio=0.2,
-        )
-        assert len(hs_kept) == 2
-        assert len(kt_kept) == 1
-        assert len(skill_kept) == 1
-
-    def test_zero_budget_returns_empty(self) -> None:
-        """预算为 0 时返回空。"""
-        hs = [{"id": "h1", "text": "测试", "final_score": 0.9}]
-        hs_kept, kt_kept, skill_kept = apply_token_budget(
-            hs, [], [],
-            total_budget=0,
-            hindsight_ratio=0.4,
-            kt_ratio=0.4,
-            skill_ratio=0.2,
-        )
-        assert hs_kept == []
-        assert kt_kept == []
-        assert skill_kept == []
-
-    def test_trims_low_score_first(self) -> None:
-        """从低分开始裁剪。"""
-        hs = [
-            {"id": "h1", "text": "高分数高", "final_score": 0.9},
-            {"id": "h2", "text": "低分数低", "final_score": 0.5},
-        ]
-        hs_budget = estimate_tokens("高分数高")
-        total_budget = hs_budget
-        hs_kept, _, _ = apply_token_budget(
-            hs, [], [],
-            total_budget=total_budget,
-            hindsight_ratio=1.0,
-            kt_ratio=0.0,
-            skill_ratio=0.0,
-        )
-        assert len(hs_kept) == 1
-        assert hs_kept[0]["id"] == "h1"
-
-    def test_preserves_whole_items(self) -> None:
-        """每条结果完整保留，不做内容截断。"""
-        long_text = "非常长的文本内容" * 10
-        short_text = "短"
-        hs = [
-            {"id": "h1", "text": long_text, "final_score": 0.9},
-            {"id": "h2", "text": short_text, "final_score": 0.8},
-        ]
-        hs_budget = estimate_tokens(long_text)
-        total_budget = hs_budget
-        hs_kept, _, _ = apply_token_budget(
-            hs, [], [],
-            total_budget=total_budget,
-            hindsight_ratio=1.0,
-            kt_ratio=0.0,
-            skill_ratio=0.0,
-        )
-        assert len(hs_kept) == 1
-        assert hs_kept[0]["text"] == long_text
-
-    def test_leftover_redistribution(self) -> None:
-        """某域用不完预算时，剩余分配给其他域。"""
-        hs = [
-            {"id": "h1", "text": "只有一条", "final_score": 0.9},
-        ]
-        kt_texts = ["知识一", "知识二", "知识三", "知识四", "知识五"]
-        kt = [
-            {"id": f"k{i}", "text": t, "score": 0.9 - i * 0.1}
-            for i, t in enumerate(kt_texts)
-        ]
-        total_budget = 200
-        hs_kept, kt_kept, _ = apply_token_budget(
-            hs, kt, [],
-            total_budget=total_budget,
-            hindsight_ratio=0.5,
-            kt_ratio=0.5,
-            skill_ratio=0.0,
-        )
-        hs_tokens = sum(estimate_tokens(r["text"]) for r in hs_kept)
-        kt_tokens = sum(estimate_tokens(r["text"]) for r in kt_kept)
-        hs_budget_initial = int(total_budget * 0.5)
-        if hs_tokens < hs_budget_initial:
-            assert len(kt_kept) >= 2
-        assert hs_tokens + kt_tokens <= total_budget + 100
-
-    def test_empty_inputs(self) -> None:
-        """空输入返回空。"""
-        hs_kept, kt_kept, skill_kept = apply_token_budget(
-            [], [], [],
-            total_budget=1000,
-            hindsight_ratio=0.4,
-            kt_ratio=0.4,
-            skill_ratio=0.2,
-        )
-        assert hs_kept == []
-        assert kt_kept == []
-        assert skill_kept == []
-
-    def test_uses_candidate_score_fields(self) -> None:
-        """支持多种分数字段（final_score, rerank_score, base_score, score）。"""
-        hs1 = [{"id": "h1", "text": "测试", "final_score": 0.9}]
-        hs2 = [{"id": "h1", "text": "测试", "rerank_score": 0.9}]
-        hs3 = [{"id": "h1", "text": "测试", "base_score": 0.9}]
-        kt = [{"id": "k1", "text": "知识", "score": 0.8}]
-        for hs in [hs1, hs2, hs3]:
-            hs_kept, kt_kept, _ = apply_token_budget(
-                hs, kt, [],
-                total_budget=10000,
-                hindsight_ratio=0.5,
-                kt_ratio=0.5,
-                skill_ratio=0.0,
-            )
-            assert len(hs_kept) == 1
-            assert len(kt_kept) == 1

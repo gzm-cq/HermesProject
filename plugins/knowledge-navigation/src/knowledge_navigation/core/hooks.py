@@ -56,7 +56,7 @@ __all__ = [
     "_pass_gates",
     "_get_router_mask",
     "_execute_recall",
-    "_dedup_and_budget",
+    "_dedup_and_measure",
     "_expand_multi_hop",
     "_assemble_xml_output",
     "_post_process_recall",

@@ -95,7 +95,7 @@ def analyze_router(trace: dict[str, list[dict]],
     sag_p95 = _percentile(sag_latencies, 0.95)
 
     issues = []
-    full_off_pct = full_off / real_total * 100
+    full_off_pct = (full_off / real_total * 100) if real_total else 0
     if full_off_pct > TH["router_full_off_pct"]:
         issues.append({
             "severity": "P0",
@@ -141,7 +141,7 @@ def analyze_router(trace: dict[str, list[dict]],
         "full_off": full_off,
         "full_off_pct": round(full_off_pct, 1),
         "full_on": full_on,
-        "full_on_pct": round(full_on / real_total * 100, 1),
+        "full_on_pct": round(full_on / real_total * 100, 1) if real_total else 0,
         "h_on": h_on,
         "kt_on": kt_on,
         "s_on": s_on,

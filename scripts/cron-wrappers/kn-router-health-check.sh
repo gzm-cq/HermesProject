@@ -9,7 +9,7 @@
 #   - 检查 gateway 日志中 "Router JSON 解析失败" 次数
 #   - 检查 trace.log 中 recall 成功率
 #   - 检查 Router 模型响应稳定性（抽样 5 次）
-#   - 每次巡检完成都推送飞书通知
+#   - 仅在有异常时推送飞书通知 (no-news-good-news)
 
 set -euo pipefail
 
@@ -24,6 +24,7 @@ fi
 
 # ===== 初始化 =====
 cron_init "kn-router-health-check"
+CRON_SKIP_FINISH_NOTIFY=true   # 仅在有异常时自发送通知，不让 cron_finish 重复发
 
 # ===== 环境准备 =====
 PLUGIN_DIR="/root/.hermes/plugins/knowledge-navigation"
@@ -54,13 +55,14 @@ cron_section "Recall 成功率检查"
 if [[ -f "${PLUGIN_DIR}/trace.log" ]]; then
     # 按 timestamp 字段过滤最近 24h 的 recall_success / recall_error 事件
     # trace.log 为 JSON Lines，每行有 "timestamp" 字段（ISO 8601 UTC）
+    export _TRACE_LOG="${PLUGIN_DIR}/trace.log"
     _RECALL_STATS=$(python3 -c "
-import json, sys
+import json, os
 from datetime import datetime, timezone, timedelta
 
 cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 total = success = sag_count = 0
-with open('${PLUGIN_DIR}/trace.log', 'r') as f:
+with open(os.environ['_TRACE_LOG'], 'r') as f:
     for line in f:
         line = line.strip()
         if not line:
@@ -112,6 +114,7 @@ cron_section "Router 模型稳定性检查"
 STABILITY_OK=true
 STABILITY_TOTAL=5
 STABILITY_PASS=0
+STABILITY_SKIPPED=false
 
 _ROUTER_CHECK_PY="${PLUGIN_DIR:-${HERMES_HOME}/plugins/knowledge-navigation}/scripts/_router_stability_check.py"
 if [[ -n "${KN_ROUTER_API_KEY:-}" ]]; then
@@ -122,13 +125,16 @@ if [[ -n "${KN_ROUTER_API_KEY:-}" ]]; then
         fi
     done
 else
-    STABILITY_PASS=$STABILITY_TOTAL  # 无 key 跳过检查
+    STABILITY_SKIPPED=true  # 无 API key 跳过检查，不伪装成通过
 fi
 
 STABILITY_RATE=$((STABILITY_PASS * 100 / STABILITY_TOTAL))
 # 接受 4/5 成功（DeepSeek 偶尔延迟）
 _STABILITY_MIN=4
-if [[ "$STABILITY_PASS" -lt "$_STABILITY_MIN" ]]; then
+if [[ "$STABILITY_SKIPPED" == true ]]; then
+    cron_warn "Router 模型稳定性: 跳过（无 API key）"
+    _STEP_RESULTS+=("⚠️ Router 稳定性: 跳过（无 API key）")
+elif [[ "$STABILITY_PASS" -lt "$_STABILITY_MIN" ]]; then
     cron_warn "Router 模型稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} 成功 (${STABILITY_RATE}%)"
     _STEP_RESULTS+=("⚠️ Router 稳定性: ${STABILITY_PASS}/${STABILITY_TOTAL} (${STABILITY_RATE}%)")
 else
@@ -147,10 +153,11 @@ SAG_DETAILS=()
 # （circuit_breaker.py 在 src/knowledge_navigation/core/，往上三层 = src/）
 SAG_CB_FILE="${PLUGIN_DIR}/src/circuit_breaker.json"
 if [[ -f "$SAG_CB_FILE" ]]; then
+    export _SAG_CB_FILE="$SAG_CB_FILE"
     SAG_CB_STATE=$(python3 -c "
-import json
+import json, os
 try:
-    with open('$SAG_CB_FILE', 'r') as f:
+    with open(os.environ['_SAG_CB_FILE'], 'r') as f:
         d = json.load(f)
     sag = d.get('sag', {})
     state = sag.get('state', 'closed')
@@ -179,13 +186,15 @@ else
 fi
 
 # 4.2 检查 SAG 服务可连通性
-# 用 /health 端点做存活检查（轻量，不消耗检索资源）。
-# 注意：曾用 /search 探测，但 SAG /search 要求 sourceIds 必填且非空数组，
+# 用 /api/v1/system/health 端点做存活检查（轻量，不消耗检索资源）。
+# 注意：SAG v1.5.3+ 的 health 端点路径为 /api/v1/system/health，
+# 旧版本根路径 /health 已移除，不能再用。
+# 另：曾用 /search 探测，但 SAG /search 要求 sourceIds 必填且非空数组，
 # cron 探测漏了该字段会稳定返回 400 "请求参数无效"，造成误报。
 # 检索功能已由第2步 trace.log 的 SAG 召回统计间接验证。
 SAG_API_URL="${SAG_API_URL:-http://127.0.0.1:4173}"
 if command -v curl &>/dev/null; then
-    SAG_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${SAG_API_URL}/health" \
+    SAG_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${SAG_API_URL}/api/v1/system/health" \
         --max-time 5 2>/dev/null || echo "000")
     if [[ "$SAG_HTTP" == "200" ]]; then
         cron_ok "SAG 服务可连通 (HTTP 200)"
@@ -204,12 +213,55 @@ _STEP_RESULTS+=("${SAG_DETAILS[@]}")
 # ===== 5. 汇总 =====
 cron_section "巡检汇总"
 
-if [[ "$FAIL_COUNT" -le 5 && "$STABILITY_PASS" -ge "$_STABILITY_MIN" && "$SAG_OK" == true ]]; then
+HAS_ISSUES=false
+if [[ "$FAIL_COUNT" -gt 5 ]]; then
+    HAS_ISSUES=true
+fi
+# 无 API key 跳过检查时 STABILITY_PASS=0 不算异常（已在上文以 cron_warn 记录为"跳过"）
+if [[ "$STABILITY_SKIPPED" != true && "$STABILITY_PASS" -lt "$_STABILITY_MIN" ]]; then
+    HAS_ISSUES=true
+fi
+if [[ "$SAG_OK" != true ]]; then
+    HAS_ISSUES=true
+fi
+
+if [[ "$HAS_ISSUES" == false ]]; then
     cron_ok "知识导航 Router 巡检全部通过 ✅"
     _STEP_RESULTS+=("✅ 巡检全部通过")
+    echo "✅ 所有检查正常，跳过飞书通知 (no-news-good-news)"
 else
     cron_warn "知识导航 Router 巡检发现异常 ⚠️"
     _STEP_RESULTS+=("⚠️ 巡检发现异常，见上方详情")
+
+    # 仅在有异常时推送飞书通知
+    if command -v lark-cli &>/dev/null; then
+        HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
+        source "${HERMES_HOME}/.env" 2>/dev/null || true
+        CHAT_ID="${FEISHU_CHAT_ID:-}"
+
+        NOTIFY_MSG="## ⚠️ Router 健康巡检异常
+
+**解析失败**: ${FAIL_COUNT} 次 (24h)
+**模型稳定性**: $(if [[ "$STABILITY_SKIPPED" == true ]]; then echo "跳过（无 API key）"; else echo "${STABILITY_PASS}/${STABILITY_TOTAL} (${STABILITY_RATE}%)"; fi)
+**SAG 服务**: $(if [[ "$SAG_OK" == true ]]; then echo "✅ 正常"; else echo "⚠️ 异常"; fi)
+
+详情：
+"
+        for result in "${_STEP_RESULTS[@]}"; do
+            NOTIFY_MSG="${NOTIFY_MSG}\n· ${result}"
+        done
+
+        echo -e "$NOTIFY_MSG"
+        if [[ -z "$CHAT_ID" ]]; then
+            cron_warn "未配置 FEISHU_CHAT_ID，跳过飞书通知"
+        else
+            lark-cli im +messages-send \
+                --chat-id "$CHAT_ID" \
+                --markdown "$NOTIFY_MSG" \
+                --as bot &>/dev/null || true
+            echo "📨 异常通知已推送飞书"
+        fi
+    fi
 fi
 
 # ===== 完成 =====

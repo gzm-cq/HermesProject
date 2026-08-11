@@ -46,7 +46,7 @@ def _reset_circuit_breaker() -> None:
 @pytest.fixture(autouse=True)
 def _mock_kt_disabled() -> None:
     """默认禁用知识树 recall（各测试不需要它）。"""
-    with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", False):
+    with patch.object(kn_router, "_ensure_kt_imported", return_value=False):
         yield
 
 
@@ -264,24 +264,26 @@ class TestPreLlmCall:
         mock_recall: MagicMock,
     ) -> None:
         """测试结果数量被 max_results 限制。"""
-        mock_recall.return_value = self._mock_recall(
-            results=[
-                {"id": f"node{i}", "text": f"Memory {i}"}
-                for i in range(10)
-            ],
-            trace={
-                "reranked": [
-                    {"node_id": f"node{i}", "rerank_score": 0.9 - i * 0.05}
+        # 显式固定 max_results=3，避免环境变量 KN_MAX_RESULTS 覆盖导致断言失效
+        with patch.object(CONFIG, "max_results", 3):
+            mock_recall.return_value = self._mock_recall(
+                results=[
+                    {"id": f"node{i}", "text": f"Memory {i}"}
                     for i in range(10)
-                ]
-            },
-        )
+                ],
+                trace={
+                    "reranked": [
+                        {"node_id": f"node{i}", "rerank_score": 0.9 - i * 0.05}
+                        for i in range(10)
+                    ]
+                },
+            )
 
-        result = pre_llm_call("session-123", "12345678901", platform="cli")
+            result = pre_llm_call("session-123", "12345678901", platform="cli")
 
-        assert result is not None
-        # 新格式：user_query (3) + recalled_memory (7) + system_state (3) ≈ 13 行
-        assert '<recalled_memory source="hindsight" count="3"' in result
+            assert result is not None
+            # 新格式：user_query (3) + recalled_memory (7) + system_state (3) ≈ 13 行
+            assert '<recalled_memory source="hindsight" count="3"' in result
 
     @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
     def test_exclude_marked_in_pipeline(
@@ -785,7 +787,7 @@ class TestRouterMask:
 
     def test_router_only_kt_runs_knowledge_tree(self) -> None:
         """Router {h:0, kt:1, s:0} → 只跑知识树。"""
-        with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
+        with patch.object(kn_router, "_ensure_kt_imported", return_value=True):
             fake_kt = [{"id": 1, "text": "kt node", "score": 0.8}]
             with patch.object(kn_router, "_do_kt_recall", return_value=fake_kt):
                 with patch.object(kn_router, "_multi_hop_recall", return_value=[], create=True):
@@ -812,7 +814,7 @@ class TestRouterMask:
             "results": [{"id": "n1", "text": "test memory", "score": 0.9}],
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
         }
-        with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
+        with patch.object(kn_router, "_ensure_kt_imported", return_value=True):
             with patch.object(kn_router, "_do_kt_recall", return_value=[]):
                 with patch.object(kn_router, "_multi_hop_recall", return_value=[], create=True):
                     with patch.object(kn_router, "_do_skill_match", return_value=""):
@@ -862,8 +864,9 @@ class TestSagRecall:
 
         with patch("requests.post", return_value=mock_resp) as mock_post:
             from knowledge_navigation.core.hooks import _do_sag_recall
-            result = _do_sag_recall("测试查询")
+            result, error = _do_sag_recall("测试查询")
 
+        assert error is None
         assert len(result) == 2
         assert result[0]["chunkId"] == "c1"
         assert result[1]["content"] == "内容2"
@@ -874,32 +877,35 @@ class TestSagRecall:
         assert call_args[1]["json"]["searchMode"] == "fast"
 
     def test_do_sag_recall_non_200_returns_empty(self) -> None:
-        """SAG 返回非 200 → 返回空列表。"""
+        """SAG 返回非 200 → 返回空列表 + error。"""
         mock_resp = MagicMock()
         mock_resp.status_code = 500
 
         with patch("requests.post", return_value=mock_resp):
             from knowledge_navigation.core.hooks import _do_sag_recall
-            result = _do_sag_recall("查询")
+            result, error = _do_sag_recall("查询")
         assert result == []
+        assert error == "HTTP 500"
 
     def test_do_sag_recall_exception_returns_empty(self) -> None:
-        """SAG 请求异常 → 返回空列表（不抛出）。"""
+        """SAG 请求异常 → 返回空列表 + error（不抛出）。"""
         with patch("requests.post", side_effect=Exception("Connection refused")):
             from knowledge_navigation.core.hooks import _do_sag_recall
-            result = _do_sag_recall("查询")
+            result, error = _do_sag_recall("查询")
         assert result == []
+        assert "Connection refused" in error
 
     def test_do_sag_recall_empty_sections(self) -> None:
-        """SAG 返回空 sections → 返回空列表。"""
+        """SAG 返回空 sections → 返回空列表 + error=None。"""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"sections": []}
 
         with patch("requests.post", return_value=mock_resp):
             from knowledge_navigation.core.hooks import _do_sag_recall
-            result = _do_sag_recall("查询")
+            result, error = _do_sag_recall("查询")
         assert result == []
+        assert error is None
 
     def test_sag_results_merged_into_kept(self) -> None:
         """SAG 结果被合并到 kept 候选列表。"""
@@ -1154,18 +1160,18 @@ class TestSagRecall:
         assert _candidate_score(candidate_no_final) == 0.7
 
 
-class TestTokenBudgetEvent:
-    """测试 token_budget 事件的分源 token 字段输出。"""
+class TestTokenUsageEvent:
+    """测试 token_usage 事件的分源 token 字段输出（纯观测，无预算）。"""
 
     LONG_QUERY = "请详细解释量子计算中的纠缠现象以及它在密码学中的应用" * 3
 
     @patch("knowledge_navigation.core.hooks.router._do_hindsight_recall")
-    def test_token_budget_event_contains_per_source_fields(
+    def test_token_usage_event_contains_fields(
         self,
         mock_recall: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """token_budget 事件必须含 hs/sag/kt/skill 的 before/after 字段和 total_budget。"""
+        """token_usage 事件必须含 hs/sag/kt/skill 的 token 字段。"""
         mock_recall.return_value = {
             "results": [{"id": "n1", "text": "memory content"}],
             "trace": {"reranked": [{"node_id": "n1", "rerank_score": 0.9}]},
@@ -1176,18 +1182,13 @@ class TestTokenBudgetEvent:
             caplog.set_level(logging.INFO)
             pre_llm_call("sess-tb", self.LONG_QUERY, platform="cli")
 
-        tb_records = [rec for rec in caplog.records if getattr(rec, "event", None) == "token_budget"]
-        assert tb_records, "必须输出 token_budget 事件"
+        tb_records = [rec for rec in caplog.records if getattr(rec, "event", None) == "token_usage"]
+        assert tb_records, "必须输出 token_usage 事件"
         rec = tb_records[-1]
-        # 四路 before/after 字段必须齐全
         for prefix in ("hs", "sag", "kt", "skill"):
-            assert hasattr(rec, f"{prefix}_tokens_before"), f"缺 {prefix}_tokens_before"
-            assert hasattr(rec, f"{prefix}_tokens_after"), f"缺 {prefix}_tokens_after"
-        assert hasattr(rec, "total_budget")
-        # after 不应大于 before（token 只会减少不会增加）
-        assert rec.hs_tokens_after <= rec.hs_tokens_before
-        assert rec.kt_tokens_after <= rec.kt_tokens_before
-        assert rec.skill_tokens_after <= rec.skill_tokens_before
+            assert hasattr(rec, f"{prefix}_tokens"), f"缺 {prefix}_tokens"
+        assert hasattr(rec, "total_tokens"), "缺 total_tokens"
+        assert isinstance(rec.total_tokens, int)
 
 
 class TestRecallLoggerEvents:

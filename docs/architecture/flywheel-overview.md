@@ -35,11 +35,34 @@
 
 ## 能力飞轮（独立闭环）
 
+Hermes 有**两条并列的能力飞轮**：
+
+### 能力飞轮 A：Skill 文档优化
+
 | 项目 | 路径 | 作用 |
 |------|------|------|
 | SkillOpt Runner | `scripts/skillopt-runner/` | 基于负反馈自动优化 skill 文档（调度入口） |
 | SkillOpt Sleep | `scripts/skillopt-sleep/` | 训练引擎本体（rollout -> reflect -> revise 循环） |
 | 自我进化研究 | `scripts/self-evolving/` | SE-Agent 三层进化算子（Revision / Recombination / Refinement） |
+
+### 能力飞轮 B：SAG 召回 ↔ 梦境反思 ↔ Wiki 自我进化闭环
+
+把原始对话蒸馏为结构化知识（SAG）与公理（Wiki），再经 SAG 召回回流下一轮对话。
+
+| 组件 | 路径 | 作用 |
+|------|------|------|
+| SAG 召回 | `plugins/knowledge-navigation/.../hooks/router.py` `_do_sag_recall` | 四路召回之一（mask=`sag`），召回反思笔记/方案/协议/报告 |
+| 梦境反思 | `scripts/dream-synth/` | 每日 16:00 批处理：session → 反思笔记 → 写入 SAG + 归档 Wiki |
+| Wiki | `axiom-wiki` | 高价值反思归档终点（物理路径 + MCP） |
+
+**闭环**：
+```
+对话 session → dream-synth(synthesize→SAG / patterns→SAG / promote→Wiki)
+            → SAG 召回(knowledge-navigation) → 注入 LLM → 下一轮对话更精准
+            → Wiki 公理也作为 SAG 召回的"方案/协议/报告"来源
+```
+
+> 详见 [data-flywheel-system-map.md §6](data-flywheel-system-map.md#6-能力飞轮之二sag召回--梦境反思--wiki-自我进化闭环)。
 
 ---
 

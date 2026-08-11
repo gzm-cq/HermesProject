@@ -604,6 +604,8 @@ knowledge-tree-builder/src/knowledge_tree_builder/
 
 > 改造方案相对于现有 pipeline，LLM 调用次数增长显著。本节定义成本控制参数和优化策略，上线前需以此为基准做 token 预算。
 
+> 📌 **与 Router 注入 token 预算无关**：本节"LLM 预算"指**知识要点抽取管线**自身的 LLM 调用数/开销预算（如下表按源质量分档的"1 次/篇"），属抽取成本治理；不同于 knowledge-navigation 已移除的"注入 token 预算截断"（2026-08-10 决策）。
+
 ### 默认参数
 
 | 参数 | 默认值 | 说明 |

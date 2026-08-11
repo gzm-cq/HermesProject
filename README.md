@@ -8,7 +8,7 @@ HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 10+ 独�
 
 | # | 项目 | 路径 | 类型 | 简介 |
 |---|------|------|------|------|
-| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | LLM Router 三路注入（Hindsight 经验 + 知识树 + Skill），pre_llm_call 智能召回，Skill 三级混合筛选（关键词预筛→Embedding精筛→LLM精排） |
+| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | LLM Router **四路注入**（Hindsight 经验 + 知识树 + SAG 梦境反思 + Skill），pre_llm_call 智能召回，Skill 三级混合筛选（关键词预筛→Embedding精筛→LLM精排） |
 | 2 | **知识树在线插件** | `plugins/knowledge-tree-plugin/` | 插件 | 知识树 pre_llm_call recall + post_llm_call 增量学习 |
 | 3 | **SkillOpt 增量优化** | `scripts/skillopt-runner/` | Cron | 基于对话负反馈自动优化 skill 文档 |
 | 4 | **系统健康巡检** | `scripts/system-health-check/` | Cron | 3-tier 架构每日巡检组件状态，异常飞书告警 |
@@ -49,15 +49,15 @@ Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 +
 │                            │                         │             ↑               │
 │                    ┌───────┴───────┐                  │             │               │
 │                    ▼               ▼                  │             │               │
-│           Hindsight recall   知识树 recall              │             │               │
-│           （经验域）         （知识域）                 │             │               │
+│           Hindsight recall   知识树 recall   SAG 反思召回              │             │               │
+│           （经验域）         （知识域）      （反思域）                 │             │               │
 │                    │               │                  │             │               │
 │                    └───────┬───────┘                  │             │               │
 │                            │                          │             │               │
 │                            ▼                          │             │               │
 │                    ┌──────────────┐                   │             │               │
 │                    │  Skill 匹配   │────────────────────             │               │
-│                    │  (第三路)     │ 自动注入 <auto_loaded_skills>   │               │
+│                    │  (能力域)     │ 自动注入 <auto_loaded_skills>   │               │
 │                    │  三级混合筛选  │ 到用户消息                        │               │
 │                    │  (关键词预筛→Embedding精筛→LLM精排) │                   │             │               │
 │                    └──────────────┘                   │             │               │
@@ -324,14 +324,15 @@ LLM 驱动的智能记忆管理（MEMORY.md + USER.md）：
 - Step 5：PG 写入（含增量去重 + 矛盾检测）
 - 用户命令：`add` / `ingest` / `tree` / `find` / `move` / `edit` / `remove` / `merge`
 
-### 6. 知识导航插件（LLM Router 三路注入）
+### 6. 知识导航插件（LLM Router 四路注入）
 在每次 LLM 调用前通过 LLM Router 智能决策注入路径：
 - **H（经验域）**：从 Hindsight 召回相关记忆
 - **KT（知识域）**：通过 knowledge-tree-plugin 召回知识树，沿 `kt_entity_links` 表展开共享实体的关联知识点（实体多跳）
+- **SAG（反思域）**：SAG 梦境反思召回，将对话沉淀的结构化知识/公理回流到下一轮上下文
 - **S（能力域）**：Skill 三级混合筛选（关键词预筛 Top-30 → Embedding 余弦相似度精筛 Top-20 → LLM 精排 Top-3），自动注入
-- 动态执行：≥2 路并行，1 路串行
-- 熔断器 + 飞书告警 + Router 异常 fallback 全开；Embedding 调用失败自动降级
-- 注入去重、Compaction、HitCounter、时态衰减、跨域去重
+- 动态执行：四路按 mask 超时隔离真并行（每路独立截止时间，互不连坐），单路则串行
+- H/KT/SAG 三路各带独立熔断器（阈值 3 / 冷却 90s）+ 飞书告警 + Router 异常 fallback 全开；Embedding 调用失败自动降级
+- 注入去重、Compaction、HitCounter、时态衰减、跨域去重；recall 日志每条带明确 `source` 来源标识
 
 ### 7. 知识树在线插件
 增量学习，在 LLM 响应后自动补充知识：

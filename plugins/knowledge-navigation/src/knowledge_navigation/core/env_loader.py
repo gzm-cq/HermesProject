@@ -2,21 +2,33 @@
 
 cron 环境没有 shell profile，os.environ.get 拿不到 ~/.hermes/.env 里的变量。
 本模块提供 get_env() 作为 os.environ.get 的替代，优先读环境变量，兜底读 .env 文件。
+
+.env 文件缓存 60 秒，过期后自动刷新，避免修改 .env 后需重启进程。
 """
 
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
-from functools import lru_cache
+
+_ENV_CACHE_TTL = 60
+
+_env_cache: dict[str, str] = {}
+_env_cache_ts: float = 0.0
 
 
-@lru_cache(maxsize=1)
 def _read_env_file() -> dict[str, str]:
-    """从 ~/.hermes/.env 读取 KEY=VALUE，跳过注释和空行。"""
+    """从 ~/.hermes/.env 读取 KEY=VALUE，跳过注释和空行，60s TTL 缓存。"""
+    global _env_cache, _env_cache_ts
+    now = time.time()
+    if _env_cache and (now - _env_cache_ts) < _ENV_CACHE_TTL:
+        return _env_cache
     env_path = Path.home() / ".hermes" / ".env"
     if not env_path.exists():
-        return {}
+        _env_cache = {}
+        _env_cache_ts = now
+        return _env_cache
     result: dict[str, str] = {}
     try:
         with open(env_path, "r", encoding="utf-8") as f:
@@ -31,7 +43,9 @@ def _read_env_file() -> dict[str, str]:
                     result[key] = val
     except Exception:
         pass
-    return result
+    _env_cache = result
+    _env_cache_ts = now
+    return _env_cache
 
 
 def get_env(key: str, default: str = "") -> str:

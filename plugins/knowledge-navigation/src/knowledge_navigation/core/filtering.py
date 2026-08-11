@@ -43,7 +43,9 @@ def exclude_marked(results: list[dict]) -> tuple[list[dict], int]:
             continue
         if _MARK_DEMOTE.search(tail):
             # [标记: 已解决] → 降权而非排除（经验：已修好的反面案例仍有参考价值）
-            r["rerank_score"] = r.get("rerank_score", 1.0) * 0.3
+            # 不直接修改 rerank_score——boost/causal_boost 在 rerank_map 上操作，
+            # 降权延后到 boost 之后应用（见 hooks/router.py 中 boost/causal_boost 之后的内联降权逻辑）
+            r["_demote_factor"] = 0.3
             demoted += 1
         kept.append(r)
 
@@ -69,7 +71,9 @@ def calculate_time_score(mentioned_at_str: str | None) -> float:
     try:
         from datetime import datetime, timezone
 
-        mentioned_at = datetime.fromisoformat(mentioned_at_str)
+        # 兼容 Z 后缀（fromisoformat 在 Python <3.11 不识别）和无时区字符串
+        ts = mentioned_at_str.replace("Z", "+00:00") if mentioned_at_str else ""
+        mentioned_at = datetime.fromisoformat(ts)
         if mentioned_at.tzinfo is None:
             mentioned_at = mentioned_at.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
@@ -280,7 +284,7 @@ def _mmr_diversity(
 
     # 归一化分数到 [0,1]
     lo, hi = min(scores), max(scores)
-    if hi - lo < 1e-6:
+    if math.isclose(hi, lo):
         norms = [0.5] * len(scores)
     else:
         norms = [(s - lo) / (hi - lo) for s in scores]
@@ -623,7 +627,7 @@ def _dedup_by_jaccard(
     )
 
 
-# ========== Token 预算守门 (P1-1) ==========
+# ========== Token 估算工具（仅观测，不做预算裁剪） ==========
 
 
 def estimate_tokens(text: str) -> int:
@@ -651,16 +655,6 @@ def estimate_tokens(text: str) -> int:
     return int(cjk_count * 1.5 + english_count * 1.3 + other_count * 0.25)
 
 
-def _result_text(result: dict) -> str:
-    """从结果 dict 中提取用于 token 估算的文本。"""
-    return str(result.get("text", "") or result.get("name", "") or "")
-
-
-def _results_total_tokens(results: list[dict]) -> int:
-    """计算一组结果的总 token 数。"""
-    return sum(estimate_tokens(_result_text(r)) for r in results)
-
-
 def extract_score(result: dict) -> float:
     """从记忆结果 dict 中提取分数（统一入口）。
 
@@ -675,112 +669,3 @@ def extract_score(result: dict) -> float:
             except (TypeError, ValueError):
                 continue
     return 0.0
-
-
-def _sort_by_score(results: list[dict]) -> list[dict]:
-    """按分数降序排列结果。"""
-    return sorted(results, key=extract_score, reverse=True)
-
-
-def apply_token_budget(
-    hindsight_results: list[dict],
-    kt_results: list[dict],
-    skill_results: list[dict],
-    total_budget: int,
-    hindsight_ratio: float,
-    kt_ratio: float,
-    skill_ratio: float,
-) -> tuple[list[dict], list[dict], list[dict]]:
-    """按 token 预算裁剪结果。
-
-    策略：
-    1. 按比例分配各域预算
-    2. 如果某域用不完，剩余预算按比例分配给其他域
-    3. 从低分开始裁剪，直到满足预算
-    4. 每条结果必须完整保留，不做内容截断
-
-    Args:
-        hindsight_results: Hindsight 结果列表
-        kt_results: 知识树结果列表
-        skill_results: 技能结果列表
-        total_budget: 总 token 预算
-        hindsight_ratio: Hindsight 占比
-        kt_ratio: 知识树占比
-        skill_ratio: 技能占比
-
-    Returns:
-        (裁剪后的 hindsight, 裁剪后的 kt, 裁剪后的 skill)
-    """
-    if total_budget <= 0:
-        return [], [], []
-
-    ratio_sum = hindsight_ratio + kt_ratio + skill_ratio
-    if ratio_sum <= 0:
-        return [], [], []
-
-    hs_sorted = _sort_by_score(hindsight_results)
-    kt_sorted = _sort_by_score(kt_results)
-    skill_sorted = _sort_by_score(skill_results)
-
-    hs_budget = int(total_budget * hindsight_ratio / ratio_sum)
-    kt_budget = int(total_budget * kt_ratio / ratio_sum)
-    skill_budget = int(total_budget * skill_ratio / ratio_sum)
-
-    hs_kept = _trim_to_budget(hs_sorted, hs_budget)
-    kt_kept = _trim_to_budget(kt_sorted, kt_budget)
-    skill_kept = _trim_to_budget(skill_sorted, skill_budget)
-
-    hs_used = _results_total_tokens(hs_kept)
-    kt_used = _results_total_tokens(kt_kept)
-    skill_used = _results_total_tokens(skill_kept)
-
-    hs_remain = max(0, hs_budget - hs_used)
-    kt_remain = max(0, kt_budget - kt_used)
-    skill_remain = max(0, skill_budget - skill_used)
-
-    leftover = hs_remain + kt_remain + skill_remain
-    if leftover > 0:
-        domains_needing_more = []
-        if hs_used >= hs_budget and len(hs_kept) < len(hs_sorted):
-            domains_needing_more.append(("hindsight", hindsight_ratio, hs_kept, hs_sorted))
-        if kt_used >= kt_budget and len(kt_kept) < len(kt_sorted):
-            domains_needing_more.append(("kt", kt_ratio, kt_kept, kt_sorted))
-        if skill_used >= skill_budget and len(skill_kept) < len(skill_sorted):
-            domains_needing_more.append(("skill", skill_ratio, skill_kept, skill_sorted))
-
-        if domains_needing_more:
-            ratio_total = sum(r for _, r, _, _ in domains_needing_more)
-            if ratio_total > 0:
-                for name, ratio, kept, full in domains_needing_more:
-                    extra = int(leftover * ratio / ratio_total)
-                    if extra > 0:
-                        current_used = _results_total_tokens(kept)
-                        new_budget = current_used + extra
-                        new_kept = _trim_to_budget(full, new_budget)
-                        if name == "hindsight":
-                            hs_kept = new_kept
-                        elif name == "kt":
-                            kt_kept = new_kept
-                        else:
-                            skill_kept = new_kept
-
-    return hs_kept, kt_kept, skill_kept
-
-
-def _trim_to_budget(sorted_results: list[dict], budget: int) -> list[dict]:
-    """从高分到低分累加，直到超过预算则停止，返回满足预算的结果列表。
-
-    每条结果完整保留，不做内容截断。
-    """
-    if budget <= 0:
-        return []
-
-    kept: list[dict] = []
-    total = 0
-    for r in sorted_results:
-        tokens = estimate_tokens(_result_text(r))
-        if total + tokens > budget and kept:
-            break
-        kept.append(r)
-        total += tokens
-    return kept

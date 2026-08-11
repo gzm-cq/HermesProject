@@ -157,11 +157,16 @@ _sag_cb = CircuitBreaker(
     threshold=CONFIG.circuit_breaker_threshold,
     cooldown=CONFIG.circuit_breaker_cooldown,
 )
+_kt_cb = CircuitBreaker(
+    name="knowledge_tree",
+    threshold=CONFIG.circuit_breaker_threshold,
+    cooldown=CONFIG.circuit_breaker_cooldown,
+)
 
 # ── 飞书通知状态 ──
 _CATEGORY_LABELS: dict[str, str] = {
     "exception": "🔴 未预期异常",
-    "service_error": "🟡 服务返回空",
+    "service_error": "🟡 服务端错误（5xx/超时/连接失败）",
 }
 _CATEGORY_LEVELS: dict[str, str] = {
     "exception": "red",
@@ -169,6 +174,7 @@ _CATEGORY_LEVELS: dict[str, str] = {
 }
 _LAST_NOTIFICATION_TIME: float = 0.0
 _NOTIFICATION_MIN_INTERVAL: float = 300.0  # 同 session 至少间隔 5 分钟
+_NOTIFICATION_LOCK = threading.Lock()  # 保护 _LAST_NOTIFICATION_TIME 检查+更新的原子性，避免并发首次通知重复发送
 _FEISHU_TOKEN: str = ""
 _FEISHU_TOKEN_EXPIRES_AT: float = 0.0
 _FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
@@ -213,6 +219,21 @@ def sag_circuit_record_failure(category: str = "unknown") -> None:
 def sag_circuit_record_success() -> None:
     """SAG 成功后重置熔断器。"""
     _sag_cb.record_success()
+
+
+def kt_circuit_is_open() -> bool:
+    """检查知识树熔断器是否开启。"""
+    return _kt_cb.is_open()
+
+
+def kt_circuit_record_failure(category: str = "unknown") -> None:
+    """记录一次知识树失败。"""
+    _kt_cb.record_failure(category)
+
+
+def kt_circuit_record_success() -> None:
+    """知识树成功后重置熔断器。"""
+    _kt_cb.record_success()
 
 
 # ====================================================================
@@ -263,9 +284,12 @@ def _notify_feishu_circuit_open(name: str, failure_types: dict[str, int]) -> Non
     """熔断器打开时通过飞书发送卡片消息（限频 5 分钟一次）。"""
     global _LAST_NOTIFICATION_TIME
     now = time.time()
-    if now - _LAST_NOTIFICATION_TIME < _NOTIFICATION_MIN_INTERVAL:
-        logger.info("飞书通知跳过：距上次通知不足 5 分钟")
-        return
+    # 用锁保护"检查 + 更新"的原子性，避免并发线程在首次通知时同时通过限频检查
+    with _NOTIFICATION_LOCK:
+        if now - _LAST_NOTIFICATION_TIME < _NOTIFICATION_MIN_INTERVAL:
+            logger.info("飞书通知跳过：距上次通知不足 5 分钟")
+            return
+        _LAST_NOTIFICATION_TIME = now  # 提前占用时间戳，后续若发送失败也不会导致重复告警
 
     app_id = CONFIG.feishu_app_id
     app_secret = CONFIG.feishu_app_secret
@@ -320,7 +344,6 @@ def _notify_feishu_circuit_open(name: str, failure_types: dict[str, int]) -> Non
         ],
     }
 
-    _LAST_NOTIFICATION_TIME = now
     try:
         import requests as _req  # type: ignore[import-untyped]
 

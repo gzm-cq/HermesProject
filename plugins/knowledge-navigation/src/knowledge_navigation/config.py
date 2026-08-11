@@ -97,10 +97,14 @@ class KnowledgeNavigationConfig:
     max_results: int = field(default=3)
     max_text_length: int = field(default=200)
     min_score: float = field(default=0.35)
+    recall_query_max_chars: int = field(default=800)  # recall query 最大字符数：超长 query 会被 Hindsight(400)/SAG(422) 拒绝，需截断（前 400 + 后 400）
 
     # Performance
     timeout_seconds: int = field(default=30)
     max_retries: int = field(default=2)
+    hindsight_recall_max_retries: int = field(default=0)  # recall 链路专用：限制 Hindsight 重试，避免僵尸线程占满线程池（0=不重试，单次超时即放弃）
+    kt_timeout_seconds: int = field(default=10)  # 知识树 recall（PG+pgvector）超时，远短于 Hindsight
+    skill_timeout_seconds: int = field(default=60)  # skill 匹配含 LLM 精排(45s)+embedding，需更长窗口
 
     # Logging
     trace_log_path: str = field(default="")
@@ -163,10 +167,14 @@ class KnowledgeNavigationConfig:
     feishu_home_channel: str = field(default="")
 
     # LLM Router
-    router_model: str = field(default="s-deepseek-v4-flash")
+    router_model: str = field(default="sensenova-6.7-flash-lite")
     router_api_url: str = field(default="http://127.0.0.1:4142/v1")
     router_api_key: str = field(default="")
     router_timeout: int = field(default=15)  # 5s 太紧，15s 减少超时率
+
+    # Skill Matcher LLM（精排阶段）
+    skill_matcher_model: str = field(default="s-deepseek-v4-flash")
+    skill_matcher_api_url: str = field(default="http://127.0.0.1:4142/v1")
 
     # Skill Matcher: 三级筛选架构（关键词 + Embedding + LLM）
     # 注意：kn_skill_keyword_prescreen 已废弃，match_skills 现为纯 LLM 全量匹配
@@ -182,17 +190,17 @@ class KnowledgeNavigationConfig:
 
     # SAG API configuration
     sag_api_url: str = field(default="http://127.0.0.1:4173")
+    sag_auth_token: str = field(default="")  # Bearer token for SAG v1.5.3+
+    sag_api_search_path: str = field(default="/api/v1/search")  # SAG v1.5.3 API path
     sag_search_top_k: int = field(default=3)
-    sag_search_timeout: int = field(default=10)
-    sag_source_ids: str = field(default="00000000-0000-0000-0000-0000000000ff")
+    sag_search_timeout: int = field(default=30)  # SAG v1.5.3 单 worker 响应慢(~21s)，10s 不够
+    sag_source_ids: str = field(default="89a9a04d295c4206b35706a09ffb43e8")
     sag_max_inject: int = field(default=3)  # merge 时最多注入条数（SAG topK 只控 vector 路，multi-hop 不受控）
     sag_pointer_threshold: int = field(default=300)  # content 超过此字符数时改注入指针，LLM 按需查全文
     sag_min_score: float = field(default=0.35)  # SAG 独立 min_score，与 Hindsight 分开（SAG 原始 pgvector 得分集中在 0.4-0.7，与 cross-encoder 分不同分布）
-    enable_token_budget: bool = field(default=True)
-    token_budget_total: int = field(default=4000)
-    token_budget_hindsight_ratio: float = field(default=0.4)
-    token_budget_kt_ratio: float = field(default=0.4)
-    token_budget_skill_ratio: float = field(default=0.2)
+    # 注：token 预算控制已于 2026-08-10 移除（只记录实际消耗，不做裁剪）。
+    # 原 enable_token_budget / token_budget_total / token_budget_*_ratio 已删除。
+    skill_max_chars_per_skill: int = field(default=4000)  # 单条 skill 注入字符上限（替代 router.py 内硬编码 4000）
 
     # Memory use log (P2-2 Phase A)
     enable_use_log: bool = field(default=True)
@@ -239,13 +247,11 @@ class KnowledgeNavigationConfig:
                 "kn_skill_index_incremental": "skill_index_incremental",
                 "sag_search_top_k": "sag_search_top_k",
                 "sag_search_timeout": "sag_search_timeout",
+                "sag_auth_token": "sag_auth_token",
+                "sag_api_search_path": "sag_api_search_path",
                 "sag_max_inject": "sag_max_inject",
                 "sag_pointer_threshold": "sag_pointer_threshold",
                 "sag_min_score": "sag_min_score",
-                "token_budget_total": "token_budget_total",
-                "token_budget_hindsight_ratio": "token_budget_hindsight_ratio",
-                "token_budget_kt_ratio": "token_budget_kt_ratio",
-                "token_budget_skill_ratio": "token_budget_skill_ratio",
                 "lambda_mrr": "lambda_mrr",
                 "eval_min_score": "eval_min_score",
                 "eval_match_enabled": "eval_match_enabled",
@@ -262,7 +268,6 @@ class KnowledgeNavigationConfig:
                 "score_span_half_threshold": "score_span_half_threshold",
                 "enable_causal_chain": "enable_causal_chain",
                 "kn_lambda_mrr": "lambda_mrr",
-                "enable_token_budget": "enable_token_budget",
                 "enable_use_log": "enable_use_log",
                 "use_log_batch_size": "use_log_batch_size",
                 "use_log_flush_interval_seconds": "use_log_flush_interval_seconds",
@@ -302,6 +307,8 @@ class KnowledgeNavigationConfig:
             values["max_text_length"] = int(env_length)
         if env_score := os.getenv("KN_MIN_SCORE"):
             values["min_score"] = float(env_score)
+        if env_query_chars := os.getenv("KN_RECALL_QUERY_MAX_CHARS"):
+            values["recall_query_max_chars"] = int(env_query_chars)
         if env_timeout := os.getenv("KN_TIMEOUT_SECONDS"):
             values["timeout_seconds"] = int(env_timeout)
         if env_retries := os.getenv("KN_MAX_RETRIES"):
@@ -368,6 +375,10 @@ class KnowledgeNavigationConfig:
             values["router_api_key"] = env
         if env := os.getenv("KN_ROUTER_TIMEOUT"):
             values["router_timeout"] = int(env)
+        if env := os.getenv("KN_SKILL_MATCHER_MODEL"):
+            values["skill_matcher_model"] = env
+        if env := os.getenv("KN_SKILL_MATCHER_API_URL"):
+            values["skill_matcher_api_url"] = env
         if env := os.getenv("KN_SKILL_KEYWORD_PRESCREEN"):
             values["kn_skill_keyword_prescreen"] = env.lower() in ("1", "true", "yes")
         if env := os.getenv("KN_SKILL_EMBEDDING_PRESCREEN"):
@@ -382,16 +393,16 @@ class KnowledgeNavigationConfig:
             values["kn_skill_embedding_api_key"] = env
         if env := os.getenv("KN_SKILL_EMBEDDING_TOP_K"):
             values["kn_skill_embedding_top_k"] = int(env)
-        if env := os.getenv("KN_ENABLE_TOKEN_BUDGET"):
-            values["enable_token_budget"] = env.lower() in ("1", "true", "yes")
-        if env := os.getenv("KN_TOKEN_BUDGET_TOTAL"):
-            values["token_budget_total"] = int(env)
-        if env := os.getenv("KN_TOKEN_BUDGET_HINDSIGHT_RATIO"):
-            values["token_budget_hindsight_ratio"] = float(env)
-        if env := os.getenv("KN_TOKEN_BUDGET_KT_RATIO"):
-            values["token_budget_kt_ratio"] = float(env)
-        if env := os.getenv("KN_TOKEN_BUDGET_SKILL_RATIO"):
-            values["token_budget_skill_ratio"] = float(env)
+        # KN_ENABLE_TOKEN_BUDGET / KN_TOKEN_BUDGET_* 已废弃（2026-08-10 移除预算控制）。
+        # 若 .env 中仍残留这些变量，此处静默忽略，不影响启动。
+        if env := os.getenv("KN_SKILL_MAX_CHARS_PER_SKILL"):
+            values["skill_max_chars_per_skill"] = int(env)
+        if env := os.getenv("KN_KT_TIMEOUT_SECONDS"):
+            values["kt_timeout_seconds"] = int(env)
+        if env := os.getenv("KN_SKILL_TIMEOUT_SECONDS"):
+            values["skill_timeout_seconds"] = int(env)
+        if env := os.getenv("KN_HINDSIGHT_RECALL_MAX_RETRIES"):
+            values["hindsight_recall_max_retries"] = int(env)
         if env := os.getenv("KN_SAG_API_URL"):
             values["sag_api_url"] = env
         if env := os.getenv("KN_SAG_SEARCH_TOP_K"):
@@ -406,6 +417,13 @@ class KnowledgeNavigationConfig:
             values["sag_pointer_threshold"] = int(env)
         if env := os.getenv("KN_SAG_MIN_SCORE"):
             values["sag_min_score"] = float(env)
+        if env := os.getenv("KN_SAG_AUTH_TOKEN"):
+            values["sag_auth_token"] = env
+        elif not values.get("sag_auth_token"):
+            _token_file = os.path.expanduser("~/.hermes/.sag_token")
+            if os.path.isfile(_token_file):
+                with open(_token_file) as _f:
+                    values["sag_auth_token"] = _f.read().strip()
         if env := os.getenv("KN_ENABLE_USE_LOG"):
             values["enable_use_log"] = env.lower() in ("1", "true", "yes")
         if env := os.getenv("KN_USE_LOG_BATCH_SIZE"):

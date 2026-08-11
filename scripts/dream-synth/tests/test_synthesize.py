@@ -233,7 +233,7 @@ class TestPhaseSynthesize:
         assert "s2" not in sids
 
     def test_sag_unavailable_skips_ingest(self, module, tmp_config):
-        """SAG 不可达时跳过 ingest，但保留 LLM 合成结果到 cache。"""
+        """SAG 不可达时跳过 ingest，但合成结果仍加入 reflections 供下游使用。"""
         sessions = [_make_session("s1")]
 
         with patch.object(module, "call_llm_json", return_value={"score": 5}), \
@@ -241,9 +241,12 @@ class TestPhaseSynthesize:
              patch.object(module, "sag_health_check", return_value=False):
             result = module.phase_synthesize(sessions, dry_run=False)
 
-        # SAG 不可达 → 不投 ingest → 不在 reflections 里
-        assert result == []
-        # 但 LLM 合成结果应该写入 cache
+        # SAG 不可达 → 不投 ingest，但合成结果仍应在 reflections 中（供下游 feishu push）
+        assert len(result) == 1
+        assert result[0]["session_id"] == "s1"
+        assert result[0]["title"] == "标题"
+        assert result[0]["document_id"] == ""
+        # LLM 合成结果应该写入 cache
         verdict_file = os.path.join(tmp_config["cache"]["verdict_dir"], "s1.json")
         assert os.path.exists(verdict_file)
         with open(verdict_file, encoding="utf-8") as f:

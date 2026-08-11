@@ -196,7 +196,7 @@ class TestXmlOutput:
     def test_knowledge_block(self, sk: MagicMock, hs: MagicMock) -> None:
         """KT 结果被 <knowledge> 包裹，独立于 HS 块。"""
         hs.return_value = _mock_recall(results=[{"id": "hs-aaa", "text": "HS 记忆"}])
-        with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
+        with patch.object(kn_router, "_ensure_kt_imported", return_value=True):
             with patch("knowledge_navigation.core.hooks.router._do_kt_recall", return_value=_KT_RESULTS):
                 result = pre_llm_call("s12", _TASK_MSG, platform="cli")
         assert result is not None
@@ -264,7 +264,7 @@ class TestEdgeCases:
     def test_only_kt_no_hs_block(self, sk: MagicMock, hs: MagicMock) -> None:
         """HS 空 → 无 <recalled_memory>，仅有 <knowledge>。"""
         hs.return_value = _mock_recall(results=[])
-        with patch.object(kn_router, "HAS_KNOWLEDGE_TREE", True):
+        with patch.object(kn_router, "_ensure_kt_imported", return_value=True):
             with patch("knowledge_navigation.core.hooks.router._do_kt_recall", return_value=_KT_RESULTS):
                 result = pre_llm_call("s30", _TASK_MSG, platform="cli")
         assert result is not None

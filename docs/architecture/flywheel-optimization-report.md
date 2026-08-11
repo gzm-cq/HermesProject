@@ -563,7 +563,7 @@ pre_llm_call 注入完成后，将 recalled_ids 写入 memory_use_log 表：
 
 | 优先级 | 优化 | 项目 | 做法 |
 |--------|------|------|------|
-| P1 | Token 预算守门 | knowledge-navigation | 新增 `inject_token_budget`（默认 2000 token），后处理排序后逐条累计，超出裁切低分条目 |
+| P1 | Token 预算守门（已否决） | knowledge-navigation | 原提议新增 `inject_token_budget`；2026-08-10 决策**移除 token 预算控制、仅保留消耗观测**，该优化项已否决（参见下方优先级总表"不引入"） |
 | P1 | 跨域去重改为降权 | knowledge-navigation | `cross_domain_dedup` 不删除 KT 结果，改为 `final_score *= 0.3` 降权 |
 | P1 | HDBSCAN 自适应参数 | clustering-analysis-v3 | 根据 N 动态调整 `min_cluster_size = max(3, N//50)` |
 | P1 | 因果链检测增量化 | clustering-analysis-v3 | 只对新增成员间的 pair 做检测，跳过旧-旧 pair |

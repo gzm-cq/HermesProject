@@ -25,7 +25,10 @@ from collections import defaultdict
 _STATE_LOCK = threading.Lock()
 
 # SkillOpt-Sleep 克隆在本地，必须在 import 前插入 sys.path
-SKILLOPT_HOME = pathlib.Path('/root/.hermes/skillopt-runner')
+# SKILLOPT_HOME 与 _SKILLOPT_SLEEP_PATH 保持一致：都基于 HERMES_HOME 计算，
+# 可通过环境变量 HERMES_HOME 覆盖，避免硬编码路径与运行环境不一致。
+HERMES_HOME = pathlib.Path(os.environ.get('HERMES_HOME', '/root/.hermes'))
+SKILLOPT_HOME = pathlib.Path(os.environ.get('SKILLOPT_HOME', str(HERMES_HOME / 'skillopt-runner')))
 _SKILLOPT_SLEEP_PATH = str(SKILLOPT_HOME.parent / 'skillopt-sleep')
 if _SKILLOPT_SLEEP_PATH not in sys.path:
     sys.path.insert(0, _SKILLOPT_SLEEP_PATH)
@@ -34,8 +37,6 @@ from skillopt_sleep.types import SessionDigest, TaskRecord
 from skillopt_sleep.mine import mine
 from skillopt_sleep.config import load_config, SleepConfig
 from skillopt_sleep.cycle import run_sleep_cycle
-
-HERMES_HOME = pathlib.Path(os.environ.get('HERMES_HOME', '/root/.hermes'))
 
 
 USAGE_FILE = HERMES_HOME / 'skills' / '.usage.json'

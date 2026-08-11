@@ -25,6 +25,27 @@ class TestPhaseFeishu:
             module.phase_feishu(reflections, promoted, dry_run=True)
             mock_run.assert_not_called()
 
+    def test_fresh_count_shows_in_message(self, module, tmp_config, capsys):
+        """fresh_count 传入时报告显示今日提炼数。"""
+        reflections = [_make_reflection("s1", "今日新", score=5)]
+        promoted = []
+
+        module.phase_feishu(reflections, promoted, dry_run=True, fresh_count=1)
+
+        captured = capsys.readouterr()
+        assert "今日提炼 **1** 篇新反思" in captured.out
+
+    def test_no_fresh_count_shows_cumulative(self, module, tmp_config, capsys):
+        """fresh_count=None 时报告显示累计数。"""
+        reflections = [_make_reflection("s1", "旧反思", score=5)]
+        promoted = []
+
+        module.phase_feishu(reflections, promoted, dry_run=True, fresh_count=None)
+
+        captured = capsys.readouterr()
+        assert "累计 **1** 篇反思" in captured.out
+        assert "今日提炼" not in captured.out
+
     def test_successful_push_calls_lark_cli(self, module, tmp_config):
         reflections = [_make_reflection("s1", "未归档A", score=4)]
         promoted = []

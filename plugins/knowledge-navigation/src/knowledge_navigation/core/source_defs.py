@@ -82,6 +82,6 @@ def build_router_prompt() -> str:
         '消息："为什么用0.5不用0.05？" → {"h":true,"kt":true,"s":false,"sag":false,"confidence":0.7}\n'
         '消息："好的" → {"h":false,"kt":false,"s":false,"sag":false,"confidence":0.9}\n'
         "\n"
-        '输出 JSON：{"h": bool, "kt": bool, "s": bool, "sag": bool, "confidence": float}\n'
+        '输出 JSON 格式如：{"h": false, "kt": false, "s": false, "sag": false, "confidence": 0.9}\n'
         "不要思考过程，直接输出 JSON。confidence<0.3 时全开。"
     )

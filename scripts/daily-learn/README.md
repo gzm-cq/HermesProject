@@ -48,7 +48,7 @@
 | 变量 | 默认值 | 用途 |
 |------|--------|------|
 | `GITHUB_TOKEN` | 无 | GitHub API 令牌（提升搜索速率限额） |
-| `FEISHU_CHAT_ID` | `oc_f04a9f65d4b780511cc3f402c7d54ac3` | 飞书通知目标群 chat_id |
+| `FEISHU_CHAT_ID` | 无 | 飞书通知目标群 chat_id（未配置则跳过飞书通知） |
 | `FEISHU_WEBHOOK_URL` | 无 | 飞书 Webhook 地址（lark-cli 不可用时的降级通道） |
 | `CRON_LOG_DIR` | `/root/.hermes/logs/cron` | 日志输出目录 |
 | `CRON_LOCK_DIR` | `/tmp/hermes-cron-locks` | flock 锁文件目录 |

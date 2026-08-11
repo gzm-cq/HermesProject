@@ -30,6 +30,9 @@ source venv/bin/activate
 : "${KT_DB_URL:?KT_DB_URL is required. Set it in /root/.hermes/.env}"
 : "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required. Set it in /root/.hermes/.env}"
 
+# LLM 模型继承链兜底：KT_LLM_MODEL → LLM_MODEL_MAIN
+export KT_LLM_MODEL="${KT_LLM_MODEL:-${LLM_MODEL_MAIN:-}}"
+
 # ===== 执行合并 =====
 cron_section "知识树 consolidate run (--merge-domains)"
 if python3 -m knowledge_tree_builder.cli consolidate run --merge-domains; then

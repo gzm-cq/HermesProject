@@ -6,7 +6,7 @@
 - 四路 recall 函数（_do_hindsight_recall, _do_kt_recall, _do_skill_match, _do_sag_recall）
 - 候选构建（_build_knowledge_tree_candidate, _candidate_score）
 - 门控与路由（_pass_gates, _get_router_mask）
-- 执行与后处理（_execute_recall, _dedup_and_budget, _expand_multi_hop, _assemble_xml_output, _post_process_recall）
+- 执行与后处理（_execute_recall, _dedup_and_measure, _expand_multi_hop, _assemble_xml_output, _post_process_recall）
 - pre_llm_call 入口
 """
 
@@ -21,18 +21,20 @@ import time
 from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any
 
-from knowledge_navigation.adapters.hindsight import HindsightClient
+from knowledge_navigation.adapters.hindsight import HindsightClient, HindsightClientError
 from knowledge_navigation.config import CONFIG
 from knowledge_navigation.core.circuit_breaker import (
     circuit_is_open,
     circuit_record_failure,
     circuit_record_success,
+    kt_circuit_is_open,
+    kt_circuit_record_failure,
+    kt_circuit_record_success,
     sag_circuit_is_open,
     sag_circuit_record_failure,
     sag_circuit_record_success,
 )
 from knowledge_navigation.core.filtering import (
-    apply_token_budget,
     calculate_score_stats,
     cross_domain_dedup,
     estimate_tokens,
@@ -58,7 +60,6 @@ from knowledge_navigation.core.hooks.cache import (
     _recall_knowledge_tree_raw,
     _task_tracker,
     _touch_injected_session,
-    HAS_KNOWLEDGE_TREE,
 )
 from knowledge_navigation.core.hooks.db import _batch_embed, _causal_boost
 from knowledge_navigation.core.recall_logger import RecallLogger
@@ -77,7 +78,7 @@ __all__ = [
     "_build_knowledge_tree_candidate",
     "_build_mentioned_at_map",
     "_candidate_score",
-    "_dedup_and_budget",
+    "_dedup_and_measure",
     "_do_hindsight_recall",
     "_do_kt_recall",
     "_do_sag_recall",
@@ -249,6 +250,7 @@ def _build_mentioned_at_map(raw_results: list[dict]) -> dict[str, str]:
 
 def _do_hindsight_recall(query: str) -> dict | None:
     """执行 Hindsight recall，使用共享 Session。"""
+    query = _truncate_recall_query(query)
     client = HindsightClient(CONFIG.hindsight_api_url, CONFIG.timeout_seconds)
     try:
         return client.recall(
@@ -261,17 +263,43 @@ def _do_hindsight_recall(query: str) -> dict | None:
         client.close()
 
 
+def _truncate_recall_query(query: str) -> str:
+    """截断 recall query，防止超长 query 被服务端拒绝（Hindsight 400 / SAG 422）。
+
+    策略：保留前 1/2 + 后 1/2（共 recall_query_max_chars 字符），
+    与 Router safe_msg 的前 300 + 后 200 模式一致。
+    """
+    max_chars = CONFIG.recall_query_max_chars
+    if len(query) <= max_chars:
+        return query
+    half = max_chars // 2
+    return query[:half] + query[-half:]
+
+
 def _do_kt_recall(session_id: str, query: str) -> list[dict]:
-    """执行知识树 recall，有异常时返回空列表。"""
-    if not HAS_KNOWLEDGE_TREE:
-        _ensure_kt_imported()
-    if not HAS_KNOWLEDGE_TREE:
+    """执行知识树 recall，带熔断保护；异常时返回空列表。"""
+    if kt_circuit_is_open():
+        logger.debug("KT 熔断器开启，跳过 recall")
+        return []
+    # 注意：HAS_KNOWLEDGE_TREE 是导入期快照，生产环境会恒为 False（B-0 修复点），
+    # 必须以 _ensure_kt_imported() 的返回值作为唯一真值源。
+    if not _ensure_kt_imported():
         return []
     try:
-        return _recall_knowledge_tree_raw(session_id, query)
-    except Exception as e:
+        results = _recall_knowledge_tree_raw(session_id, query)
+        kt_circuit_record_success()
+        return results
+    except (TypeError, ValueError, KeyError) as e:
+        # 数据/契约类错误：非服务故障，不计熔断（对齐 SAG 的 4xx 处理）
         logger.warning(
-            "知识树 recall 异常（跳过）",
+            "知识树 recall 数据异常（不熔断）",
+            extra={"session_id": session_id, "error": f"{type(e).__name__}: {e}"},
+        )
+        return []
+    except Exception as e:
+        kt_circuit_record_failure("service_error")
+        logger.warning(
+            "知识树 recall 异常（计入熔断）",
             extra={"session_id": session_id, "error": f"{type(e).__name__}: {e}"},
         )
         return []
@@ -293,8 +321,9 @@ def _do_skill_match(query: str) -> str:
                 with open(path, "r", encoding="utf-8") as f:
                     raw = f.read()
                 body = strip_frontmatter(raw)
-                truncated = len(body) > 4000
-                content = body[:4000] if truncated else body
+                _cap = CONFIG.skill_max_chars_per_skill
+                truncated = len(body) > _cap
+                content = body[:_cap] if truncated else body
             except Exception:
                 content = f"（无法读取 {s['name']}）"
                 truncated = False
@@ -318,12 +347,18 @@ def _do_skill_match(query: str) -> str:
         return ""
 
 
-def _do_sag_recall(query: str) -> list[dict]:
-    """执行 SAG 文档检索（4th route），通过 REST API 调 /search。"""
+def _do_sag_recall(query: str) -> tuple[list[dict], str | None]:
+    """执行 SAG 文档检索（4th route），通过 REST API 调 /search。
+
+    返回 (results, error) 元组：
+    - error=None 表示成功，results 为 sections 列表
+    - error 非空表示失败，results 为空列表
+    """
     if sag_circuit_is_open():
         logger.debug("SAG 熔断器开启，跳过 recall")
-        return []
+        return [], None
     t0 = time.time()
+    query = _truncate_recall_query(query)
     try:
         import requests as _req
         source_ids = [s.strip() for s in CONFIG.sag_source_ids.split(",") if s.strip()]
@@ -333,18 +368,30 @@ def _do_sag_recall(query: str) -> list[dict]:
             "searchMode": "fast",
             "sourceIds": source_ids,
         }
+        headers = {}
+        if CONFIG.sag_auth_token:
+            headers["Authorization"] = f"Bearer {CONFIG.sag_auth_token}"
         resp = _req.post(
-            f"{CONFIG.sag_api_url}/search",
+            f"{CONFIG.sag_api_url}{CONFIG.sag_api_search_path}",
             json=payload,
+            headers=headers or None,
             timeout=CONFIG.sag_search_timeout,
         )
         if resp.status_code != 200:
-            sag_circuit_record_failure("service_error")
-            logger.warning(
-                "SAG recall HTTP %d, 耗时 %.1fms",
-                resp.status_code, (time.time() - t0) * 1000,
-            )
-            return []
+            # 4xx = 客户端错误（如 query 超长被拒 422），不触发服务熔断；
+            # 5xx = 服务端故障，计入熔断
+            if 400 <= resp.status_code < 500:
+                logger.warning(
+                    "SAG recall HTTP %d（客户端错误，不熔断）, 耗时 %.1fms",
+                    resp.status_code, (time.time() - t0) * 1000,
+                )
+            else:
+                sag_circuit_record_failure("service_error")
+                logger.warning(
+                    "SAG recall HTTP %d, 耗时 %.1fms",
+                    resp.status_code, (time.time() - t0) * 1000,
+                )
+            return [], f"HTTP {resp.status_code}"
         data = resp.json()
         sections = data.get("sections", [])
         sag_circuit_record_success()
@@ -353,11 +400,11 @@ def _do_sag_recall(query: str) -> list[dict]:
             len(sections), (time.time() - t0) * 1000,
             extra={"event": "sag_recall", "count": len(sections)},
         )
-        return sections
+        return sections, None
     except Exception as e:
         sag_circuit_record_failure("exception")
         logger.debug("SAG recall 异常（跳过）: %s, 耗时 %.1fms", e, (time.time() - t0) * 1000)
-        return []
+        return [], f"{type(e).__name__}: {e}"
 
 
 # ========== 候选构建 ==========
@@ -491,6 +538,24 @@ def _execute_recall(
     sag_raw_results: list[dict[str, Any]] = []
 
     if active_count >= 2:
+        # 统一超时语义：四路以提交时刻(t0)为锚点计算绝对截止时间，避免"慢路累加"拖垮后续路
+        _deadline = {
+            "hs": t0 + CONFIG.timeout_seconds,
+            "kt": t0 + CONFIG.kt_timeout_seconds,
+            "sk": t0 + CONFIG.skill_timeout_seconds,
+            "sag": t0 + CONFIG.sag_search_timeout,
+        }
+
+        def _left(key: str) -> float:
+            return max(0.0, _deadline[key] - time.time())
+
+        def _was_scheduled(fut) -> bool:
+            """区分'服务超时'与'线程池饱和未被调度'，避免把调度失败误记熔断。"""
+            try:
+                return fut.running() or fut.done()
+            except AttributeError:
+                return True
+
         hs_future = _recall_executor.submit(_do_hindsight_recall, user_message) if hs_active else None
         kt_future = _recall_executor.submit(_do_kt_recall, session_id, user_message) if kt_active else None
         sk_future = _recall_executor.submit(_do_skill_match, user_message) if s_active else None
@@ -499,14 +564,29 @@ def _execute_recall(
             if hs_future is not None:
                 _hs_t0 = time.time()
                 try:
-                    result = hs_future.result(timeout=CONFIG.timeout_seconds)
+                    result = hs_future.result(timeout=_left("hs"))
                     _hs_latency = (time.time() - _hs_t0) * 1000
-                    _hs_results = result.get("results", []) if result else []
-                    recall_logger.record("hindsight", _hs_results, _hs_latency, session_id=session_id, query=user_message)
                     if result is None:
+                        recall_logger.record("hindsight", [], _hs_latency, session_id=session_id, query=user_message, error="服务返回空")
                         circuit_record_failure("service_error")
                     else:
+                        _hs_results = result.get("results", []) if result else []
+                        recall_logger.record("hindsight", _hs_results, _hs_latency, session_id=session_id, query=user_message)
                         circuit_record_success()
+                except HindsightClientError as e:
+                    # 4xx = 客户端错误（如 query 超长被拒），不触发服务熔断；
+                    # 5xx/None = 服务端故障或网络异常，计入熔断
+                    if e.status_code is not None and 400 <= e.status_code < 500:
+                        recall_logger.record("hindsight", [], (time.time() - _hs_t0) * 1000, session_id=session_id, query=user_message, error=f"HTTP {e.status_code}（客户端错误，不熔断）")
+                        logger.warning(
+                            "Hindsight recall HTTP %d（客户端错误，不熔断）",
+                            e.status_code,
+                            extra={"session_id": session_id, "query_trunc": query_trunc, "event": "recall_client_error"},
+                        )
+                    else:
+                        circuit_record_failure("service_error")
+                        recall_logger.record("hindsight", [], (time.time() - _hs_t0) * 1000, session_id=session_id, query=user_message, error=str(e))
+                        logger.error("Hindsight recall error", extra={"session_id": session_id, "query_trunc": query_trunc, "error": str(e), "event": "recall_error"})
                 except FuturesTimeout:
                     hs_future.cancel()
                     circuit_record_failure("exception")
@@ -518,16 +598,16 @@ def _execute_recall(
                     logger.error("Hindsight recall error", extra={"session_id": session_id, "query_trunc": query_trunc, "error": f"{type(e).__name__}: {e}", "event": "recall_error"})
 
             if kt_future is not None:
-                remaining = max(0.1, CONFIG.timeout_seconds - (time.time() - t0))
                 _kt_t0 = time.time()
                 try:
-                    kt_raw_results = kt_future.result(timeout=remaining)
+                    kt_raw_results = kt_future.result(timeout=_left("kt"))
                     _kt_latency = (time.time() - _kt_t0) * 1000
                     recall_logger.record("knowledge_tree", kt_raw_results, _kt_latency, session_id=session_id, query=user_message)
                 except FuturesTimeout:
                     kt_future.cancel()
-                    recall_logger.record("knowledge_tree", [], (time.time() - _kt_t0) * 1000, session_id=session_id, query=user_message, error=f"timeout({remaining:.1f}s)")
-                    logger.warning("知识树 recall 超时（%.1f 秒）", remaining)
+                    kt_circuit_record_failure("timeout")
+                    recall_logger.record("knowledge_tree", [], (time.time() - _kt_t0) * 1000, session_id=session_id, query=user_message, error=f"timeout({CONFIG.kt_timeout_seconds}s)")
+                    logger.warning("知识树 recall 超时（%d 秒）", CONFIG.kt_timeout_seconds)
                     kt_raw_results = []
                 except Exception as e:
                     recall_logger.record("knowledge_tree", [], (time.time() - _kt_t0) * 1000, session_id=session_id, query=user_message, error=f"{type(e).__name__}: {e}")
@@ -537,7 +617,7 @@ def _execute_recall(
             if sk_future is not None:
                 _sk_t0 = time.time()
                 try:
-                    skill_context = sk_future.result(timeout=CONFIG.timeout_seconds)
+                    skill_context = sk_future.result(timeout=_left("sk"))
                     _sk_latency = (time.time() - _sk_t0) * 1000
                     _sk_results = [{"id": "skill_context", "score": 1.0}] if skill_context else []
                     recall_logger.record("skill", _sk_results, _sk_latency, session_id=session_id, query=user_message)
@@ -546,17 +626,20 @@ def _execute_recall(
                     logger.debug("Skill match future error: %s", e)
 
             if sag_future is not None:
-                sag_remaining = max(0.1, CONFIG.sag_search_timeout - (time.time() - t0))
                 _sag_t0 = time.time()
                 try:
-                    sag_raw_results = sag_future.result(timeout=sag_remaining)
+                    sag_raw_results, sag_error = sag_future.result(timeout=_left("sag"))
                     _sag_latency = (time.time() - _sag_t0) * 1000
-                    recall_logger.record("sag", sag_raw_results, _sag_latency, session_id=session_id, query=user_message)
+                    recall_logger.record("sag", sag_raw_results, _sag_latency, session_id=session_id, query=user_message, error=sag_error)
                 except FuturesTimeout:
                     sag_future.cancel()
-                    sag_circuit_record_failure("timeout")
-                    recall_logger.record("sag", [], (time.time() - _sag_t0) * 1000, session_id=session_id, query=user_message, error=f"timeout({sag_remaining:.1f}s)")
-                    logger.debug("SAG recall 超时（%.1f 秒）", sag_remaining)
+                    # 仅在 future 确实被调度执行过才计入熔断，避免线程池饱和的连坐误判
+                    if _was_scheduled(sag_future):
+                        sag_circuit_record_failure("timeout")
+                    else:
+                        logger.warning("SAG future 未被调度（线程池饱和），不计入熔断")
+                    recall_logger.record("sag", [], (time.time() - _sag_t0) * 1000, session_id=session_id, query=user_message, error=f"timeout({CONFIG.sag_search_timeout}s)")
+                    logger.debug("SAG recall 超时（%.1f 秒）", CONFIG.sag_search_timeout)
                 except Exception as e:
                     sag_circuit_record_failure("exception")
                     recall_logger.record("sag", [], (time.time() - _sag_t0) * 1000, session_id=session_id, query=user_message, error=f"{type(e).__name__}: {e}")
@@ -576,12 +659,27 @@ def _execute_recall(
             try:
                 result = _do_hindsight_recall(user_message)
                 _hs_latency = (time.time() - _hs_t0) * 1000
-                _hs_results = result.get("results", []) if result else []
-                recall_logger.record("hindsight", _hs_results, _hs_latency, session_id=session_id, query=user_message)
                 if result is None:
+                    recall_logger.record("hindsight", [], _hs_latency, session_id=session_id, query=user_message, error="服务返回空")
                     circuit_record_failure("exception")
                 else:
+                    _hs_results = result.get("results", []) if result else []
+                    recall_logger.record("hindsight", _hs_results, _hs_latency, session_id=session_id, query=user_message)
                     circuit_record_success()
+            except HindsightClientError as e:
+                # 4xx = 客户端错误（如 query 超长被拒），不触发服务熔断；
+                # 5xx/None = 服务端故障或网络异常，计入熔断
+                if e.status_code is not None and 400 <= e.status_code < 500:
+                    recall_logger.record("hindsight", [], (time.time() - _hs_t0) * 1000, session_id=session_id, query=user_message, error=f"HTTP {e.status_code}（客户端错误，不熔断）")
+                    logger.warning(
+                        "Hindsight recall HTTP %d（客户端错误，不熔断）",
+                        e.status_code,
+                        extra={"session_id": session_id, "query_trunc": query_trunc, "event": "recall_client_error"},
+                    )
+                else:
+                    circuit_record_failure("service_error")
+                    recall_logger.record("hindsight", [], (time.time() - _hs_t0) * 1000, session_id=session_id, query=user_message, error=str(e))
+                    logger.error("Hindsight recall error", extra={"session_id": session_id, "query_trunc": query_trunc, "error": str(e), "event": "recall_error"})
             except Exception as e:
                 circuit_record_failure("exception")
                 recall_logger.record("hindsight", [], (time.time() - _hs_t0) * 1000, session_id=session_id, query=user_message, error=f"{type(e).__name__}: {e}")
@@ -610,9 +708,9 @@ def _execute_recall(
         if sag_active:
             _sag_t0 = time.time()
             try:
-                sag_raw_results = _do_sag_recall(user_message)
+                sag_raw_results, sag_error = _do_sag_recall(user_message)
                 _sag_latency = (time.time() - _sag_t0) * 1000
-                recall_logger.record("sag", sag_raw_results, _sag_latency, session_id=session_id, query=user_message)
+                recall_logger.record("sag", sag_raw_results, _sag_latency, session_id=session_id, query=user_message, error=sag_error)
             except Exception as e:
                 sag_circuit_record_failure("exception")
                 recall_logger.record("sag", [], (time.time() - _sag_t0) * 1000, session_id=session_id, query=user_message, error=f"{type(e).__name__}: {e}")
@@ -621,15 +719,18 @@ def _execute_recall(
     return result, kt_raw_results, skill_context, sag_raw_results
 
 
-# ========== 去重与预算 ==========
+# ========== 去重与消耗观测 ==========
 
 
-def _dedup_and_budget(
+def _dedup_and_measure(
     kept: list[dict[str, Any]],
     session_id: str,
     skill_context: str,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Turn-to-turn 去重 + 文本去重 + Token 预算守门。"""
+    """Turn-to-turn 去重 + 文本去重 + Token 实际消耗观测。
+
+    注意：此处**不做**任何 token 预算裁剪，仅统计并记录四路实际消耗。
+    """
     _touch_injected_session(session_id)
     with _injected_lock:
         _session_history = _injected_ids[session_id]
@@ -665,59 +766,31 @@ def _dedup_and_budget(
     from knowledge_navigation.core.filtering import dedup_by_text as _dedup_by_text
     kept = _dedup_by_text(kept)
 
-    if CONFIG.enable_token_budget:
-        hs_list = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
-        sag_list = [r for r in kept if r.get("source") == "sag"]
-        kt_list = [r for r in kept if r.get("source") == "knowledge_tree"]
-        skill_list = []
-        if skill_context:
-            skill_list = [{"text": skill_context, "source": "skill", "final_score": 1.0}]
+    hs_tokens_total = sum(estimate_tokens(str(r.get("text", ""))) for r in kept if r.get("source", "hindsight") == "hindsight")
+    sag_tokens_total = sum(estimate_tokens(str(r.get("text", ""))) for r in kept if r.get("source") == "sag")
+    kt_tokens_total = sum(estimate_tokens(str(r.get("text", ""))) for r in kept if r.get("source") == "knowledge_tree")
+    skill_tokens_total = estimate_tokens(skill_context) if skill_context else 0
 
-        hs_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_list)
-        sag_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in sag_list)
-        kt_tokens_before = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_list)
-        skill_tokens_before = estimate_tokens(skill_context) if skill_context else 0
+    total_tokens = hs_tokens_total + sag_tokens_total + kt_tokens_total + skill_tokens_total
 
-        hs_sag_combined = hs_list + sag_list
-        hs_kept_tb, kt_kept_tb, skill_kept_tb = apply_token_budget(
-            hs_sag_combined, kt_list, skill_list,
-            CONFIG.token_budget_total,
-            CONFIG.token_budget_hindsight_ratio,
-            CONFIG.token_budget_kt_ratio,
-            CONFIG.token_budget_skill_ratio,
-        )
-
-        hs_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb if r.get("source", "hindsight") == "hindsight")
-        sag_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in hs_kept_tb if r.get("source") == "sag")
-        kt_tokens_after = sum(estimate_tokens(str(r.get("text", ""))) for r in kt_kept_tb)
-        skill_tokens_after = estimate_tokens(skill_kept_tb[0]["text"]) if skill_kept_tb else 0
-
-        kept = hs_kept_tb + kt_kept_tb
-        if skill_kept_tb:
-            skill_context = skill_kept_tb[0]["text"]
-        else:
-            skill_context = ""
-
-        logger.info(
-            "Token budget: hs %d→%d, sag %d→%d, kt %d→%d, skill %d→%d (total budget=%d)",
-            hs_tokens_before, hs_tokens_after,
-            sag_tokens_before, sag_tokens_after,
-            kt_tokens_before, kt_tokens_after,
-            skill_tokens_before, skill_tokens_after,
-            CONFIG.token_budget_total,
-            extra={
-                "event": "token_budget",
-                "hs_tokens_before": hs_tokens_before,
-                "hs_tokens_after": hs_tokens_after,
-                "sag_tokens_before": sag_tokens_before,
-                "sag_tokens_after": sag_tokens_after,
-                "kt_tokens_before": kt_tokens_before,
-                "kt_tokens_after": kt_tokens_after,
-                "skill_tokens_before": skill_tokens_before,
-                "skill_tokens_after": skill_tokens_after,
-                "total_budget": CONFIG.token_budget_total,
-            },
-        )
+    # 设计决策（2026-08-10）：不做 token 预算控制，只记录实际消耗。
+    # 理由：召回内容一旦被 router 选中注入，token 成本就已经发生；在注入前
+    # 做截断只会牺牲内容完整性（尤其 s 路技能文档被拦腰截断后可读性骤降），
+    # 并不能真正省钱。因此这里仅做**无条件观测**，供 flywheel-health-report
+    # 消费 token_usage 事件做消耗趋势分析。
+    logger.info(
+        "Token usage: hs=%d sag=%d kt=%d skill=%d total=%d",
+        hs_tokens_total, sag_tokens_total, kt_tokens_total, skill_tokens_total,
+        total_tokens,
+        extra={
+            "event": "token_usage",
+            "hs_tokens": hs_tokens_total,
+            "sag_tokens": sag_tokens_total,
+            "kt_tokens": kt_tokens_total,
+            "skill_tokens": skill_tokens_total,
+            "total_tokens": total_tokens,
+        },
+    )
 
     return kept, skill_context
 
@@ -810,7 +883,7 @@ def _assemble_xml_output(
             for r in sag_kept
         )
         context_lines.append(
-            f'<knowledge source="sag" count="{len(sag_kept)}"\n'
+            f'<knowledge source="sag" count="{len(sag_kept)}">\n'
             f"{sag_xml}\n"
             f"</knowledge>"
         )
@@ -940,6 +1013,13 @@ def _post_process_recall(
         except Exception:
             logger.debug("causal_boost 异常（非关键路径，跳过）")
 
+    # 应用 [标记: 已解决] 降权——在 boost/causal_boost 之后，确保降权不干扰提权链路
+    for r in filtered_raw:
+        nid = r.get("id", "")
+        factor = r.get("_demote_factor")
+        if factor is not None and nid in rerank_map:
+            rerank_map[nid] = rerank_map[nid] * factor
+
     effective_max = _compaction.get_effective_max_results(session_id, CONFIG.max_results)
     mentioned_at_map = _build_mentioned_at_map(filtered_raw)
     kept, all_scores, score_comparison = filter_by_score(
@@ -1036,7 +1116,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     query_trunc = user_message[:60]
 
     _hs_active = mask["h"] and not _hs_circuit_open
-    _kt_active = mask["kt"] and (HAS_KNOWLEDGE_TREE or _ensure_kt_imported())
+    _kt_active = mask["kt"] and _ensure_kt_imported() and not kt_circuit_is_open()
     _s_active = mask["s"]
     _sag_active = mask.get("sag", False)
     _active_count = sum([_hs_active, _kt_active, _s_active, _sag_active])
@@ -1121,7 +1201,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
 
         logger.info("SAG recall: %d sections merged (capped to %d)", sag_count, len(sag_candidates), extra={"session_id": session_id, "event": "sag_merge", "count": len(sag_candidates)})
 
-    kept, _skill_context = _dedup_and_budget(kept, session_id, _skill_context)
+    kept, _skill_context = _dedup_and_measure(kept, session_id, _skill_context)
 
     return _assemble_xml_output(kept, _skill_context, session_id, user_message, {
         "query_trunc": query_trunc,

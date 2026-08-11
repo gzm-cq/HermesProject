@@ -60,29 +60,28 @@ class TestGenerateRecommendations:
         router_recs = [r for r in recs if r.get("flywheel") == "Router"]
         assert len(router_recs) >= 1
 
-    def test_token_exhaustion_recommendation(self) -> None:
-        """Token 耗尽率高应生成优化建议。"""
+    def test_token_usage_never_recommends(self) -> None:
+        """Token 已改为纯消耗观测（不做预算控制），任何消耗量都不应产生建议。"""
         (router_m, skill_m, kn_m, kt_m, cluster_m,
          token_m, sag_contr_m, skill_usage_m, error_m) = self._empty_metrics()
+        token_m.clear()
         token_m.update({
-            "status": "ok",
-            "total_budget": 8000,
             "event_count": 10,
-            "exhaust_pct": 60.0,
-            "exhaust_count": 6,
+            "grand_total_tokens": 60000,
             "total_stats": {"avg": 6000, "p50": 6000, "p90": 7500, "max": 7800},
-            "hs_stats": {"avg": 3000, "p50": 3000, "p90": 3500, "max": 3600},
-            "kt_stats": {"avg": 1500, "p50": 1500, "p90": 1800, "max": 1900},
-            "skill_stats": {"avg": 200, "p50": 200, "p90": 300, "max": 300},
+            "hs_stats": {"avg": 300, "p50": 300, "p90": 350, "max": 360},
+            "sag_stats": {"avg": 100, "p50": 100, "p90": 120, "max": 150},
+            "kt_stats": {"avg": 200, "p50": 200, "p90": 280, "max": 300},
+            "skill_stats": {"avg": 5400, "p50": 5400, "p90": 6800, "max": 7000},
+            "source_share_pct": {"hs": 5.0, "sag": 1.7, "kt": 3.3, "skill": 90.0},
         })
         recs = generate_recommendations(
             router_m, skill_m, kn_m, kt_m, cluster_m,
             [], {}, [], [],
             token_m, sag_contr_m, skill_usage_m, error_m,
         )
-        # 应有 Token 相关建议
         token_recs = [r for r in recs if "Token" in r.get("flywheel", "") or "token" in r.get("desc", "").lower()]
-        assert len(token_recs) >= 1
+        assert token_recs == []
 
     def test_sag_zero_merge_recommendation(self) -> None:
         """SAG merge 零结果率高应生成优化建议。"""

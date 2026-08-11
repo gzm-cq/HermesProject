@@ -164,6 +164,7 @@ class RevisionConfig:
     llm_model: str = "s-deepseek-v4-flash"
     llm_api_key: str = ""
     llm_timeout: int = 60
+    llm_max_tokens: int = 4096
 
     @classmethod
     def from_yaml(cls, path: str = None) -> "RevisionConfig":
@@ -190,6 +191,7 @@ class RevisionConfig:
                     llm_model=revision_cfg.get("llm_model", llm_model),
                     llm_api_key=revision_cfg.get("llm_api_key", ""),
                     llm_timeout=revision_cfg.get("llm_timeout", cls.llm_timeout),
+                    llm_max_tokens=revision_cfg.get("llm_max_tokens", cls.llm_max_tokens),
                 )
             except Exception as e:
                 # 记录加载失败原因，使用默认配置
@@ -198,11 +200,18 @@ class RevisionConfig:
 
     @classmethod
     def from_env(cls) -> "RevisionConfig":
+        # 继承链：KN_REFLECTION_MODEL → SELF_EVOLVING_LLM_MODEL → LLM_MODEL_LIGHT → LLM_MODEL_MAIN
+        llm_model = os.getenv("KN_REFLECTION_MODEL") or \
+                    os.getenv("SELF_EVOLVING_LLM_MODEL") or \
+                    os.getenv("LLM_MODEL_LIGHT") or \
+                    os.getenv("LLM_MODEL_MAIN") or \
+                    cls.llm_model
         return cls(
             llm_api_url=os.getenv("KN_REFLECTION_API_URL", cls.llm_api_url),
-            llm_model=os.getenv("KN_REFLECTION_MODEL", cls.llm_model),
+            llm_model=llm_model,
             llm_api_key=os.getenv("KN_REFLECTION_API_KEY") or os.getenv("LITELLM_MASTER_KEY", ""),
             llm_timeout=int(os.getenv("KN_REFLECTION_TIMEOUT", str(cls.llm_timeout))),
+            llm_max_tokens=int(os.getenv("KN_REFLECTION_MAX_TOKENS", str(cls.llm_max_tokens))),
             reflection_depth=int(os.getenv("SE_REVISION_DEPTH", str(cls.reflection_depth))),
         )
 
@@ -226,8 +235,10 @@ class RevisionOperator:
             timeout=self.config.llm_timeout,
         )
 
-    def _call_llm_json(self, messages: list[dict], max_tokens: int = 2048) -> dict:  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
+    def _call_llm_json(self, messages: list[dict], max_tokens: int = 0) -> dict:
         """调用 LLM 并解析 JSON 响应"""
+        if max_tokens <= 0:
+            max_tokens = self.config.llm_max_tokens
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.3,
@@ -240,8 +251,10 @@ class RevisionOperator:
             logger.warning("LLM 调用失败: %s", e)
             return {}
 
-    def _call_llm_text(self, messages: list[dict], max_tokens: int = 2048) -> str:
+    def _call_llm_text(self, messages: list[dict], max_tokens: int = 0) -> str:
         """调用 LLM 并返回纯文本"""
+        if max_tokens <= 0:
+            max_tokens = self.config.llm_max_tokens
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.3,

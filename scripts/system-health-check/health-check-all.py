@@ -158,9 +158,12 @@ def check_hermes():
     proc_count = count_processes(r'hermes_cli.*gateway')
     dup = proc_count > 1
 
-    out, _, _ = run("curl -s -o /dev/null -w '%{http_code}:%{time_total}' "
-                    "http://127.0.0.1:8642/health --max-time 5 2>/dev/null || echo 'unreachable'")
-    api_endpoint = out if out else "unreachable"
+    out, err, rc = run(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}:%{time_total}",
+         "http://127.0.0.1:8642/health", "--max-time", "5"],
+        shell=False,
+    )
+    api_endpoint = out if out and rc == 0 else "unreachable"
 
     out, _, _ = run("tail -3 ~/.hermes/logs/gateway.log 2>/dev/null | "
                     "grep -ciE 'error|traceback|exception' 2>/dev/null; echo ''")
@@ -192,7 +195,7 @@ def check_bifrost():
     health_status = out.strip() or "unknown"
 
     # API 健康
-    out, _, _ = run("curl -s http://127.0.0.1:4142/health --max-time 5")
+    out, _, _ = run(["curl", "-s", "http://127.0.0.1:4142/health", "--max-time", "5"], shell=False)
     api_health = out or "unreachable"
     api_ok = '"status":"ok"' in api_health.replace(" ", "")
 
@@ -237,11 +240,11 @@ def check_hindsight():
     dup = proc_count > 1
 
     # Try port 9177 (actual daemon port), then 2190, then 8000
-    out, _, rc = run("curl -s http://127.0.0.1:9177/health --max-time 5")
+    out, _, rc = run(["curl", "-s", "http://127.0.0.1:9177/health", "--max-time", "5"], shell=False)
     if rc != 0:
-        out, _, rc = run("curl -s http://127.0.0.1:2190/health --max-time 5")
+        out, _, rc = run(["curl", "-s", "http://127.0.0.1:2190/health", "--max-time", "5"], shell=False)
     if rc != 0:
-        out, _, _ = run("curl -s http://127.0.0.1:8000/health --max-time 5")
+        out, _, _ = run(["curl", "-s", "http://127.0.0.1:8000/health", "--max-time", "5"], shell=False)
     health_resp = out or "unreachable"
 
     out, _, rc = _psql("hindsight", "SELECT 1 AS alive")
@@ -276,8 +279,12 @@ def check_sag():
     sag_mcp_alive = sag_mcp_pid > 0
 
     # HTTP health check on MCP SSE port
-    out, _, rc = run("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4175/ --max-time 5 2>/dev/null || echo '000'")
-    sag_http = out.strip() if out else "000"
+    out, _, rc = run(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+         "http://127.0.0.1:4175/", "--max-time", "5"],
+        shell=False,
+    )
+    sag_http = out.strip() if out and rc == 0 else "000"
     sag_reachable = sag_http not in ("000", "")
 
     # DB connectivity (sag_lite database in shared-postgres:5434)
@@ -321,7 +328,7 @@ def check_postgres():
     out, _, _ = _psql("hindsight", "SELECT count(*) FROM pg_extension WHERE extname = 'vector'")
     pgvector = int(out or 0)
 
-    out, _, _ = run("df -h / | tail -1 | awk '{print $5}' | tr -d '%' || echo 0")
+    out, _, _ = run("df --output=pcent / 2>/dev/null | tail -1 | tr -d '%' || echo 0")
     disk_pct = int(out or 0)
 
     st = "ok"
@@ -392,10 +399,11 @@ def check_mcp():
     wmcp_reachable = False
     wmcp_http = ""
     out2, err2, rc2 = run(
-        f'curl -s -o /dev/null -w "%{{http_code}}" '
-        f'--connect-timeout {WINDOWS_MCP_TIMEOUT} --max-time {WINDOWS_MCP_TIMEOUT+3} '
-        f'{WINDOWS_MCP_URL}',
-        timeout=WINDOWS_MCP_TIMEOUT+5
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+         "--connect-timeout", str(WINDOWS_MCP_TIMEOUT), "--max-time", str(WINDOWS_MCP_TIMEOUT + 3),
+         WINDOWS_MCP_URL],
+        shell=False,
+        timeout=WINDOWS_MCP_TIMEOUT + 5,
     )
     wmcp_http = out2.strip()
     wmcp_reachable = wmcp_http not in ("", "000", "fail")
@@ -435,8 +443,12 @@ def check_dashboard():
     svc_active = out.strip() == "active"
 
     # HTTP check — dashboard returns HTML on /
-    out, _, _ = run("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9119/ --max-time 5 2>/dev/null || echo '000'")
-    db_http = out.strip() if out else "000"
+    out, _, rc = run(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+         "http://127.0.0.1:9119/", "--max-time", "5"],
+        shell=False,
+    )
+    db_http = out.strip() if out and rc == 0 else "000"
     db_reachable = db_http not in ("000", "")
 
     st = "ok"
@@ -463,8 +475,12 @@ def check_moonbridge():
     mb_alive = mb_pid > 0
 
     # HTTP check — moonbridge returns 404 on / which means it's alive
-    out, _, _ = run("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38440/ --max-time 5 2>/dev/null || echo '000'")
-    mb_http = out.strip() if out else "000"
+    out, _, rc = run(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+         "http://127.0.0.1:38440/", "--max-time", "5"],
+        shell=False,
+    )
+    mb_http = out.strip() if out and rc == 0 else "000"
     mb_reachable = mb_http not in ("000", "")
 
     st = "ok"
@@ -577,7 +593,7 @@ if __name__ == "__main__":
         "moonbridge": check_moonbridge,
     }
     
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as executor:
         futures = {executor.submit(fn): name for name, fn in checks.items()}
         for future in as_completed(futures):
             name = futures[future]

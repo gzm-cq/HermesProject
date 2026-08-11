@@ -143,7 +143,7 @@ def parse_trace_log(trace_path: Path,
         "multi_hop_expand": [],
         "recall_timeout": [],
         "recall_sag": [],
-        "token_budget": [],
+        "token_usage": [],
         "sag_merge": [],
         "eval_query_bypass": [],
     }

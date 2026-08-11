@@ -24,7 +24,7 @@
 │    │   ├─ 知识树 KT（结构化知识 + 实体多跳展开）                           │
 │    │   ├─ Skill（三级筛选：关键词 → Embedding → LLM 精排）                │
 │    │   └─ SAG（合成记忆搜索，独立熔断器）                                  │
-│    ├─ 跨域去重 + Token 预算分配                                          │
+│    ├─ 跨域去重 + 实际 token 消耗观测（预算截断已移除）                      │
 │    ├─ XML 组装 → 注入 LLM 上下文                                         │
 │    └─ 结构化日志 → trace.log                                            │
 │                                                                         │
@@ -101,7 +101,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
 | 5 | `_expand_multi_hop` | L730-738 | 知识树实体多跳展开 |
 | 6 | `_post_process_recall` | L883-916 | 降级 + 过滤 + boost + 因果链 + 压缩 + 跨域去重 |
 | 7 | SAG 合并 | L1085-1122 | SAG 候选合并到主结果集 |
-| 8 | `_dedup_and_budget` | L627-722 | Turn-to-turn 去重 + 文本去重 + Token 预算 |
+| 8 | `_dedup_and_measure` | L725-790 | Turn-to-turn 去重 + 文本去重 + 实际 token 消耗观测 |
 | 9 | `_assemble_xml_output` | L753-881 | 组装 XML 标签化上下文 + 记录日志 |
 
 ### 2.2 四路召回详解
@@ -144,7 +144,7 @@ def _do_kt_recall(session_id: str, query: str) -> list[dict]:
 - **数据源**：knowledge-tree-plugin（`recall_from_tree_raw`）
 - **检索方式**：向量检索 + 实体多跳展开
 - **容错**：懒加载模块，异常时降级为空列表
-- **关键参数**：`KN_TOKEN_BUDGET_KT_RATIO`
+- **关键参数**：`KN_MIN_SCORE`、`KN_MAX_RESULTS`
 
 #### Route 3：Skill（三级混合筛选）
 
@@ -165,7 +165,7 @@ def _do_skill_match(query: str) -> str:
   1. **关键词预筛**（`KN_SKILL_KEYWORD_PRESCREEN`）：top-30 候选
   2. **Embedding 预筛**（`KN_SKILL_EMBEDDING_PRESCREEN`）：bge-m3 向量 top-20
   3. **LLM 精排**：DeepSeek 对候选集打分，返回 top-K
-- **关键参数**：`KN_TOKEN_BUDGET_SKILL_RATIO`、`KN_SKILL_EMBEDDING_TOP_K`
+- **关键参数**：`KN_SKILL_EMBEDDING_TOP_K`、`KN_SKILL_KEYWORD_PRESCREEN`
 
 #### Route 4：SAG（合成记忆搜索）
 
@@ -185,32 +185,17 @@ def _do_sag_recall(query: str) -> list[dict]:
 - **独立熔断器**：连续失败时自动熔断，跳过 SAG 召回
 - **关键参数**：`KN_SAG_SEARCH_TOP_K`、`KN_SAG_MAX_INJECT`、`KN_SAG_MIN_SCORE`
 
-### 2.3 跨域去重与 Token 预算
+### 2.3 跨域去重与实际消耗观测
 
-**函数**：`_dedup_and_budget` — [router.py L627-722](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks/router.py#L627-L722)
+**函数**：`_dedup_and_measure` — [router.py L725-790](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks/router.py#L725-L790)
 
-三步处理：
+两步处理：
 
 1. **Turn-to-turn 去重**（L634-663）：从 `_injected_ids[session_id]` 读取已注入历史，`demote` 模式降权 ×0.1 后重排，`remove` 模式直接删除
 
 2. **文本去重**（L665-666）：`dedup_by_text(kept)` 字符 n-gram Jaccard 相似度去重
 
-3. **Token 预算分配**（L668-720）：按 source 分桶，调用 `apply_token_budget`
-
-**`apply_token_budget`** — `filtering.py L717-727`
-
-```python
-ratio_sum = hindsight_ratio + kt_ratio + skill_ratio
-if ratio_sum <= 0:
-    return [], [], []
-hs_budget = int(total_budget * hindsight_ratio / ratio_sum)
-kt_budget = int(total_budget * kt_ratio / ratio_sum)
-skill_budget = int(total_budget * skill_ratio / ratio_sum)
-```
-
-- 三比例通过 `ratio / ratio_sum` **隐式归一化**，不要求配置时和为 1.0
-- 某域用不完预算时，剩余按比例分配给其他域（L742-765）
-- 默认比例：Hindsight 0.4 / KT 0.4 / Skill 0.2
+> ⚠️ **Token 预算截断已于 2026-08-10 移除**（决策详见 [data-flywheel-system-map.md §4.8](data-flywheel-system-map.md)）。原 `_dedup_and_budget` 的 `apply_token_budget` 三比例截断逻辑整体删除，`filtering.py` 相关死代码已清理。当前仅做**实际 token 消耗观测**：`_dedup_and_measure` 在合并后无条件输出 `token_usage` 事件（含 `total_tokens` 字段），用于离线趋势分析，不再做任何注入前截断。
 
 ### 2.4 XML 输出组装
 
@@ -287,7 +272,7 @@ def post_llm_call(session_id, user_message, assistant_response, **kwargs):
 | `recall_error` | router.py L518, L588 | 召回异常 |
 | `recall_timeout` | router.py L514 | Hindsight 超时 |
 | `multi_hop_expand` | router.py L738 | 多跳展开条数 |
-| `token_budget` | router.py L701-720 | Token 预算分配前后对比 |
+| `token_usage` | router.py L786 | 实际 token 消耗（total_tokens 等，仅观测） |
 | `sag_recall` | router.py L351-354 | SAG recall 成功条数 |
 | `sag_merge` | router.py L1122 | SAG 候选合并条数 |
 | `skill_match` | router.py L310-314 | Skill 匹配命中列表 |
@@ -360,7 +345,7 @@ def post_llm_call(session_id, user_message, assistant_response, **kwargs):
 | `analyze_router` | trace.log router_mask + recall | router_empty_pct, sag_total_kept |
 | `analyze_skill_eval` | skill 评估基线 | skill_eval_score |
 | `analyze_skill_usage` | `.usage.json` | skill_used_count |
-| `analyze_token_budget` | trace.log token_budget | token_budget_usage |
+| `analyze_token_usage` | trace.log token_usage | token_usage_total |
 | `analyze_sag_contribution` | trace.log sag_merge | sag_contribution_rate |
 | `analyze_global_errors` | error.log | error_count |
 | `analyze_kt_baseline` | KT 基线 | kt_node_count |
@@ -421,7 +406,7 @@ def append_daily_summary(data_flywheel: Path, summary: dict) -> None:
 
 **文件**：`scripts/flywheel-health-report/src/flywheel_health_report/auto_tuner/tuner.py`
 
-### 5.2 19 个可调参数
+### 5.2 15 个可调参数
 
 | 参数 | 反馈键 | 方向 | 类型 |
 |------|--------|------|------|
@@ -435,10 +420,6 @@ def append_daily_summary(data_flywheel: Path, summary: dict) -> None:
 | `KN_SAG_MAX_INJECT` | sag_total_kept | up_better | int |
 | `KN_SAG_SEARCH_TOP_K` | sag_total_kept | up_better | int |
 | `KN_SAG_MIN_SCORE` | sag_total_kept | down_better | float |
-| `KN_TOKEN_BUDGET_TOTAL` | kn_judge_avg_relevance | up_better | int |
-| `KN_TOKEN_BUDGET_HINDSIGHT_RATIO` | kn_judge_avg_relevance | up_better | float |
-| `KN_TOKEN_BUDGET_KT_RATIO` | kn_judge_avg_relevance | up_better | float |
-| `KN_TOKEN_BUDGET_SKILL_RATIO` | skill_used_count | up_better | float |
 | `KN_TURN_TO_TURN_MODE` | kn_judge_avg_relevance | stable_ok | str |
 | `KN_CROSS_DOMAIN_DEDUP_MODE` | kn_judge_avg_relevance | stable_ok | str |
 | `KN_CAUSAL_BOOST_ALPHA` | kn_judge_avg_relevance | up_better | float |
@@ -529,11 +510,13 @@ return gw_epoch > tune_epoch
 | 连续恶化暂停 | `consecutive_degradation >= 3` | `suspended=True, locked=True`，回滚 initial_value |
 | 冷却期 | applied 后 24h 内 | 跳过调优 |
 
-### 5.8 normalize_ratio_trio — L104-237
+### 5.8 normalize_ratio_trio（已废弃 — 2026-08-10）
 
-**触发条件**：选中的参数是 `KN_TOKEN_BUDGET_KT_RATIO` / `SKILL_RATIO` / `HINDSIGHT_RATIO` 之一
+> ⚠️ **本节已废弃**：`normalize_ratio_trio` 与 `KN_TOKEN_BUDGET_*_RATIO` 三个比例参数一同于 2026-08-10 随 token 预算移除而下线（详见 [data-flywheel-system-map.md §4.8](data-flywheel-system-map.md)）。当前 Auto-Tuner 的 15 个可调参数中已无比例型参数，无需三比例归一化。原归一化算法保留于此仅供历史参考：
 
-**归一化算法**：
+**触发条件（历史）**：选中的参数是 `KN_TOKEN_BUDGET_KT_RATIO` / `SKILL_RATIO` / `HINDSIGHT_RATIO` 之一
+
+**归一化算法（历史）**：
 
 1. clip `tuned_new_value` 到自身 `[pmin, pmax]`
 2. 剩余预算 `remain = 1.0 - tuned_value`，按另外两参数当前权重分摊
@@ -549,7 +532,7 @@ if abs(residual) >= 1e-4:
     result[max_key] = round(result[max_key] + residual, 4)
 ```
 
-**联动写入**：三个比例同时写入 `.env`，日志新增 `ratio_trio_normalized` 和 `ratio_trio_old` 字段
+**联动写入（历史）**：三个比例同时写入 `.env`，日志新增 `ratio_trio_normalized` 和 `ratio_trio_old` 字段
 
 ### 5.9 飞书通知
 
@@ -588,7 +571,7 @@ systemctl restart hermes-gateway
   → systemd EnvironmentFile=-/root/.hermes/.env
     → hermes-gateway 进程启动
       → KnowledgeNavigationConfig.from_env()
-        → 读取 57 个 ENV 变量
+        → 读取 ENV 变量（token 预算 5 字段已随 2026-08-10 决策移除）
         → 4 路召回使用新参数
 ```
 
@@ -598,16 +581,12 @@ systemctl restart hermes-gateway
 
 **加载优先级**：`kit-config > .env > 代码默认值`
 
-**57 个 ENV 参数**（部分关键参数）：
+**ENV 参数**（token 预算 5 字段已移除，详见 config.py，部分关键参数）：
 
 | ENV | 字段 | 默认值 | 说明 |
 |-----|------|--------|------|
 | `KN_MAX_RESULTS` | max_results | 3 | 每路最大召回条数 |
 | `KN_MIN_SCORE` | min_score | 0.35 | 最低分数阈值 |
-| `KN_TOKEN_BUDGET_TOTAL` | token_budget_total | 4000 | 总 token 预算 |
-| `KN_TOKEN_BUDGET_HINDSIGHT_RATIO` | token_budget_hindsight_ratio | 0.4 | Hindsight 预算比例 |
-| `KN_TOKEN_BUDGET_KT_RATIO` | token_budget_kt_ratio | 0.4 | KT 预算比例 |
-| `KN_TOKEN_BUDGET_SKILL_RATIO` | token_budget_skill_ratio | 0.2 | Skill 预算比例 |
 | `KN_SAG_MAX_INJECT` | sag_max_inject | 3 | SAG 最大注入条数 |
 | `KN_ENABLE_CAUSAL_CHAIN` | enable_causal_chain | True | 因果链开关 |
 | `KN_SKILL_EMBEDDING_PRESCREEN` | kn_skill_embedding_prescreen | True | Skill Embedding 预筛 |
@@ -691,7 +670,7 @@ ExecStart=/root/.hermes/...
 |------|---------|
 | [router.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks/router.py) | 4 路召回 + pre_llm_call + 去重 + XML 组装 |
 | [config.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/config.py) | from_env() + setup_logging() + JSONFormatter |
-| [filtering.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py) | apply_token_budget() 三比例归一化 |
+| [filtering.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py) | 去重/过滤工具（`apply_token_budget` 已随预算移除而删除） |
 | [skill_matcher.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/skill_matcher.py) | Skill 三级筛选 |
 | [turn_gate.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/turn_gate.py) | 门控规则 |
 

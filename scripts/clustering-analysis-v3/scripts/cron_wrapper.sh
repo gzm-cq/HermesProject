@@ -103,13 +103,18 @@ should_skip() {
 }
 
 # ===== 飞书通知（lark-cli 文字消息）=====
-FEISHU_CHAT_ID="${FEISHU_CHAT_ID:-oc_f04a9f65d4b780511cc3f402c7d54ac3}"
+FEISHU_CHAT_ID="${FEISHU_CHAT_ID:-}"
 
 send_feishu_notification() {
     local subject="$1"
     local message="$2"
     local full_msg
     full_msg=$(printf "%b\n%b" "$subject" "$message")
+
+    if [[ -z "$FEISHU_CHAT_ID" ]]; then
+        warn "未配置 FEISHU_CHAT_ID，跳过飞书通知"
+        return 1
+    fi
 
     if command -v lark-cli &>/dev/null; then
         if lark-cli im +messages-send \

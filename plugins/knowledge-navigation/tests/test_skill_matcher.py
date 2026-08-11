@@ -735,3 +735,79 @@ def test_embedding_degraded_skips_emb(mock_ensure: MagicMock) -> None:
     assert len(results) == 1
     assert results[0]["name"] == "docker-patterns"
     sm._skill_index = None
+
+
+# ====================================================================
+# 调优参数运行期读取（热更新）与 clamp 保护
+# ====================================================================
+# 回归防线：这些参数曾在模块导入期（含函数默认参数）一次性求值，
+# 导致改 .env 后必须重启 gateway 才生效。若有人改回 `top_k: int = _TOP_K`
+# 这类 def 期求值写法，下列测试会立即失败。
+
+
+def _make_index(n: int) -> list[dict[str, str]]:
+    """构造 n 个均能命中关键词 docker 的 skill，用于验证 top_k 截断。"""
+    return [
+        {"name": f"docker-skill-{i}", "description": "docker deploy container", "category": "ops"}
+        for i in range(n)
+    ]
+
+
+class TestTuningParamsRuntimeRead:
+    def test_accessor_reflects_env_change(self, monkeypatch) -> None:
+        """改 env 后 accessor 立即返回新值，无需重新导入模块。"""
+        import knowledge_navigation.core.skill_matcher as sm
+
+        monkeypatch.setenv("KN_SKILL_TOP_K", "7")
+        assert sm._get_top_k() == 7
+        monkeypatch.setenv("KN_SKILL_TOP_K", "2")
+        assert sm._get_top_k() == 2
+
+    def test_default_arg_not_frozen_at_def_time(self, monkeypatch) -> None:
+        """不传 top_k 时，函数默认值随 env 变化（而非 def 期固化）。"""
+        import knowledge_navigation.core.skill_matcher as sm
+
+        index = _make_index(50)
+        for value in (5, 12, 27):
+            monkeypatch.setenv("KN_SKILL_PRESCREEN_TOP_K", str(value))
+            assert len(sm._keyword_prescreen("docker", index)) == value
+
+    def test_explicit_arg_overrides_env(self, monkeypatch) -> None:
+        """显式传参优先级仍高于 env。"""
+        import knowledge_navigation.core.skill_matcher as sm
+
+        monkeypatch.setenv("KN_SKILL_PRESCREEN_TOP_K", "27")
+        assert len(sm._keyword_prescreen("docker", _make_index(50), top_k=4)) == 4
+
+    def test_invalid_values_fall_back_to_default(self, monkeypatch) -> None:
+        """误配 0 / 负数 / 非数字时回退默认值。
+
+        其中 batch_size=0 若不 clamp 会让 range(step=0) 抛 ValueError。
+        """
+        import knowledge_navigation.core.skill_matcher as sm
+
+        cases = [
+            ("KN_SKILL_EMBEDDING_BATCH_SIZE", "0", sm._get_embedding_batch_size, 20),
+            ("KN_SKILL_TOP_K", "-3", sm._get_top_k, 3),
+            ("KN_SKILL_MAX_SKILLS", "abc", sm._get_max_skills, 500),
+            ("KN_SKILL_EMBEDDING_TOP_K", "0", sm._get_embedding_top_k, 20),
+            ("KN_SKILL_MATCH_TIMEOUT", "-1", sm._get_llm_timeout, 45),
+        ]
+        for key, bad_value, accessor, expected in cases:
+            monkeypatch.setenv(key, bad_value)
+            assert accessor() == expected, f"{key}={bad_value} 未回退到 {expected}"
+
+    def test_snapshot_constants_still_exported(self) -> None:
+        """导入期快照保留供向后兼容，且恒为正整数。
+
+        注意：这些快照会被部署环境的 .env 覆盖（例如线上配了
+        KN_SKILL_EMBEDDING_TOP_K=30），因此只断言不变量而非具体数值，
+        避免单测与部署环境耦合。
+        """
+        import knowledge_navigation.core.skill_matcher as sm
+
+        for name in ("_TOP_K", "_MAX_SKILLS", "_PRESCREEN_TOP_K",
+                     "_EMBEDDING_TOP_K", "_EMBEDDING_BATCH_SIZE", "_LLM_TIMEOUT"):
+            value = getattr(sm, name)
+            assert isinstance(value, int), f"{name} 应为 int"
+            assert value >= 1, f"{name} 应为正整数，实际 {value}"

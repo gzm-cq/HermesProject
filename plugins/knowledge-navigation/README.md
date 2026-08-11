@@ -1,15 +1,15 @@
 # 知识导航插件（knowledge_navigation）
 
-> 自动 recall Hindsight 经验记忆并融合知识树知识点，通过 LLM Router 智能决策三路注入，采用**三级混合筛选架构**提升召回质量与效率
+> 自动 recall Hindsight 经验记忆并融合知识树知识点与 SAG 梦境反思，通过 LLM Router 智能决策**四路注入（Hindsight / 知识树 / SAG / Skill）**，采用**三级混合筛选架构**提升召回质量与效率
 
 ## ✨ 插件简介
 
 知识导航插件是 Hermes 平台的核心增强组件，专为提升大语言模型（LLM）的上下文感知能力而设计。它在每次 LLM 调用前自动触发，通过 **LLM Router** 决策需要注入哪些知识源，从 Hindsight 记忆库召回经验片段、知识树提取结构化知识、Skill 匹配操作流程，以 XML 语义标签格式注入到请求上下文中。
 
 **核心特性**：
-- 🧠 **LLM Router 智能决策**：基于 need analysis 判断 H（经验）/ KT（知识）/ S（技能）三路是否需要注入；支持 confidence 置信度字段，低置信度（<0.5）时自动保守 fallback 全开
+- 🧠 **LLM Router 智能决策**：基于 need analysis 判断 **H（经验）/ KT（知识）/ SAG（梦境反思）/ S（技能）四路**是否需要注入；支持 confidence 置信度字段，低置信度（<0.5）时自动保守 fallback 全开
 - 🔍 **三级混合筛选**：Skill 匹配采用"关键词粗筛（Top-30）→ Embedding 语义精筛（Top-20）→ LLM 精排（Top-3）"三级漏斗，平衡召回率与效率
-- ⚡ **高性能**：内置连接池、超时控制与熔断器；按 mask 条件执行（多路并行/单路串行）；Router 缓存（TTL 5 分钟，64 条目上限），同 session 相同消息复用决策
+- ⚡ **高性能**：内置连接池、超时控制与熔断器；四路按 mask 条件**超时隔离真并行**执行（每路独立截止时间，互不连坐阻塞）；Router 缓存（TTL 5 分钟，64 条目上限），同 session 相同消息复用决策
 - 📊 **可观测性**：结构化 JSON 日志（含 router_mask 事件），支持监控与基线对比；fallback 原因分类统计（json_parse/api_401/api_timeout/api_error/api_other）；调用耗时记录
 - 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知；Router 异常自动 fallback 全开；Embedding 调用失败自动降级；401 Unauthorized 自动重试（刷新 API key）
 - 🧩 **易集成**：零侵入式 Hook 注册，开箱即用
@@ -53,7 +53,7 @@ hooks:
 | `max_text_length` | `KN_MAX_TEXT_LENGTH` | `200` | 每条记忆截断长度（字符） |
 | `trace_log_path` | `KN_TRACE_LOG_PATH` | `trace.log` | 日志文件路径 |
 | `circuit_breaker_threshold` | `KN_CB_THRESHOLD` | `3` | 熔断器阈值（连续失败次数） |
-| `circuit_breaker_cooldown` | `KN_CB_COOLDOWN` | `120` | 熔断冷却时间（秒） |
+| `circuit_breaker_cooldown` | `KN_CB_COOLDOWN` | `90` | 熔断冷却时间（秒，H / KT / SAG 三路共用） |
 | `feishu_app_id/app_secret/home_channel` | `FEISHU_APP_ID` 等 | `""` | 飞书 OpenAPI 凭据与告警群聊 |
 | `enable_temporal` | `KN_ENABLE_TEMPORAL` | `true` | 是否启用时态衰减排序 |
 | `eval_queries_path` | `KN_EVAL_QUERIES_PATH` | `""` | 评测查询 JSON 路径 |
@@ -98,19 +98,20 @@ hooks:
   │  · 纯确认/闲聊（"好的"/"收到"/"嗯"等严格匹配）
   │  · 长英文消息（中文占比 < 5%）
   ↓ 否则默认不跳过，交给 Router 决策
-熔断器检查（仅影响 Hindsight 路）
+熔断器检查（H / KT / SAG 三路各带独立熔断器，单路打开不影响其他路）
   ↓
-LLM Router → {h: bool, kt: bool, s: bool}
+LLM Router → {h: bool, kt: bool, s: bool, sag: bool}
   │ 异常/超时 → fallback 全开
   ↓
 全 false? → return None
   ↓
-按 mask 条件执行
-  ├─ 2+ 路 → ThreadPoolExecutor 并行
+按 mask 条件执行（四路超时隔离真并行）
+  ├─ 2+ 路 → ThreadPoolExecutor 并发，每路独立截止时间（t0 为锚点），超时即 cancel 互不阻塞
   └─ 1 路 → 串行
-      ├─ h → _do_hindsight_recall()
-      ├─ kt → _do_kt_recall() → multi_hop_expand()（实体多跳关联展开）
-      └─ s → _do_skill_match()（三级混合筛选）
+      ├─ h   → _do_hindsight_recall()      （经验域）
+      ├─ kt  → _do_kt_recall() → multi_hop_expand()（实体多跳关联展开，知识域）
+      ├─ sag → _do_sag_recall()            （SAG 梦境反思召回，反思域）
+      └─ s   → _do_skill_match()           （三级混合筛选，能力域）
   ↓
 后处理（过滤/去重/融合/标签化注入）
 ```
@@ -168,7 +169,7 @@ python -m knowledge_navigation --list-hooks
   "timestamp": "2026-06-28T00:47:30.123Z",
   "session_id": "abc123de",
   "event": "router_mask",
-  "mask": {"h": true, "kt": false, "s": true}
+  "mask": {"h": true, "kt": false, "s": true, "sag": false}
 }
 ```
 
@@ -188,18 +189,18 @@ python -m knowledge_navigation --list-hooks
 
 ## 🔔 熔断与告警
 
-插件内置**熔断器**（Circuit Breaker）：
+插件内置**熔断器**（Circuit Breaker），**Hindsight / 知识树(KT) / SAG 三路各带独立熔断器**（阈值 `circuit_breaker_threshold=3` 次连续失败、冷却 `circuit_breaker_cooldown=90` 秒），防级联故障：
 
-- 连续 3 次 recall 失败 → **熔断打开**，跳过 recall 120 秒
+- 某路连续 3 次 recall 失败 → 该路**熔断打开**，跳过该路 recall 90 秒，其余路不受影响
 - 冷却期后自动半开，成功即恢复
-- Router 不受熔断影响，KT/Skill 路照常执行
+- Skill 路无独立熔断，依赖其 Embedding 预筛选的熔断器
 
-配置飞书 OpenAPI 变量后，熔断打开时自动发送卡片告警：
+配置飞书 OpenAPI 变量后，熔断打开时自动发送卡片告警（告警群聊通过 `FEISHU_HOME_CHANNEL` 环境变量配置，不再硬编码单点）：
 
 ```bash
 export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET
-export FEISHU_HOME_CHANNEL="oc_xxx"
+export FEISHU_HOME_CHANNEL="oc_xxx"   # 可配置告警群聊，缺失则不发送
 ```
 
 ---
@@ -210,4 +211,12 @@ MIT License
 
 ---
 
-*版本：1.4.0 | 最后更新：2026-07-03*
+*版本：1.5.0 | 最后更新：2026-08-11*
+
+> **1.5.0 更新（2026-08-10~11）**：
+> - Router mask 由三路扩展为**四路**（新增 SAG 梦境反思召回，`{h, kt, s, sag}`）；
+> - 四路改为**超时隔离真并行**（每路独立截止时间，消除串行连坐阻塞）；
+> - 知识树(KT) 与 SAG 路补齐独立熔断器，与 Hindsight 对齐（阈值 3 / 冷却 90s）；
+> - recall 日志每条带明确 `source` 来源标识（hindsight / knowledge_tree / sag / skill）；
+> - 告警群聊改为 `FEISHU_HOME_CHANNEL` 可配置（去硬编码单点）。
+> - token 预算控制逻辑整体下线，仅保留实际 token 消耗观测（详见 `docs/architecture/data-flywheel-system-map.md` §4.8）。

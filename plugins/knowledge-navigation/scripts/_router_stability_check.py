@@ -21,6 +21,7 @@ except ImportError:
     sys.exit(1)
 
 key = os.environ.get("KN_ROUTER_API_KEY", "")
+model = os.environ.get("KN_ROUTER_MODEL", "sensenova-6.7-flash-lite")
 if not key:
     print("FAIL")
     sys.exit(1)
@@ -29,14 +30,14 @@ try:
     resp = httpx.post(
         "http://127.0.0.1:4142/v1/chat/completions",
         json={
-            "model": "s-deepseek-v4-flash",
+            "model": model,
             "temperature": 0.1,
             "max_tokens": 2048,
             "thinking": {"type": "disabled"},
             "messages": [
                 {
                     "role": "system",
-                    "content": '你是一个注入路由判断器。输出 JSON: {"h": bool, "kt": bool, "s": bool, "sag": bool}',
+                    'content': '你是一个注入路由判断器。输出 JSON 格式如：{"h": false, "kt": false, "s": false, "sag": false}',
                 },
                 {"role": "user", "content": "消息：测试\n\nJSON 输出："},
             ],
@@ -50,7 +51,8 @@ try:
     content = (msg.get("content") or "").strip()
 
     if not content:
-        reasoning = (msg.get("reasoning_content") or "").strip()
+        # 支持两种字段名：reasoning（DeepSeek）和 reasoning_content（OpenAI o1/o3）
+        reasoning = (msg.get("reasoning") or msg.get("reasoning_content") or "").strip()
         if reasoning:
             m = re.search(r'\{[^{}]*"h"[^{}]*\}', reasoning, re.DOTALL)
             if not m:

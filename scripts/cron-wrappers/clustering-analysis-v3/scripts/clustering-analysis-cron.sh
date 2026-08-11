@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# LLM 模型继承链兜底：CLUSTERING_LLM_MODEL → LLM_MODEL_LIGHT
+export CLUSTERING_LLM_MODEL="${CLUSTERING_LLM_MODEL:-${LLM_MODEL_LIGHT:-}}"
+
 # ===== 加载公共库 =====
 _CRON_LIB="${CRON_LIB:-/root/.hermes/lib/cron_common.sh}"
 if [[ -f "$_CRON_LIB" ]]; then

@@ -16,4 +16,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# LLM 模型继承链兜底：DREAM_SYNTH_LLM_MODEL → LLM_MODEL_LIGHT
+export DREAM_SYNTH_LLM_MODEL="${DREAM_SYNTH_LLM_MODEL:-${LLM_MODEL_LIGHT:-}}"
+
 python3 dream-daily.py "$@" 2>&1 | logger -t dream-daily

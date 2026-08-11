@@ -29,6 +29,9 @@ fi
 # ===== 初始化 =====
 cron_init "clustering-analysis"
 
+# LLM 模型继承链兜底：CLUSTERING_LLM_MODEL → LLM_MODEL_LIGHT
+export CLUSTERING_LLM_MODEL="${CLUSTERING_LLM_MODEL:-${LLM_MODEL_LIGHT:-}}"
+
 # ===== 执行聚类管线 =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

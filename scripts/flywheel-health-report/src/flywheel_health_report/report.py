@@ -27,7 +27,7 @@ from .integrity import (
 from .analyzers.cron_jobs import analyze_cron_jobs
 from .analyzers.router import analyze_router
 from .analyzers.skill import analyze_skill_eval, analyze_skill_usage
-from .analyzers.token_budget import analyze_token_budget
+from .analyzers.token_usage import analyze_token_usage
 from .analyzers.sag import analyze_sag_contribution
 from .analyzers.global_errors import analyze_global_errors
 from .analyzers.kt_baseline import analyze_kt_baseline
@@ -45,11 +45,11 @@ def format_7day_trend(data_flywheel: Path) -> list[str]:
     if len(records) < 2:
         return ["历史数据不足 2 天，7 天趋势待积累。"]
     lines = [
-        "| 日期 | P0/P1 | Router得分 | 全关% | 空结果% | 错误% | KT降级 | Token耗尽% | SAG开启% | SAG召回量 | "
+        "| 日期 | P0/P1 | Router得分 | 全关% | 空结果% | 错误% | KT降级 | Token消耗avg | Skill占比% | SAG开启% | SAG召回量 | "
         "SAG延迟ms | Skill F1 | Skill活跃 | Skill调用次数 | KN unknown% | KN均分 | 聚类噪声% | KT孤立% | MEM占用% | USER占用% | Hindsight产出 | ERROR数 |"
     ]
     lines.append(
-        "|------|-------|-----------|-------|---------|-------|--------|-----------|----------|-----------|"
+        "|------|-------|-----------|-------|---------|-------|--------|-------------|-----------|----------|-----------|"
         "----------|----------|----------|------------|-------------|--------|-----------|---------|---------|---------|--------------|--------|"
     )
     for r in records[-7:]:
@@ -62,7 +62,8 @@ def format_7day_trend(data_flywheel: Path) -> list[str]:
             f"{r.get('router_empty_pct', '-')} | "
             f"{r.get('router_error_rate', '-')} | "
             f"{r.get('router_kt_fallback_count', '-')} | "
-            f"{r.get('token_exhaust_pct', '-')} | "
+            f"{r.get('token_total_avg', '-')} | "
+            f"{r.get('token_skill_share_pct', '-')} | "
             f"{r.get('sag_on_pct', '-')} | "
             f"{r.get('sag_total_kept', '-')} | "
             f"{r.get('sag_avg_latency_ms', '-')} | "
@@ -111,7 +112,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     router_issues, router_m, router_trend = analyze_router(trace, data_flywheel_dir)
     skill_issues, skill_m, skill_trend = analyze_skill_eval(data_flywheel_dir, kn_baseline_dir)
     skill_usage_issues, skill_usage_m, skill_usage_trend = analyze_skill_usage(skill_usage_path, now)
-    token_issues, token_m, token_trend = analyze_token_budget(trace)
+    token_issues, token_m, token_trend = analyze_token_usage(trace)
     sag_contr_issues, sag_contr_m, sag_contr_trend = analyze_sag_contribution(trace)
     error_issues, error_m, error_trend = analyze_global_errors(error_log_path, data_window)
     kt_issues, kt_m, kt_trend = analyze_kt_baseline(data_flywheel_dir)
@@ -298,18 +299,22 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
                  f"p95: {router_m['p95_latency_ms']}ms | p99: {router_m['p99_latency_ms']}ms | 最大: {router_m['max_latency_ms']}ms")
         L.append(f"- 平均得分: {router_m['avg_score']} | 多跳展开: {router_m['multi_hop_count']} 次")
         L.append("")
-        L.append("**Token 预算:**")
+        L.append("**Token 实际消耗（纯观测，无预算控制）:**")
         if token_m.get("status") == "no_data":
-            L.append("- 无 token_budget 数据")
+            L.append("- 无 token_usage 数据")
         else:
-            L.append(f"- 总预算: {token_m['total_budget']} tokens | 事件数: {token_m['event_count']}")
+            share = token_m.get("source_share_pct", {})
+            L.append(f"- 事件数: {token_m['event_count']} | 累计消耗: {token_m['grand_total_tokens']:,} tokens")
+            L.append("")
+            L.append("| 来源 | avg | p50 | p90 | max | 占比 |")
+            L.append("|------|-----|-----|-----|-----|------|")
+            for key, label in (("hs", "Hindsight"), ("sag", "SAG"),
+                               ("kt", "知识树"), ("skill", "Skill")):
+                st = token_m[f"{key}_stats"]
+                L.append(f"| {label} | {st['avg']} | {st['p50']} | {st['p90']} | "
+                         f"{st['max']} | {share.get(key, 0)}% |")
             ts = token_m["total_stats"]
-            L.append(f"- 消耗: 平均 {ts['avg']} | p50 {ts['p50']} | p90 {ts['p90']} | 最大 {ts['max']}")
-            L.append(f"- 耗尽率: {token_m['exhaust_pct']}% ({token_m['exhaust_count']}/{token_m['event_count']} 次接近耗尽)")
-            hs = token_m["hs_stats"]
-            kt = token_m["kt_stats"]
-            sk = token_m["skill_stats"]
-            L.append(f"- 分源消耗: Hindsight avg={hs['avg']}  KT avg={kt['avg']}  Skill avg={sk['avg']}")
+            L.append(f"| **合计** | {ts['avg']} | {ts['p50']} | {ts['p90']} | {ts['max']} | 100% |")
         L.append("")
         L.append("**SAG 专项:**")
         L.append(f"- Router 召回尝试: {router_m['sag_recall_count']} | 异常: {router_m.get('sag_error_count', 0)} | 非空: {router_m['sag_non_empty_count']} | 累计注入: {router_m['sag_total_kept']} 条")
@@ -341,6 +346,13 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             L.append(f"- 相关率 (评分 ≥ 0.5): {round(_jrate * 100, 1)}%")
         if isinstance(_javg, (int, float)):
             L.append(f"- 平均 relevance: {round(float(_javg), 4)}")
+        # mask 级相关性（参数→其影响那一路质量的因果绑定依据）
+        for _short, _label in (("h", "hindsight"), ("kt", "knowledge_tree"), ("sag", "sag")):
+            _sc = kn_judge_m.get(f"kn_judge_sample_count_{_short}", 0)
+            _rt = kn_judge_m.get(f"kn_judge_relevant_rate_{_short}")
+            if isinstance(_rt, (int, float)):
+                _trusted = "✓" if int(_sc) >= 12 else f"✗(样本{_sc})"
+                L.append(f"- 相关性[{_label}]: {round(_rt * 100, 1)}% (样本 {_sc} {_trusted})")
         if isinstance(_jci_lo, (int, float)) and isinstance(_jci_hi, (int, float)) and float(_jci_hi) > float(_jci_lo):
             L.append(f"- Bootstrap 95% CI: [{round(float(_jci_lo), 4)}, {round(float(_jci_hi), 4)}]")
         if _jerr:
@@ -360,9 +372,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             for pname in ["KN_MIN_SCORE", "KN_MAX_RESULTS", "KN_MAX_TEXT_LENGTH",
                           "KN_TEMPORAL_HALFLIFE", "KN_TEMPORAL_FLOOR_WEIGHT",
                           "KN_SAG_MAX_INJECT", "KN_SAG_SEARCH_TOP_K", "KN_SAG_MIN_SCORE",
-                          "KN_SAG_POINTER_THRESHOLD", "KN_TOKEN_BUDGET_KT_RATIO",
-                          "KN_TOKEN_BUDGET_SKILL_RATIO",
-                          "KN_TOKEN_BUDGET_HINDSIGHT_RATIO", "KN_TOKEN_BUDGET_TOTAL",
+                          "KN_SAG_POINTER_THRESHOLD",
                           "KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR",
                           "KN_LAMBDA_MRR", "KN_SCORE_SPAN_TOP3_THRESHOLD", "KN_SCORE_SPAN_HALF_THRESHOLD",
                           "KN_CAUSAL_BOOST_ALPHA", "KN_CAUSAL_BOOST_CAP"]:
@@ -601,7 +611,9 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "sag_total_kept": router_m.get("sag_total_kept", 0),
         "sag_avg_latency_ms": router_m.get("sag_avg_latency_ms", 0),
         "sag_merge_zero_pct": sag_contr_m.get("merge_zero_pct", 0),
-        "token_exhaust_pct": token_m.get("exhaust_pct", 0),
+        # Token 纯观测（不参与 auto-tuner 反馈，仅供趋势追踪）
+        "token_total_avg": token_m.get("total_stats", {}).get("avg", 0),
+        "token_skill_share_pct": token_m.get("source_share_pct", {}).get("skill", 0),
         "skill_f1": skill_m.get("avg_f1", 0),
         "skill_active_count": skill_usage_m.get("active_count", 0),
         # used_count = 使用过（use_count>0）的不同 active skill 数量
@@ -614,6 +626,16 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "kn_judge_sample_count": kn_judge_m.get("kn_judge_sample_count", 0),
         "kn_judge_relevant_rate": kn_judge_m.get("kn_judge_relevant_rate"),
         "kn_judge_avg_relevance": kn_judge_m.get("kn_judge_avg_relevance"),
+        # mask 级 judge：各召回来源(h/kt/sag)独立相关性，供参数→其影响那一路质量的因果绑定
+        "kn_judge_sample_count_h": kn_judge_m.get("kn_judge_sample_count_h", 0),
+        "kn_judge_relevant_rate_h": kn_judge_m.get("kn_judge_relevant_rate_h"),
+        "kn_judge_avg_relevance_h": kn_judge_m.get("kn_judge_avg_relevance_h"),
+        "kn_judge_sample_count_kt": kn_judge_m.get("kn_judge_sample_count_kt", 0),
+        "kn_judge_relevant_rate_kt": kn_judge_m.get("kn_judge_relevant_rate_kt"),
+        "kn_judge_avg_relevance_kt": kn_judge_m.get("kn_judge_avg_relevance_kt"),
+        "kn_judge_sample_count_sag": kn_judge_m.get("kn_judge_sample_count_sag", 0),
+        "kn_judge_relevant_rate_sag": kn_judge_m.get("kn_judge_relevant_rate_sag"),
+        "kn_judge_avg_relevance_sag": kn_judge_m.get("kn_judge_avg_relevance_sag"),
         "kn_judge_fallback": bool(kn_judge_m.get("kn_judge_fallback", False)),
         # 参数优化状态（摘要，给趋势图/后续报告读）
         "param_tune_active_count": param_tuning_m.get("active_count", 0) if isinstance(param_tuning_m, dict) else 0,

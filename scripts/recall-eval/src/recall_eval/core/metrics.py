@@ -75,11 +75,23 @@ def coverage_score(
 
 
 def _tokenize(text: str) -> set[str]:
-    """简单分词：提取中文词和英文单词。"""
+    """简单分词：提取中文词和英文单词。
+
+    中文策略：单字 + 连续字 bigram 混合，兼顾精确匹配和子串区分能力。
+    例如 "数据库迁移" → {"数","据","库","迁","移","数据","据库","库迁","迁移"}
+    这样 "数据库迁移工具" 可通过 "数据库"、"迁移" 等 token 被区分。
+    """
     text = text.lower()
     english_words = set(re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text))
-    chinese_chars = set(re.findall(r"[\u4e00-\u9fff]{2,}", text))
-    return english_words | chinese_chars
+    # 中文：单字 + bigram，避免长文本作为单个 token 无法区分子串
+    chinese_chars = set(re.findall(r"[\u4e00-\u9fff]", text))
+    chinese_bigrams = set()
+    chars_only = re.findall(r"[\u4e00-\u9fff]+", text)
+    for seg in chars_only:
+        if len(seg) >= 2:
+            for i in range(len(seg) - 1):
+                chinese_bigrams.add(seg[i:i + 2])
+    return english_words | chinese_chars | chinese_bigrams
 
 
 def _extract_keywords(text: str, top_n: int = 10) -> list[str]:

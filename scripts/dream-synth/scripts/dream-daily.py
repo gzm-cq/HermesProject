@@ -49,12 +49,15 @@ signal.signal(signal.SIGTERM, _handle_shutdown)
 signal.signal(signal.SIGINT, _handle_shutdown)
 
 _sag_session: requests.Session | None = None
+_sag_session_lock = threading.Lock()
 
 def _get_sag_session() -> requests.Session:
-    """获取全局 SAG requests Session（连接池复用）"""
+    """获取全局 SAG requests Session（连接池复用，线程安全）"""
     global _sag_session
     if _sag_session is None:
-        _sag_session = requests.Session()
+        with _sag_session_lock:
+            if _sag_session is None:
+                _sag_session = requests.Session()
     return _sag_session
 
 @dataclass
@@ -78,6 +81,23 @@ def load_config() -> dict:
 
 CFG = load_config()
 
+# 环境变量覆盖（继承链：DREAM_SYNTH_* → LLM_MODEL_LIGHT → LLM_MODEL_MAIN）
+_env_light = os.environ.get("LLM_MODEL_LIGHT", "")
+_env_main = os.environ.get("LLM_MODEL_MAIN", "")
+_env_cheap = os.environ.get("DREAM_SYNTH_CHEAP_MODEL") or \
+             os.environ.get("DREAM_SYNTH_LLM_MODEL") or \
+             _env_light or _env_main
+_env_smart = os.environ.get("DREAM_SYNTH_SMART_MODEL") or \
+             os.environ.get("DREAM_SYNTH_LLM_MODEL") or \
+             _env_main or _env_light
+if _env_cheap or _env_smart:
+    if "llm" not in CFG:
+        CFG["llm"] = {}
+    if _env_cheap:
+        CFG["llm"]["cheap"] = _env_cheap
+    if _env_smart:
+        CFG["llm"]["smart"] = _env_smart
+
 # ── LLM 调用 ─────────────────────────────────────────
 def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     """通过 LiteLLM 网关调用 LLM"""
@@ -98,13 +118,15 @@ def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float
     resp = requests.post(url, json=payload, headers=headers, timeout=120)
     resp.raise_for_status()
     data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    msg = data["choices"][0]["message"]
+    # 推理模型（s-deepseek-v4-flash）返回 reasoning 而非 content
+    return msg.get("content") or msg.get("reasoning", "")
 
 
 def call_llm_json(prompt: str, model: str, max_retries: int = 2) -> dict:
     """调用 LLM 并解析 JSON 输出（temperature=0，带重试）"""
     for attempt in range(max_retries + 1):
-        raw = call_llm(prompt, model, max_tokens=2048, temperature=0.0)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
+        raw = call_llm(prompt, model, max_tokens=8192, temperature=0.0)  # 8192 for s-deepseek-v4-flash reasoning model output
         # 先尝试直接解析
         try:
             return json.loads(raw)
@@ -236,7 +258,23 @@ def save_last_run_ts(ts: float):
 
 # ── SAG ─────────────────────────────────────────────
 # SAG sourceId（与 knowledge-navigation 插件共用同一个源）
-SAG_SOURCE_ID = "00000000-0000-0000-0000-0000000000ff"
+SAG_SOURCE_ID = "89a9a04d295c4206b35706a09ffb43e8"
+
+# SAG Bearer token（从文件读取，避免硬编码）
+_SAG_TOKEN_PATH = "/root/.hermes/.sag_token"
+
+def _get_sag_token() -> str:
+    """读取 SAG Bearer token"""
+    try:
+        with open(_SAG_TOKEN_PATH) as f:
+            return f.read().strip()
+    except IOError:
+        return ""
+
+def _sag_auth_headers() -> dict:
+    """SAG 认证 headers"""
+    token = _get_sag_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False,
@@ -253,13 +291,10 @@ def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False,
     base_url = CFG["sag"]["base_url"]
     payload = {
         "title": title,
-        "content": content,
-        "sourceId": SAG_SOURCE_ID,
+        "text": content,
         "metadata": metadata,
-        "extract": True,
-        "waitForCompletion": False,
         "chunking": {
-            "maxTokens": 4096,
+            "maxTokens": 8192,
         },
     }
 
@@ -269,10 +304,11 @@ def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False,
     for attempt in range(max_retries):
         t0 = time.time()
         try:
-            resp = session.post(f"{base_url}/ingest", json=payload, timeout=180)
+            resp = session.post(f"{base_url}/api/v1/sources/{SAG_SOURCE_ID}/documents/ingest",
+                                json=payload, headers=_sag_auth_headers(), timeout=180)
             elapsed_ms = (time.time() - t0) * 1000
             if resp.status_code in (200, 201):
-                doc_id = resp.json().get("documentId", "")
+                doc_id = resp.json().get("documentId") or resp.json().get("id", "")
                 return doc_id if doc_id else None
             if 500 <= resp.status_code < 600:
                 last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
@@ -309,7 +345,7 @@ def sag_health_check(timeout: float = 5.0) -> bool:
         return False
     session = _get_sag_session()
     try:
-        resp = session.get(f"{base_url}/health", timeout=timeout)
+        resp = session.get(f"{base_url}/api/v1/system/health", timeout=timeout)
         return resp.status_code == 200
     except Exception:
         pass
@@ -335,7 +371,7 @@ def sag_search(query: str, top_k: int = 50, source_filter: str | None = None) ->
     }
     try:
         session = _get_sag_session()
-        resp = session.post(f"{base_url}/search", json=payload, timeout=15)
+        resp = session.post(f"{base_url}/api/v1/search", json=payload, headers=_sag_auth_headers(), timeout=15)
         if resp.status_code == 200:
             sections = resp.json().get("sections", [])
             if source_filter:
@@ -365,7 +401,7 @@ def _load_cached_reflections() -> list[dict]:
                     cache = json.load(f)
             except (json.JSONDecodeError, IOError):
                 continue
-            if not cache.get("ingested") or not cache.get("reflection_content"):
+            if not cache.get("reflection_content"):
                 continue
             reflections.append({
                 "title": cache.get("reflection_title", ""),
@@ -555,10 +591,16 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
                     time.sleep(llm_throttle_s)
                 continue
 
-            # SAG 不可达时：不投 ingest，保留 LLM 合成结果到 cache
+            # SAG 不可达时：不投 ingest，但仍加入 result_map 供下游使用
             if not _sag_available:
                 stats.skipped += 1
-                stats.failed += 1
+                result_map[sid] = {
+                    "title": refl_title,
+                    "content": md_content,
+                    "session_id": sid,
+                    "score": score,
+                    "document_id": "",
+                }
                 if llm_throttle_s > 0:
                     time.sleep(llm_throttle_s)
                 continue
@@ -865,9 +907,26 @@ def _mark_verdicts_feishu_pushed(verdict_dir: str, session_ids: set[str]):
             print(f"  feishu: 标记 {sid[:20]}... 已推送")
 
 
-def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = False):
-    """推送 top-5 未推送反思到飞书（已推的不重复推送）"""
+def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = False,
+                fresh_count: int | None = None):
+    """推送 top-5 未推送反思到飞书（已推的不重复推送）
+
+    Args:
+        fresh_count: 今日新提炼的反思篇数（来自 synthesize 阶段）。None 表示独立运行阶段。
+    """
     promoted_sids = {r["session_id"] for r in promoted}
+    # 独立运行时从 promote-log 补充已归档 session_id
+    if not promoted_sids:
+        promote_log = CFG["cache"].get("promote_log", os.path.join(
+            os.path.dirname(CFG["cache"]["verdict_dir"]), "promote-log.json"))
+        if os.path.exists(promote_log):
+            with open(promote_log, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        promoted_sids.add(json.loads(line).get("session_id", ""))
+                    except json.JSONDecodeError:
+                        pass
+    promoted_count = len(promoted_sids)
     # 同时排除已归档和已推送过的
     feishu_log = CFG["cache"].get("feishu_log", os.path.join(
         os.path.dirname(CFG["cache"]["verdict_dir"]), "feishu-log.json"))
@@ -887,7 +946,11 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
 
     # 格式化飞书消息
     lines = [f"# 🌙 梦境流水线 — {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
-    lines.append(f"今日提炼 {len(reflections)} 篇反思，归档 {len(promoted)} 篇，剩余未推送 {len(unsorted)} 篇")
+    total_count = len(reflections)
+    if fresh_count and fresh_count > 0:
+        lines.append(f"今日提炼 **{fresh_count}** 篇新反思（累计 **{total_count}** 篇），归档 **{promoted_count}** 篇，剩余未推送 **{len(unsorted)}** 篇")
+    else:
+        lines.append(f"累计 **{total_count}** 篇反思，归档 **{promoted_count}** 篇，剩余未推送 **{len(unsorted)}** 篇")
     lines.append("")
     lines.append("## Top-5 未推送反思")
     for i, r in enumerate(top5):
@@ -917,7 +980,10 @@ def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = 
         return
 
     # 推送飞书
-    chat_id = CFG["feishu"]["chat_id"]
+    chat_id = os.environ.get("FEISHU_CHAT_ID") or CFG.get("feishu", {}).get("chat_id", "")
+    if not chat_id:
+        print("  feishu: 未配置 FEISHU_CHAT_ID，跳过推送")
+        return
     try:
         proc = subprocess.run(
             ["lark-cli", "im", "+messages-send",
@@ -1009,10 +1075,16 @@ def _run_pipeline(args):
     if not args.phase or args.phase == "feishu":
         print("\n── Phase 4: feishu push ──")
         # 独立运行时从 verdict cache 恢复反思笔记
+        feishu_fresh = None
         if not reflections:
             reflections = _load_cached_reflections()
             print(f"  从 cache 加载 {len(reflections)} 篇反思笔记")
-        phase_feishu(reflections, promoted, dry_run=args.dry_run)
+        else:
+            # 完整流水线：reflections 是本轮 synthesize 的新反思
+            fresh_synth_count = len(reflections)
+            if fresh_synth_count > 0:
+                feishu_fresh = fresh_synth_count
+        phase_feishu(reflections, promoted, dry_run=args.dry_run, fresh_count=feishu_fresh)
 
     # 更新时间戳：仅在完整流水线或 synthesize 阶段运行后更新
     # 单独运行 patterns/promote/feishu 时不更新，避免跳过未处理的 session

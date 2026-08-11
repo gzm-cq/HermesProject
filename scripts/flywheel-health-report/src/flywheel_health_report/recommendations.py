@@ -69,15 +69,7 @@ def generate_recommendations(
             if recall_error_count > 0:
                 recs.append({"flywheel": "SAG", "desc": f"SAG 召回异常 {recall_error_count} 次，建议检查 SAG 服务健康状态和熔断器日志"})
 
-    # --- Token 预算 ---
-    if token_m and token_m.get("status") != "no_data":
-        exhaust = token_m.get("exhaust_pct", 0)
-        if exhaust > TH["token_budget_exhaust_pct"]:
-            recs.append({"flywheel": "Token", "desc": f"Token 预算耗尽率 {exhaust}%，可能导致召回截断，建议增加 total_budget 或优化各源 token 占用"})
-        total_avg = token_m.get("total_stats", {}).get("avg", 0)
-        budget = token_m.get("total_budget", 4000)
-        if budget and total_avg / budget > REC_TH["token_avg_usage_high_ratio"]:
-            recs.append({"flywheel": "Token", "desc": f"Token 平均使用率 {total_avg/budget*100:.0f}% 偏高，建议关注高峰期耗尽风险"})
+    # --- Token 消耗：纯观测，不做预算控制，因此不产生建议 ---
 
     # --- Skill ---
     if skill_m.get("status") != "no_data":

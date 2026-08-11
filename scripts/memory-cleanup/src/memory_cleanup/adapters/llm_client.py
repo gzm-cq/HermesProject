@@ -81,7 +81,17 @@ class LLMClient:
                 usage = data.get("usage", {})
                 self.total_prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
                 self.total_completion_tokens += int(usage.get("completion_tokens", 0) or 0)
-                return str(data["choices"][0]["message"]["content"])
+                # 处理 thinking 模式下 content 缺失的问题
+                # sensenova-6.7-flash-lite 等模型在 thinking 时可能只返回 reasoning 字段
+                msg = data["choices"][0].get("message", {})
+                content = msg.get("content")
+                if content is None:
+                    content = msg.get("reasoning") or msg.get("reasoning_content")
+                    if content is not None:
+                        logger.debug("Content field missing, falling back to reasoning field")
+                    else:
+                        raise KeyError("content")
+                return str(content)
             except Exception as e:
                 if attempt < 2:
                     delay = base_delay * (2**attempt) + random.uniform(0, 1)

@@ -13,6 +13,24 @@ logger = logging.getLogger(__name__)
 
 RecallSource = str  # "hindsight" | "knowledge_tree" | "skill" | "sag"
 
+# 召回来源别名归一化：旧版 kept_results 的 hindsight 条目常缺失 source 字段，
+# 既有的 hs_kept 统计逻辑将其默认归为 hindsight。此处复刻该语义，并归一化常见别名，
+# 保证 recalled_summaries 每条都带明确的规范 source，供 KN LLM Judge 按来源分组打分。
+_SOURCE_ALIASES = {
+    "hindsight": "hindsight", "h": "hindsight", "history": "hindsight", "hist": "hindsight",
+    "knowledge_tree": "knowledge_tree", "kt": "knowledge_tree", "tree": "knowledge_tree",
+    "sag": "sag", "s": "sag", "session": "sag",
+    "skill": "skill", "sk": "skill",
+}
+
+
+def _normalize_source(raw: Any) -> str:
+    """把召回条目的 source 归一化为规范值；缺失/空/未知一律归为 hindsight。"""
+    if not raw:
+        return "hindsight"
+    key = str(raw).strip().lower()
+    return _SOURCE_ALIASES.get(key, "hindsight")
+
 
 @dataclass
 class RecallResult:
@@ -140,8 +158,10 @@ class RecallLogger:
             text = str(text_raw)[:_MAX_TEXT_PER_ITEM]
             if not text and not title:
                 continue
+            # 规范 source：缺失/空 按既有 hs_kept 统计语义归为 hindsight，
+            # 同时归一化常见别名，确保 judge 能按来源(h/kt/sag/skill)分组打分。
             summary_item: dict[str, Any] = {
-                "source": m.get("source", ""),
+                "source": _normalize_source(m.get("source")),
                 "score": round(float(m.get("final_score") or m.get("score") or 0.0), 4),
             }
             if title:
