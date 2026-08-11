@@ -104,6 +104,77 @@ _KN_JUDGE_MASK_MIN_SAMPLE = int(KN_JUDGE_CFG.get("mask_min_sample", 12))
 # 首次调优用更大步幅快速探明梯度方向（粗→细搜索的第一步）
 COARSE_STEP_FACTOR = 2.0
 
+# 参数重命名迁移（state 历史补全）：旧参数名 → 当前 PARAM_DEFS 名称。
+# 来源：commit e3816e7 修正 PARAM_DEFS env 名（sag_* → KN_SAG_*）。
+# state.json 里以旧名累积的 degradation_count / direction_history / best_value
+# 等学习历史，加载时统一迁移到新名，避免「查不到旧键 → 清空历史当 virgin 重头调」。
+_STATE_ALIASES = {
+    "sag_max_inject": "KN_SAG_MAX_INJECT",
+    "sag_search_top_k": "KN_SAG_SEARCH_TOP_K",
+    "sag_search_threshold": "KN_SAG_MIN_SCORE",
+}
+
+# 已从参数池移除的参数（token 预算类，产品决策下线），其 state 历史无意义，迁移时丢弃。
+_DROPPED_STATE_KEYS = frozenset({
+    "token_budget",
+    "token_budget_hindsight_ratio",
+    "KN_TOKEN_BUDGET_TOTAL",
+    "KN_TOKEN_BUDGET_HINDSIGHT_RATIO",
+    "KN_TOKEN_BUDGET_KT_RATIO",
+})
+
+
+# 迁移时要合并到新名的「学习历史」字段（动态锁定/暂停等不合并，避免用旧名残留状态误锁新名）
+_MIGRATE_FIELDS = (
+    "initial_value", "best_value",
+    "degradation_count", "consecutive_degradation_count",
+    "no_change_count", "direction_history", "last_direction",
+)
+
+
+def _migrate_state(state: Dict[str, Any]) -> bool:
+    """把旧参数名的 state 历史迁移到当前名；丢弃已下线参数。返回是否发生变更。
+
+    规则：
+      - 旧名存在、新名不存在 → 直接改名（历史整体保留）。
+      - 旧名存在、新名也存在 → 若新名仍是无学习历史（virgin），把旧名学习历史
+        合并进来；否则新名以在用为准，丢弃旧名残留。无论哪种都删掉旧名键。
+      - 已下线参数键（token 预算类）→ 直接丢弃。
+    """
+    changed = False
+
+    def _is_virgin(p: Dict[str, Any]) -> bool:
+        return not any(
+            p.get(f) is not None and p.get(f) not in ("", [], 0)
+            for f in _MIGRATE_FIELDS
+        )
+
+    for old, new in _STATE_ALIASES.items():
+        if old not in state:
+            continue
+        old_state = state[old]
+        if not isinstance(old_state, dict):
+            state.pop(old)
+            changed = True
+            continue
+        if new not in state:
+            # 新名不存在 → 直接改名，历史整体迁移
+            state[new] = old_state
+        elif _is_virgin(state[new]):
+            # 新名是 virgin（从没调过）→ 把旧名学习历史合并进新名
+            ns = state[new]
+            for f in _MIGRATE_FIELDS:
+                if f in old_state and ns.get(f) in (None, "", [], 0):
+                    ns[f] = old_state[f]
+        # 新名已有学习历史 → 新名在用为准，旧名残留直接丢弃
+        state.pop(old)
+        changed = True
+    for k in list(state.keys()):
+        if k in _DROPPED_STATE_KEYS:
+            state.pop(k)
+            changed = True
+    return changed
+
 # 所有 KN Judge 主观反馈键（全局 + mask 级），这些键需要样本量可信门控
 _KN_JUDGE_SUBJECTIVE_KEYS = frozenset({
     "kn_judge_relevant_rate", "kn_judge_avg_relevance",
@@ -270,11 +341,19 @@ def _append_jsonl(path: str, rec: Dict[str, Any]) -> None:
 
 
 def load_state() -> Dict[str, Any]:
+    state: Dict[str, Any] = {}
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            state = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    # 加载时做一次 state 命名迁移（旧参数名 → 新参数名）：把旧名累积的学习历史
+    # 补到当前 PARAM_DEFS 名称下，并丢弃已下线参数。迁移有变更则写回磁盘，
+    # 否则下次加载仍会重复迁移（幂等，无副作用）。
+    if _migrate_state(state):
+        save_state(state)
+        log_info("已完成 state 命名迁移（旧参数名历史已补全到新参数名）")
+    return state
 
 
 def save_state(state: Dict[str, Any]) -> None:
@@ -657,6 +736,14 @@ def handle_pending_restart() -> bool:
         yesterday_str = _report_date_yesterday()
         data = _extract_metrics_for_tuning(today_str, yesterday_str)
         today_rec = data.get("today") or {}
+        today_date = str(today_rec.get("date", "")) if isinstance(today_rec, dict) else ""
+        # 严格取「调优后一日」的报告作为 metrics_after：只有报告日期推进到 tune_date 之后，
+        # 才可能是参数变更生效后的反馈。否则（报告未生成 → fallback 复用调优日当天报告）
+        # metrics_after 会与 metrics_before 指向同一份报告 → 测不到真实 delta，
+        # 被 P4 误判为 unknown。宁可保持 pending_restart 等下一份报告，也不取同名报告。
+        if not today_date or today_date <= tune_date:
+            log_warn(f"metrics_after 需严格取调优后一日：当前报告日期({today_date or '无'})未推进到调优日({tune_date})之后，保持 pending_restart")
+            return True
         metrics_after = _extract_metrics_before(today_rec) if isinstance(today_rec, dict) else {}
 
         if not metrics_after:
@@ -1032,7 +1119,10 @@ def determine_direction(
     new_val = min(current_val + eff_step, pmax) if direction == "up" else max(current_val - eff_step, pmin)
     if abs(new_val - current_val) < 1e-9:
         return None
-    return {"direction": direction, "new_value": round(new_val, 4), "reason": reason}
+    # 返回实际生效步幅 eff_step，供 validate_step 用同一步幅校验，
+    # 避免粗步幅(step*2)被原始 step 校验误拦截（首次调优必被跳过的问题）。
+    return {"direction": direction, "new_value": round(new_val, 4), "reason": reason,
+            "eff_step": round(eff_step, 4)}
 
 
 def validate_step(old_val: float, new_val: float, step: float) -> bool:
@@ -1254,6 +1344,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     direction = decision["direction"]
     new_val = float(decision["new_value"])
     reason = decision["reason"]
+    # 实际生效步幅（首次调优为粗步幅 step*2），validate_step 用同一数值校验，
+    # 避免粗步幅被原始 step 误拦截
+    eff_step = float(decision.get("eff_step", step))
     print("")
     log_step("调优决策:")
     print(f"  参数:     {name}")
@@ -1263,8 +1356,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  原因:     {reason}")
     print("")
 
-    # 10. 步幅安全校验
-    if not validate_step(current, new_val, step):
+    # 10. 步幅安全校验（用实际生效步幅 eff_step，粗步幅按粗步幅校验）
+    if not validate_step(current, new_val, eff_step):
         log_warn("步幅超过安全阈值，跳过本次调优")
         return 0
 

@@ -90,4 +90,80 @@ tuner.LOG_FILE = _ORIG_LOG
 os.unlink(_tmp_path)
 print("✅ _get_last_tune_for 过滤 dry_run：正确返回非 dry_run 记录")
 
+# 6. state 命名迁移（旧名→新名补历史）
+# 场景1：旧名存在、新名不存在 → 改名，历史整体保留
+_s = {"sag_max_inject": {"degradation_count": 2, "best_value": 4.0}}
+_ch = tuner._migrate_state(_s)
+assert _ch is True and "sag_max_inject" not in _s
+assert _s["KN_SAG_MAX_INJECT"]["degradation_count"] == 2
+# 场景2：新旧并存、新名 virgin → 合并旧名学习历史
+_s = {"sag_max_inject": {"degradation_count": 3, "best_value": 5.0},
+      "KN_SAG_MAX_INJECT": {"locked": False}}
+tuner._migrate_state(_s)
+assert _s["KN_SAG_MAX_INJECT"]["degradation_count"] == 3
+assert _s["KN_SAG_MAX_INJECT"]["best_value"] == 5.0
+assert "sag_max_inject" not in _s
+# 场景3：新旧并存、新名已有历史 → 新名为准，丢弃旧名残留
+_s = {"sag_max_inject": {"degradation_count": 5},
+      "KN_SAG_MAX_INJECT": {"degradation_count": 1, "locked": True}}
+tuner._migrate_state(_s)
+assert _s["KN_SAG_MAX_INJECT"]["degradation_count"] == 1
+assert "sag_max_inject" not in _s
+# 场景4：已下线参数（token 预算类）→ 丢弃
+_s = {"token_budget": {"x": 1}, "KN_TOKEN_BUDGET_TOTAL": {"y": 2}}
+tuner._migrate_state(_s)
+assert "token_budget" not in _s and "KN_TOKEN_BUDGET_TOTAL" not in _s
+print("✅ state 命名迁移：改名/合并virgin/丢弃残留/丢弃下线参数 均正确")
+
+# 7. metrics_after 闭环：必须严格取「调优后一日」的报告，否则保持 pending_restart
+class _PendingCtx:
+    """模拟 handle_pending_restart 依赖，记录是否写了 applied。"""
+    def __init__(self, today_date, tune_date):
+        self.today_date = today_date
+        self.tune_date = tune_date
+        self.applied_called = False
+        self.today_rec = {"date": today_date, "router_empty_pct": 1.3} if today_date else {}
+
+def _test_metrics_after_guard():
+    ctx = _PendingCtx(today_date=ctx_today, tune_date=ctx_tune)
+    # mock 依赖
+    _orig_last = tuner._get_last_tune_any
+    _orig_verify = tuner.verify_restart
+    _orig_extract = tuner._extract_metrics_for_tuning
+    _orig_update = tuner.update_log_entry
+    _orig_report_today = tuner._report_date_today
+    tuner._get_last_tune_any = lambda: {"parameter": "KN_MAX_RESULTS", "date": ctx.tune_date,
+                                        "old_value": 3.0, "new_value": 4.0, "direction": "up",
+                                        "timestamp": "2026-08-09T00:00:00+08:00", "status": "pending_restart",
+                                        "metrics_before": {"router_empty_pct": 1.3}}
+    tuner.verify_restart = lambda ts: True
+    tuner._extract_metrics_for_tuning = lambda t, y: {"today": ctx.today_rec, "yesterday": None}
+    tuner._report_date_today = lambda: ctx.today_date
+    def _fake_update(param, date, status, metrics_after=None):
+        ctx.applied_called = True
+    tuner.update_log_entry = _fake_update
+    try:
+        ret = tuner.handle_pending_restart()
+    finally:
+        tuner._get_last_tune_any = _orig_last
+        tuner.verify_restart = _orig_verify
+        tuner._extract_metrics_for_tuning = _orig_extract
+        tuner.update_log_entry = _orig_update
+        tuner._report_date_today = _orig_report_today
+    return ret, ctx
+
+# 场景A：报告日期 == 调优日（同名报告，fallback 复用）→ 保持 pending（True），不写 applied
+ctx_today, ctx_tune = "2026-08-09", "2026-08-09"
+_ret, _ctx = _test_metrics_after_guard()
+assert _ret is True and _ctx.applied_called is False, f"同名报告应保持 pending，实际 ret={_ret} applied={_ctx.applied_called}"
+# 场景B：报告日期 == 调优日 但无 date 字段 → 保持 pending
+ctx_today, ctx_tune = "", "2026-08-09"
+_ret, _ctx = _test_metrics_after_guard()
+assert _ret is True and _ctx.applied_called is False, "无 date 字段应保持 pending"
+# 场景C：报告日期 > 调优日（调优后一日）→ 允许确认，写 applied
+ctx_today, ctx_tune = "2026-08-10", "2026-08-09"
+_ret, _ctx = _test_metrics_after_guard()
+assert _ctx.applied_called is True, f"调优后一日应允许确认，实际 applied={_ctx.applied_called}"
+print("✅ metrics_after 闭环：同名报告/无日期保持 pending，调优后一日才确认")
+
 print("\n🟢 全部单测通过")

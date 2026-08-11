@@ -8,6 +8,7 @@
 """
 
 import copy
+import datetime as _dt
 import os
 import sys
 
@@ -72,13 +73,22 @@ def harness(monkeypatch):
     return h
 
 
+def _fake_extract_metrics(today, yday):
+    """模拟报告：日期取「调优日(today)之后一日」，满足 metrics_after 严格取调优后一日的要求。"""
+    try:
+        after = (_dt.date.fromisoformat(today) + _dt.timedelta(days=1)).isoformat()
+    except Exception:
+        after = today
+    return {"today": {"date": after, "_stub": True}, "yesterday": None}
+
+
 def _install(monkeypatch, h):
     monkeypatch.setattr(tuner, "_get_last_tune_any", lambda: copy.deepcopy(h.last_tune))
     monkeypatch.setattr(tuner, "verify_restart", lambda ts: True)
     monkeypatch.setattr(tuner, "update_log_entry",
                         lambda param, date, status, metrics=None: None)
     monkeypatch.setattr(tuner, "_extract_metrics_for_tuning",
-                        lambda today, yday: {"today": {"_stub": True}, "yesterday": None})
+                        _fake_extract_metrics)
     monkeypatch.setattr(tuner, "_extract_metrics_before",
                         lambda rec: dict(METRICS_AFTER) if rec else {})
 
