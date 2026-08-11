@@ -49,7 +49,7 @@
 | **许可证** | MIT |
 
 **核心能力**：
-- **知识导航**：LLM Router 三路注入（Hindsight 经验 + 知识树 + Skill），确保有效记忆主动召回
+- **知识导航**：LLM Router 四路注入（Hindsight 经验 + 知识树 + SAG 反思 + Skill），确保有效记忆主动召回
 - **技能强制注入**：三级混合筛选（关键词预筛 → Embedding 精筛 → LLM 精排）
 - **聚类分析**：优化 RAG 库结构，提升召回率
 - **记忆清理**：精简核心记忆，控制 token 开销
@@ -74,19 +74,20 @@
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Hermes Gateway                                                               │
 │                                                                              │
-│ 用户消息 ──→ 知识导航 (Hook pre_llm_call) ──→ LLM Router 决策 ──→ 按 mask 执行 ──→ 融合组装 ──→ LLM 调用 ──→ 响应 │
+│ 用户消息 ──→ 知识导航 (Hook pre_llm_call) ──→ LLM Router 决策 ──→ 按 mask 条件执行 ──→ 融合组装 ──→ LLM 调用 ──→ 响应 │
 │                            │                         │             ↑               │
 │                    ┌───────┴───────┐                  │             │               │
 │                    ▼               ▼                  │             │               │
-│           Hindsight recall   知识树 recall              │             │               │
-│           （经验域 L4）     （知识域 L5）              │             │               │
+│           Hindsight recall   知识树 recall   SAG 反思召回              │             │               │
+│           （经验域 L4）     （知识域 L5）  （反思域）                │             │               │
 │                    │               │                  │             │               │
 │                    └───────┬───────┘                  │             │               │
 │                            ▼                          │             │               │
 │                    ┌──────────────┐                   │             │               │
 │                    │  Skill 匹配   │────────────────────             │               │
-│                    │  (第三路)     │ 自动注入 <auto_loaded_skills>   │               │
+│                    │  (能力域)     │ 自动注入 <auto_loaded_skills>   │               │
 │                    │  三级混合筛选  │ 到用户消息                        │               │
+│                    │  (关键词预筛→Embedding精筛→LLM精排) │                   │               │
 │                    └──────────────┘                   │             │               │
 └──────────────────────────┬───────────────────────────────┬──────────────────────────┘
                            │ 语义检索                       │
@@ -263,9 +264,10 @@ def register(ctx) -> None:
 
 #### 职责
 
-在每次 LLM 调用前通过 LLM Router 智能决策注入路径，实现三路召回：
+在每次 LLM 调用前通过 LLM Router 智能决策注入路径，实现四路召回：
 - **H（经验域）**：从 Hindsight 召回相关记忆
 - **KT（知识域）**：通过 knowledge-tree-plugin 召回知识树
+- **SAG（反思域）**：SAG 梦境反思召回，将对话沉淀的结构化知识/公理回流到下一轮上下文
 - **S（能力域）**：Skill 三级混合筛选（关键词预筛 Top-30 → Embedding 精筛 Top-20 → LLM 精排 Top-3）
 
 #### 核心目录结构
@@ -312,7 +314,7 @@ plugins/knowledge-navigation/
 
 ```
 用户消息 → pre_llm_call() → 熔断器检查
-  → Hindsight recall(经验域) + 知识树 recall(知识域) + Skill 匹配(能力域)
+  → Hindsight recall(经验域) + 知识树 recall(知识域) + SAG 反思召回(反思域) + Skill 匹配(能力域)
   → 排除标记记忆 → HitCounter → Compaction → 跨域去重(threshold=0.85)
   → 分数过滤(时态衰减) → XML <memory-context> 注入 → TaskTracker
   → 注入 user_message
@@ -323,8 +325,8 @@ plugins/knowledge-navigation/
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | Hindsight API URL | `http://127.0.0.1:9177` | Hindsight 服务地址 |
-| 熔断器阈值 | 3 次连续失败 | 触发熔断 |
-| 熔断恢复时间 | 120s | 半开状态探测 |
+| 熔断器阈值 | 3 次连续失败 | H / KT / SAG 三路各带独立熔断器，触发熔断 |
+| 熔断恢复时间 | 90s | 半开状态探测 |
 | 跨域去重阈值 | 0.85 | cosine 相似度去重 |
 | Compaction 阈值 | 20 轮 | 超过后降为 1 条 |
 
