@@ -21,7 +21,7 @@ except ImportError:
     sys.exit(1)
 
 key = os.environ.get("KN_ROUTER_API_KEY", "")
-model = os.environ.get("KN_ROUTER_MODEL", "sensenova-6.7-flash-lite")
+model = os.environ.get("KN_ROUTER_MODEL", "sensenova-6.8-flash-lite")
 if not key:
     print("FAIL")
     sys.exit(1)

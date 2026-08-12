@@ -167,7 +167,7 @@ class KnowledgeNavigationConfig:
     feishu_home_channel: str = field(default="")
 
     # LLM Router
-    router_model: str = field(default="sensenova-6.7-flash-lite")
+    router_model: str = field(default="sensenova-6.8-flash-lite")
     router_api_url: str = field(default="http://127.0.0.1:4142/v1")
     router_api_key: str = field(default="")
     router_timeout: int = field(default=15)  # 5s 太紧，15s 减少超时率

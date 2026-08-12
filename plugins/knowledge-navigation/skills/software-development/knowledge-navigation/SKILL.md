@@ -75,7 +75,7 @@ pre_llm_call Hook 每次 LLM 调用前自动执行：
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
-| `router_model` | `sensenova-6.7-flash-lite` | Router LLM 模型 |
+| `router_model` | `sensenova-6.8-flash-lite` | Router LLM 模型 |
 | `router_api_url` | `http://127.0.0.1:4142/v1` | LLM API 端点 |
 | `router_api_key` | `""` | API Key（ENV: `KN_ROUTER_API_KEY`）|
 | `router_timeout` | 5 | 超时秒数，不影响主流程 |

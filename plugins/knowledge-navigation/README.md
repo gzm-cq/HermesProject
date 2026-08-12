@@ -63,7 +63,7 @@ hooks:
 
 | 配置项 | 环境变量 | 默认值 | 说明 |
 |--------|---------|--------|------|
-| `router_model` | `KN_ROUTER_MODEL` | `sensenova-6.7-flash-lite` | Router LLM 模型 |
+| `router_model` | `KN_ROUTER_MODEL` | `sensenova-6.8-flash-lite` | Router LLM 模型 |
 | `router_api_url` | `KN_ROUTER_API_URL` | `http://127.0.0.1:4142/v1` | LLM API 端点（LiteLLM 网关） |
 | `router_api_key` | `KN_ROUTER_API_KEY` | `""` | API Key（空时走网关默认凭证） |
 | `router_timeout` | `KN_ROUTER_TIMEOUT` | `5` | Router 超时秒数 |

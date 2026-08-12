@@ -890,7 +890,7 @@ def _judge_one(rec: dict, config: dict | None) -> tuple[float, bool] | tuple[Non
     headers = {"Content-Type": "application/json"}
     if config.get("key"):
         headers["Authorization"] = f"Bearer {config['key']}"
-    # max_tokens 设 8192：与全局配置对齐，商汤 sensenova-6.7-flash-lite 会写超长 reasoning
+    # max_tokens 设 8192：与全局配置对齐，商汤 sensenova-6.8-flash-lite 会写超长 reasoning
     # reasoning 不额外收费，只是耗时长一些（单条 15~30s），留足余量防止 reasoning 占满导致 content 为空
     body = json.dumps({
         "model": config.get("model", "s-deepseek-v4-flash"),
@@ -911,7 +911,7 @@ def _judge_one(rec: dict, config: dict | None) -> tuple[float, bool] | tuple[Non
             msg = resp_data["choices"][0]["message"]
             content = (msg.get("content") or "").strip()
             if not content:
-                # 兜底：某些模型把最终数字写在 reasoning 末尾（如 sensenova-6.7-flash-lite）
+                # 兜底：某些模型把最终数字写在 reasoning 末尾（如 sensenova-6.8-flash-lite）
                 reasoning = msg.get("reasoning") or msg.get("reasoning_content") or ""
                 import re
                 # 找 reasoning 末尾类似 "Final Score: 0.5" 或只含 0-1 小数的行

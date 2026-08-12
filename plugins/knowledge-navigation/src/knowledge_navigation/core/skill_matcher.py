@@ -790,7 +790,7 @@ def _llm_match(
         "## 输出(仅 JSON 数组 不要其他文字)\n"
     )
 
-    # max_tokens=2048：避免 LiteLLM 降级到 sensenova 等推理模型时，reasoning_content
+    # max_tokens=8192：适配sensenova-6.8-flash-lite thinking-heavy responses，避免 reasoning 吃掉所有 budget
     # 耗尽 token 配额导致 content 字段为空（512 在长 prompt 下经常不够用）
     # 不重试：单次失败立即返回空触发 fallback（kw+emb union top-K），
     # 避免最坏 45s × 2 = 90s 的长尾叠加（实测 p99=66s）。
@@ -806,7 +806,7 @@ def _llm_match(
                 json={
                     "model": skill_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 2048,
+                    "max_tokens": 8192,
                     "temperature": 0.1,
                     "thinking": {"type": "disabled"},
                 },

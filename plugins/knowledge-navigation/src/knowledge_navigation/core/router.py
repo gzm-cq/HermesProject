@@ -309,7 +309,7 @@ def route(
                 json={
                     "model": model,
                     "temperature": 0.1,
-                    "max_tokens": 2048,  # Round3: 512→2048 适配sensenova-6.7-flash-lite fallback（需≥2048返回完整JSON）
+                    "max_tokens": 8192,  # Round4: 2048→8192 适配sensenova-6.8-flash-lite thinking-heavy responses
                     "thinking": {"type": "disabled"},
                     "messages": [
                         {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
