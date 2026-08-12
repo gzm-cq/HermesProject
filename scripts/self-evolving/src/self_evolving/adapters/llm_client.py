@@ -99,8 +99,17 @@ class LLMClient:
             raise ValueError(f"LLM 响应格式异常: {e}") from e
 
     def parse_json_response(self, text: str) -> dict[str, Any]:
-        """从 LLM 响应文本中解析 JSON，兼容 markdown 代码块包裹"""
+        """从 LLM 响应文本中解析 JSON，兼容 markdown 代码块包裹与尾部多余内容。
+
+        部分模型（如 sensenova-6.8-flash-lite fallback）会在合法 JSON 之后
+        追加解释文本，导致标准 json.loads 报 "Extra data"。此处依次尝试：
+          1) 整体解析；2) raw_decode 提取首个完整 JSON 对象（容忍尾部多余
+             文本 / 多对象）；3) 兜底截取首个 `{` 到末个 `}`。
+        """
+        if text is None:
+            raise ValueError("LLM 响应文本为空")
         cleaned = text.strip()
+        # 去掉 markdown 代码块包裹
         if cleaned.startswith("```"):
             for prefix in ("```json\n", "```json", "```\n", "```"):
                 if cleaned.startswith(prefix):
@@ -108,4 +117,31 @@ class LLMClient:
                     break
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3]
-        return json.loads(cleaned.strip())
+        cleaned = cleaned.strip()
+        # 1) 先尝试整体解析
+        try:
+            result = json.loads(cleaned)
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                return result[0]
+        except json.JSONDecodeError:
+            pass
+        # 2) 稳健解析：提取首个完整 JSON 对象（容忍尾部多余文本 / 多对象）
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(cleaned)
+            if isinstance(obj, dict):
+                return obj
+            if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+                return obj[0]
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # 3) 兜底：截取首个 { 到末个 }
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        raise ValueError(f"无法从响应中解析 JSON: {text[:200]!r}")

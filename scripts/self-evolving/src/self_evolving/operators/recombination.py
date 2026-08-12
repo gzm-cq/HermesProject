@@ -82,9 +82,9 @@ class RecombinationConfig:
     semantic_similarity_threshold: float = 0.7
     max_input_length: int = 16000
     llm_api_url: str = "http://127.0.0.1:4142/v1/chat/completions"
-    llm_model: str = "s-deepseek-v4-flash"
+    llm_model: str = "sensenova-6.8-flash-lite"
     llm_api_key: str = ""
-    llm_timeout: int = 60
+    llm_timeout: int = 180
     jaccard_threshold_low: float = 0.3   # below this: definitely different
     jaccard_threshold_high: float = 0.7  # above this: definitely similar
 

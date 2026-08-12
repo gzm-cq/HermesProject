@@ -63,10 +63,20 @@ def security_scan(content: str) -> Tuple[bool, str]:
 
 
 def find_skill_md(skill_name: str, home: Optional[str] = None) -> Optional[Path]:
-    """定位 skill 的 SKILL.md（兼容分类嵌套目录）。"""
-    base = Path(home or os.environ.get('HERMES_HOME') or '/root/.hermes') / 'skills'
-    for candidate in base.rglob(f'{skill_name}/SKILL.md'):
-        return candidate
+    """定位 skill 的 SKILL.md（兼容分类嵌套目录 + plugins/*/skills 结构）。"""
+    root = Path(home or os.environ.get('HERMES_HOME') or '/root/.hermes')
+    # 搜索根：顶层 skills + 各 plugin 下的 skills
+    candidate_roots = [root / 'skills']
+    plugins_root = root / 'plugins'
+    if plugins_root.is_dir():
+        for entry in plugins_root.iterdir():
+            if entry.is_dir():
+                candidate_roots.append(entry / 'skills')
+    for base in candidate_roots:
+        if not base.is_dir():
+            continue
+        for candidate in base.rglob(f'{skill_name}/SKILL.md'):
+            return candidate
     return None
 
 
