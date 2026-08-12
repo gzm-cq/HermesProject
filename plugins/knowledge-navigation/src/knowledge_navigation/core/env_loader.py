@@ -72,3 +72,24 @@ def get_env_float(key: str, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return default
+
+
+_BOOL_TRUE = {"true", "1", "yes"}
+_BOOL_FALSE = {"false", "0", "no"}
+
+
+def get_env_bool(key: str, default: bool) -> bool:
+    """get_env 的 bool 版本，支持 true/false/1/0/yes/no，大小写不敏感。"""
+    raw = get_env(key, "").strip().lower()
+    if raw in _BOOL_TRUE:
+        return True
+    if raw in _BOOL_FALSE:
+        return False
+    return default
+
+
+def get_env_list(key: str, default: list[str], separator: str = ",") -> list[str]:
+    """get_env 的 list 版本，按分隔符拆分，strip 空白，过滤空值。"""
+    raw = get_env(key, "")
+    parts = [p.strip() for p in raw.split(separator)]
+    return [p for p in parts if p] if raw else default
