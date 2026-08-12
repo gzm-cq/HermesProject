@@ -81,7 +81,7 @@ def get_systemd_pids():
         return _SYSTEMD_PIDS
     out, _, _ = run(
         "for svc in hermes-gateway hindsight-daemon axiom-wiki-mcp-sse "
-        "codegraph-mcp postgres-mcp sag sag-mcp moonbridge; do "
+        "codegraph-mcp postgres-mcp sag sag-mcp; do "
         "systemctl show -P MainPID \"$svc\" 2>/dev/null; done || true"
     )
     pids = set()
@@ -466,36 +466,6 @@ def check_dashboard():
     })
 
 # ============================================
-# 8. Moon Bridge (Responses API converter)
-# ============================================
-def check_moonbridge():
-    """Check Moon Bridge service via systemd + port 38440."""
-    out, _, _ = run("systemctl show -P MainPID moonbridge.service 2>/dev/null || echo 0")
-    mb_pid = int(out or 0)
-    mb_alive = mb_pid > 0
-
-    # HTTP check — moonbridge returns 404 on / which means it's alive
-    out, _, rc = run(
-        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-         "http://127.0.0.1:38440/", "--max-time", "5"],
-        shell=False,
-    )
-    mb_http = out.strip() if out and rc == 0 else "000"
-    mb_reachable = mb_http not in ("000", "")
-
-    st = "ok"
-    if not mb_alive: st = "fail"
-    elif not mb_reachable: st = "warn"
-
-    write_check("moonbridge", st, {
-        "process_alive": mb_alive,
-        "pid": mb_pid,
-        "http_endpoint": mb_http,
-        "port": 38440,
-    })
-
-
-# ============================================
 # 8. Memory Files Usage
 # ============================================
 MEMORY_FILES = [
@@ -590,7 +560,6 @@ if __name__ == "__main__":
         "postgres": check_postgres,
         "mcp": check_mcp,
         "dashboard": check_dashboard,
-        "moonbridge": check_moonbridge,
     }
     
     with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as executor:

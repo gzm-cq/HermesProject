@@ -36,7 +36,7 @@ def format_summary(data: dict) -> tuple[str, bool]:
     ts = meta.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     local_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    services = ["hermes", "bifrost", "hindsight", "sag", "postgres", "dashboard", "mcp", "moonbridge", "orphan_scan", "memory_files"]
+    services = ["hermes", "bifrost", "hindsight", "sag", "postgres", "dashboard", "mcp", "orphan_scan", "memory_files"]
     lines = [f"# 🏥 系统健康巡检报告", f"**时间**: {local_time}", ""]
 
     results = {}
@@ -103,11 +103,6 @@ def format_summary(data: dict) -> tuple[str, bool]:
                     e = '✅' if cnt > 0 else '❌'
                     parts.append(f"{name[:5]} {e}")
             detail = " | ".join(parts)
-        elif svc == "moonbridge":
-            alive = '✅' if checks.get('process_alive') else '❌'
-            http = checks.get('http_endpoint','')
-            reach = '✅' if http not in ('000','','') else '❌'
-            detail = f"进程 {alive} | 端口 38440 {reach}({http})"
         elif svc == "orphan_scan":
             orphans = checks.get('orphan_pids', [])
             dead = checks.get('dead_containers', 0)
