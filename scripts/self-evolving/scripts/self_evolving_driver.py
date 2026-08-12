@@ -44,13 +44,13 @@ def _add_hermes_common_to_path() -> bool:
         d = parent
     if root is not None:
         pkg_parent = os.path.join(root, "libs", "hermes_common")
-        if os.path.isdir(os.path.join(pkg_parent, "hermes_common", "__init__.py")):
+        if os.path.isfile(os.path.join(pkg_parent, "hermes_common", "__init__.py")):
             if pkg_parent not in sys.path:
                 sys.path.insert(0, pkg_parent)
             return True
     # 2) 生产部署
     prod = "/root/.hermes/lib"
-    if os.path.isdir(os.path.join(prod, "hermes_common", "__init__.py")) and prod not in sys.path:
+    if os.path.isfile(os.path.join(prod, "hermes_common", "__init__.py")) and prod not in sys.path:
         sys.path.insert(0, prod)
         return True
     return False
