@@ -4,7 +4,7 @@
 
 1. [CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. Respond ONLY to the latest user message that appears AFTER this summary. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:
 ## Active Task
-用户选择方案 A（对 2,243 条无实体关联记忆重新跑实体提取），但试点脚本失败：模型路由错误（s-deepseek-v4-flash → custom_openai/sensenova-6.7-flash-lite）且响应被截断（finish_reason: length, content 为空）。需修复模型路由或更换模型后重试实体提取。
+用户选择方案 A（对 2,243 条无实体关联记忆重新跑实体提取），但试点脚本失败：模型路由错误（s-deepseek-v4-flash → custom_openai/sensenova-6.8-flash-lite）且响应被截断（finish_reason: length, content 为空）。需修复模型路由或更换模型后重试实体提取。
 
 ## Goal
 修复 knowledge-navigation 插件使其正确加载并注入 Hindsight 记忆，同时提升记忆库质量（清理垃圾、修复实体关联、优化召回阈值）。

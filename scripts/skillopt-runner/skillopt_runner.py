@@ -23,6 +23,7 @@ import shutil
 from collections import defaultdict
 
 _STATE_LOCK = threading.Lock()
+MAX_RETRY_POOL = 200
 
 # SkillOpt-Sleep 克隆在本地，必须在 import 前插入 sys.path
 # SKILLOPT_HOME 与 _SKILLOPT_SLEEP_PATH 保持一致：都基于 HERMES_HOME 计算，
@@ -37,6 +38,26 @@ from skillopt_sleep.types import SessionDigest, TaskRecord
 from skillopt_sleep.mine import mine
 from skillopt_sleep.config import load_config, SleepConfig
 from skillopt_sleep.cycle import run_sleep_cycle
+
+# ── 统一反馈账本（F-1）：跨飞轮事件追加 ──────────────
+def _add_common_to_path() -> bool:
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        cand = os.path.join(d, "common")
+        if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "ledger.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            return True
+        d = os.path.dirname(d)
+    return False
+
+
+_add_common_to_path()
+try:
+    from ledger import append_ledger_event
+except Exception:  # noqa: BLE001
+    def append_ledger_event(*_a, **_k):  # type: ignore
+        return False
 
 
 USAGE_FILE = HERMES_HOME / 'skills' / '.usage.json'
@@ -69,6 +90,7 @@ def load_state() -> dict:
                 'skill_last_run': {},
                 'skill_neg_feedback': {},
                 'skill_total_mentions': {},
+                'last_harvest_iso': None,    # F-4: harvest 窗口锚点，避免负反馈重复计数
             }
         # 兼容旧格式：迁移 last_run_iso → skill_last_run
         if 'last_run_iso' in s and 'skill_last_run' not in s:
@@ -78,6 +100,7 @@ def load_state() -> dict:
         'skill_last_run': {},             # skill_name -> 上次优化完成时间
         'skill_neg_feedback': {},         # skill_name -> 累积负反馈次数
         'skill_total_mentions': {},       # skill_name -> 累积被提及次数
+        'last_harvest_iso': None,        # F-4: harvest 窗口锚点，避免负反馈重复计数
     }
 
 
@@ -679,35 +702,50 @@ def rank_skills(
 
 
 def _security_scan(content: str) -> tuple[bool, str]:
-    """基础安全扫描：检查新内容是否包含危险模式。
+    """语义安全护栏：区分「高置信危险」与「需代码语境才危险」两类模式。
+
+    - 高置信危险（始终拦截）：rm -rf /、curl|bash、wget|bash、AWS key、prompt injection。
+      这些在 SKILL.md 正文里无论出现在 prose 还是代码都不可接受。
+    - 语境相关（仅在代码/命令语境拦截）：sudo / eval( / exec(。
+      避免误杀 prose 中「用 eval 评估」「请勿 sudo」之类的正向说明文字。
 
     Returns:
         (is_safe, reason) - is_safe=True 表示通过；reason 为失败原因
     """
     import re as _re
-    # 危险模式：可能执行任意命令、删除文件、提示词注入等
-    DANGEROUS_PATTERNS: list[tuple[_re.Pattern[str], str]] = [
+    # 高置信危险：无论上下文，始终拦截
+    HARD_BLOCK: list[tuple[_re.Pattern[str], str]] = [
         (_re.compile(r'rm\s+-rf\s+/', _re.IGNORECASE), '危险的 rm -rf 路径'),
-        (_re.compile(r'\bsudo\s+', _re.IGNORECASE), '包含 sudo 提权'),
         (_re.compile(r'curl\s+[^|]*\|\s*bash', _re.IGNORECASE), 'curl | bash 远程执行'),
         (_re.compile(r'wget\s+[^|]*\|\s*bash', _re.IGNORECASE), 'wget | bash 远程执行'),
-        (_re.compile(r'eval\s*\(', _re.IGNORECASE), '包含 eval 调用'),
-        (_re.compile(r'exec\s*\(', _re.IGNORECASE), '包含 exec 调用'),
+        (_re.compile(r'AKIA[0-9A-Z]{16}'), '疑似 AWS access key'),
         (_re.compile(r'(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions?'),
          '疑似 prompt injection: ignore instructions'),
         (_re.compile(r'(?i)you\s+are\s+now\s+(a|an)\s+'),
          '疑似 prompt injection: 角色重定义'),
         (_re.compile(r'(?i)disregard\s+(all\s+)?(safety|security|ethical)'),
          '疑似 prompt injection: 绕过安全'),
-        (_re.compile(r'AKIA[0-9A-Z]{16}'), '疑似 AWS access key'),
     ]
-    for pattern, reason in DANGEROUS_PATTERNS:
+    for pattern, reason in HARD_BLOCK:
         if pattern.search(content):
             return False, f'安全扫描失败: {reason}'
+
+    # 语境相关：仅在「代码块 / shell 行」中拦截 sudo/eval(/exec(，降低 prose 误杀
+    has_code_fence = '```' in content or '~~~' in content
+    has_shell = bool(_re.search(r'(?m)^\s*[\$>]\s*\S', content)) or bool(
+        _re.search(r'(?m)^\s*(sudo|rm\b|curl|wget|bash|sh|python3?|eval|exec)\b', content))
+    if has_code_fence or has_shell:
+        CODE_CONTEXT: list[tuple[_re.Pattern[str], str]] = [
+            (_re.compile(r'(?m)^\s*(sudo|eval|exec)\b', _re.IGNORECASE),
+             '代码/命令语境中的 sudo/eval/exec'),
+        ]
+        for pattern, reason in CODE_CONTEXT:
+            if pattern.search(content):
+                return False, f'安全扫描失败: {reason}'
     return True, 'OK'
 
 
-def patch_skill_hermes(skill_name: str, new_content: str, state: dict) -> bool:
+def patch_skill_hermes(skill_name: str, new_content: str, state: dict | None = None) -> bool:
     """Patch skill via Hermes skill_manage tool — merge edit into existing SKILL.md.
     安全特性：保留 frontmatter + append 到正文 + atomic write + security scan + 回滚。
     部署成功 → 自动清零该技能的累积负反馈。"""
@@ -761,8 +799,18 @@ def patch_skill_hermes(skill_name: str, new_content: str, state: dict) -> bool:
         return False
 
     print(f'SUCCESS: patch applied to {p}')
-    # 部署成功 → 清零该技能负反馈
-    if skill_name in state.get('skill_neg_feedback', {}):
+    # F-1 统一反馈账本：记录 SkillOpt 改写事件（跨循环关联 SAG 生产/消费质量）
+    _neg_before = None
+    if isinstance(state, dict):
+        _neg_before = state.get('skill_neg_feedback', {}).get(skill_name)
+    append_ledger_event('skillopt_patch', {
+        'skill': skill_name,
+        'neg_before': _neg_before,
+        'neg_after': 0 if isinstance(state, dict) else None,
+        'dry_run': False,
+    })
+    # 部署成功 → 清零该技能负反馈（仅当传入 state 时；线程安全路径下由主线程统一合并，见 F-7）
+    if state is not None and skill_name in state.get('skill_neg_feedback', {}):
         old_val = state['skill_neg_feedback'][skill_name]
         state['skill_neg_feedback'][skill_name] = 0
         save_state(state)
@@ -807,9 +855,14 @@ def _phase_harvest(
     Returns:
         Harvested session digests。
     """
-    sincetimes = [v for v in skill_last_run.values() if v]
-    if sincetimes:
-        harvest_since = min(sincetimes)
+    # F-4 fix: 用单一 last_harvest_iso 推进窗口，替代 min(skill_last_run)。
+    # 旧逻辑用 min(skill_last_run) 作下界——一旦某 skill 长期未被再选，窗口锚定在
+    # 最早的优化时刻，每次运行都重新 harvest 全部旧 session，导致 rank_skills 对
+    # 同一条历史负反馈逐日 +1 重复计数，污染 score = neg*3 + ...。
+    # 改为每个 session 仅计一次：harvest 后立刻推进锚点，下次自此刻起。
+    last_harvest = state.get('last_harvest_iso')
+    if last_harvest:
+        harvest_since = last_harvest
         print(f'Phase 1: 增量 harvest（自 {harvest_since} 之后的新 session）')
     else:
         harvest_since = None
@@ -817,6 +870,9 @@ def _phase_harvest(
     max_sessions = runner_cfg.get('max_sessions', 0)
     digests = harvest_hermes_sessions(harvest_since, max_sessions=max_sessions)
     print(f'Harvested {len(digests)} total sessions')
+    # 立即推进 harvest 锚点（边界闭于本次，下次开窗口严格大于，保证不重复计数）
+    state['last_harvest_iso'] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
     return digests
 
 
@@ -842,24 +898,28 @@ def _phase_rank(
 
 def _optimize_one_skill(
     skill_name: str,
-    skill_last_run: dict[str, str],
-    state: dict,
+    skill_last_run_ts: str | None,
+    failed_tasks_in: list,
     batches: list[list],
     sleep_cfg: dict,
     *,
     dry_run: bool,
-) -> tuple[str, bool]:
-    """Run one skill through all batches. Returns (skill_name, optimized).
+) -> dict:
+    """Run one skill through all batches. Thread-safe (F-7): 只操作线程本地数据，
+    不修改共享 state / skill_last_run，返回 delta 供主线程合并，消除并发竞态。
 
-    Failed task retry pool (state.failed_tasks):
-        If a batch's gate rejects, its tasks are appended to the retry pool
-        keyed by skill_name (with dedup + max_retries cap). Next run, failed
-        tasks are appended after fresh batches so the updated skill gets a
-        chance to fix them. Transient API errors don't permanently lose work.
+    Returns:
+        {
+          "skill_name": str,
+          "optimized": bool,
+          "skill_last_run_ts": str | None,
+          "failed_tasks": list,
+          "neg_cleared": bool,
+        }
     """
-    # ── Load failed tasks from retry pool ──
-    failed_tasks = state.setdefault('failed_tasks', {})
-    saved = failed_tasks.pop(skill_name, [])
+    # ── Load failed tasks from retry pool（本地副本，避免共享 mutate） ──
+    failed_tasks: dict[str, list] = {skill_name: list(failed_tasks_in or [])}
+    saved = failed_tasks[skill_name]
     retry_map: dict[str, int] = {}
     has_retry = bool(saved)
     if saved:
@@ -883,15 +943,20 @@ def _optimize_one_skill(
     # ── 无重试池 且 无 batch → skip ──
     if not has_retry and not batches:
         print(f'  [{skill_name}] 无 session 数据 + 无重试池，跳过')
-        return skill_name, False
+        return {"skill_name": skill_name, "optimized": False,
+                "skill_last_run_ts": None, "failed_tasks": saved, "neg_cleared": False}
 
     p = get_skill_path(skill_name)
     if not p:
         print(f'  [{skill_name}] 找不到 SKILL.md，跳过')
-        return skill_name, False
+        return {"skill_name": skill_name, "optimized": False,
+                "skill_last_run_ts": None, "failed_tasks": saved, "neg_cleared": False}
 
     per_cfg = dict(sleep_cfg)
     per_cfg['projects'] = [str(p.parent)]
+
+    neg_cleared = False
+    last_run_ts: str | None = None
 
     for batch_idx, batch_tasks in enumerate(batches, 1):
         if not batch_tasks:
@@ -918,36 +983,44 @@ def _optimize_one_skill(
                     nt['retry_count'] = base + 1
                     merged.append(nt)
             # cap
-            MAX_RETRY_POOL = 200
             merged = merged[-MAX_RETRY_POOL:]
             # 淘汰超限重试
             merged = [t for t in merged if t.get('retry_count', 0) <= 3]
             failed_tasks[skill_name] = merged
-            save_state(state)
             print(f'  [{skill_name}] → Gate 拒绝，重试池当前 {len(merged)} 个 task')
             continue
 
         # ── Gate accept — clear retry pool ──
         failed_tasks.pop(skill_name, None)
-        save_state(state)
 
         if dry_run:
             print(f'  [{skill_name}] → Dry-run: {len(result.report.edits)} edits accepted')
             # Dry-run 模式下继续跑剩余 batch（验证全流程）
             continue
 
-        # Apply edits（不 return，继续跑下一个 batch，skill 已更新）
+        # F-6: 应用单个 batch 内全部通过的 edit（不再只取首个），逐条应用；
+        # 不传 state → 不在子线程内共享 mutate，负反馈清零由主线程统一合并（F-7）。
         print(f'  [{skill_name}] ✅ Batch {batch_idx} passed!')
+        applied = 0
         for edit in result.report.edits:
-            ok = patch_skill_hermes(skill_name, edit.content, state)
+            ok = patch_skill_hermes(skill_name, edit.content)
             if ok:
                 print(f'  [{skill_name}] ✅ Applied: {edit.target}/{edit.op}')
-                skill_last_run[skill_name] = datetime.now(timezone.utc).isoformat()
-                break
+                applied += 1
             else:
                 print(f'  [{skill_name}] ❌ Apply failed: {edit.target}/{edit.op}')
+        if applied:
+            last_run_ts = datetime.now(timezone.utc).isoformat()
+            neg_cleared = True  # 部署成功后主线程统一清零负反馈
+            print(f'  [{skill_name}] ✅ Batch {batch_idx} 共应用 {applied} 个 edit')
 
-    return skill_name, True if skill_last_run.get(skill_name) else False
+    return {
+        "skill_name": skill_name,
+        "optimized": bool(last_run_ts),
+        "skill_last_run_ts": last_run_ts,
+        "failed_tasks": failed_tasks.get(skill_name, []),
+        "neg_cleared": neg_cleared,
+    }
 
 
 def _phase_optimize(
@@ -990,9 +1063,12 @@ def _phase_optimize(
             print(f'  [{skill_name}] #{rank}: {len(digests)} sessions → '
                   f'{len(all_tasks)} tasks → {len(batches)} batches')
 
+            # F-7: 传入线程本地所需的「该 skill 的 since / 重试池副本」，
+            #       _optimize_one_skill 不再接触共享 state/skill_last_run。
+            failed_in = state.get('failed_tasks', {}).get(skill_name, [])
             fut = ex.submit(
                 _optimize_one_skill,
-                skill_name, skill_last_run, state,
+                skill_name, since, failed_in,
                 batches, sleep_cfg, dry_run=dry_run,
             )
             futures[fut] = skill_name
@@ -1000,20 +1076,92 @@ def _phase_optimize(
         for fut in as_completed(futures):
             name = futures[fut]
             try:
-                _, ok = fut.result()
-                if ok:
-                    optimized += 1
-                    print(f'  ✅ [{name}] 优化成功')
-                else:
-                    print(f'  ﹣ [{name}] 未优化')
+                res = fut.result()
             except Exception as e:
                 print(f'  ❌ [{name}] 异常: {e}')
+                continue
+            if res.get('optimized'):
+                optimized += 1
+                print(f'  ✅ [{name}] 优化成功')
+            else:
+                print(f'  ﹣ [{name}] 未优化')
 
-    state['skill_last_run'] = skill_last_run
-    save_state(state)
+            # F-7: 增量合并 delta 到共享 state 并落盘（顺序、无并发写）
+            with _STATE_LOCK:
+                if res.get('skill_last_run_ts'):
+                    skill_last_run[name] = res['skill_last_run_ts']
+                if res.get('neg_cleared'):
+                    state.setdefault('skill_neg_feedback', {})[name] = 0
+                ft = res.get('failed_tasks')
+                if ft is not None:
+                    state.setdefault('failed_tasks', {})[name] = ft
+                state['skill_last_run'] = skill_last_run
+                save_state(state)
+
     print(f'\n{"="*65}')
     print(f'All done: {optimized}/{len(top_scored)} skills optimized')
     return optimized
+
+
+# ── F-2: Skill 路控制环（auto-tuner 经 .env 下发执行参数） ──────────────
+def _load_skillopt_env_overrides() -> dict:
+    """读取 HERMES_HOME/.env 中的 SKILLOPT_* 覆盖（与 auto-tuner 写 .env 对应）。
+
+    这些 actuator 由 auto-tuner 基于 skill_used_count 反馈自动调优，经 .env 下发到这里，
+    使「数据飞轮能测量 skill 健康度」真正闭环到「能驱动 SkillOpt 执行参数」。
+    """
+    out: dict = {}
+    env_file = HERMES_HOME / '.env'
+    try:
+        with open(env_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith('#') or '=' not in s:
+                    continue
+                k, v = s.split('=', 1)
+                k = k.strip()
+                if k.startswith('SKILLOPT_'):
+                    out[k] = v.strip()
+    except (OSError, FileNotFoundError):
+        pass
+    return out
+
+
+def _apply_skillopt_controls(top_scored: list, skill_last_run: dict, runner_cfg: dict) -> list:
+    """应用 auto-tuner 经 .env 下发的 SkillOpt 控制参数（F-2）。
+
+    返回经过过滤的 top_scored 列表：
+      - SKILLOPT_ENABLED=0 → 整轮跳过（master switch）
+      - SKILLOPT_MAX_PER_NIGHT > 0 → 限制每夜优化技能数（覆盖 top_k）
+      - SKILLOPT_COOLDOWN_DAYS > 0 → 跳过冷却期内（近期已优化）的技能
+    """
+    overrides = _load_skillopt_env_overrides()
+    enabled = int(overrides.get('SKILLOPT_ENABLED', '1') or '1')
+    if not enabled:
+        print('[SkillCtrl] SKILLOPT_ENABLED=0，跳过本轮 SkillOpt 优化')
+        return []
+
+    max_per_night = int(overrides.get('SKILLOPT_MAX_PER_NIGHT',
+                                     str(runner_cfg.get('top_k', 5))) or 0)
+    if max_per_night and max_per_night > 0:
+        if len(top_scored) > max_per_night:
+            print(f'[SkillCtrl] SKILLOPT_MAX_PER_NIGHT={max_per_night}，'
+                  f'截断 {len(top_scored)} → {max_per_night}')
+            top_scored = top_scored[:max_per_night]
+
+    cooldown_days = int(overrides.get('SKILLOPT_COOLDOWN_DAYS', '0') or 0)
+    if cooldown_days and cooldown_days > 0:
+        now = datetime.now(timezone.utc).timestamp()
+        filtered = []
+        for entry in top_scored:
+            name = entry[0]
+            ts = _parse_iso_to_timestamp(skill_last_run.get(name))
+            if ts and (now - ts) < cooldown_days * 86400:
+                print(f'  [SkillCtrl] {name} 在冷却期（{cooldown_days}天），跳过')
+                continue
+            filtered.append(entry)
+        top_scored = filtered
+    return top_scored
 
 
 def main() -> int:
@@ -1050,6 +1198,13 @@ def main() -> int:
 
         top_scored, skill_sessions = _phase_rank(eligible, all_digests, state, runner_cfg)
         if not top_scored:
+            return 0
+
+        # ── F-2: Skill 路控制环（auto-tuner 经 .env 下发执行参数） ──
+        top_scored = _apply_skillopt_controls(top_scored, skill_last_run, runner_cfg)
+        if not top_scored:
+            save_state(state)
+            print('Skill 控制环过滤后无候选，退出')
             return 0
 
         # ── Phase 3: per-skill optimize ──

@@ -314,7 +314,7 @@ class TestSplitConfig:
     def test_runner_private_keys_not_passed_to_sleep_config(self):
         raw = {
             "backend": "litellm",
-            "model": "sensenova-6.7-flash-lite",
+            "model": "sensenova-6.8-flash-lite",
             "top_k": 5,
             "denylist_patterns": ["lark-"],
             "max_sessions": 10,
