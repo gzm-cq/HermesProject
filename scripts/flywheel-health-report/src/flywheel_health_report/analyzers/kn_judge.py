@@ -33,6 +33,26 @@ from typing import Any
 
 from ..config import KN_JUDGE_CFG
 
+# ── 统一反馈账本（F-1）：跨飞轮事件追加 ──────────────
+def _add_common_to_path() -> bool:
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        cand = os.path.join(d, "common")
+        if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "ledger.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            return True
+        d = os.path.dirname(d)
+    return False
+
+
+_add_common_to_path()
+try:
+    from ledger import append_ledger_event
+except Exception:  # noqa: BLE001
+    def append_ledger_event(*_a, **_k):  # type: ignore
+        return False
+
 # --------------------------------------------------------------------
 # collect_baseline 的 run_judge / collect_all_recalls / _judge_one 导入
 # （优先 import 安装在 /root/.hermes 下的脚本，否则走 fallback）
@@ -355,14 +375,18 @@ def run_judge_within_window(
     ]
 
     total_windowed = len(windowed)
-    if total_windowed < min_sample and not force_full_eval:
+    if total_windowed < mask_min_sample and not force_full_eval:
         return {
             "kn_judge_sample_count": total_windowed,
-            "kn_judge_error": f"sample_below_min:{total_windowed}<{min_sample}",
+            "kn_judge_error": f"sample_below_min:{total_windowed}<{mask_min_sample}",
         }
 
     llm_cfg = _load_llm_config(home)
     if llm_cfg is None:
+        if fallback_ok:
+            fb = _kn_judge_fallback(all_rec, floor_iso, until_iso_eff)
+            fb["kn_judge_error"] = "llm_config_missing"
+            return fb
         return {"kn_judge_sample_count": total_windowed, "kn_judge_error": "llm_config_missing"}
 
     sample = windowed[-sample_size:] if len(windowed) >= sample_size else windowed
@@ -441,10 +465,27 @@ def run_judge_within_window(
     }
     for k in _MASK_KEYS:
         short = _MASK_SHORT[k]
-        rel_m, avg_m, _ = _agg(mask_scores[k])
-        out[f"kn_judge_sample_count_{short}"] = len(mask_scores[k])
-        out[f"kn_judge_relevant_rate_{short}"] = rel_m
-        out[f"kn_judge_avg_relevance_{short}"] = avg_m
+        cnt = len(mask_scores[k])
+        out[f"kn_judge_sample_count_{short}"] = cnt
+        if cnt >= mask_min_sample:
+            rel_m, avg_m, _ = _agg(mask_scores[k])
+            out[f"kn_judge_relevant_rate_{short}"] = rel_m
+            out[f"kn_judge_avg_relevance_{short}"] = avg_m
+        else:
+            # 样本不足：只写计数，不虚构 rate/avg（tuner 按 count 拒绝，显示侧显 N/A）
+            out[f"kn_judge_relevant_rate_{short}"] = None
+            out[f"kn_judge_avg_relevance_{short}"] = None
+    # F-1 统一反馈账本：记录各路 mask 指标，供跨循环关联（"改写后 neg 是否真的降"等）
+    _mask_rates = {k: out.get(f"kn_judge_relevant_rate_{k}") for k in ("h", "kt", "sag")}
+    if any(v is not None for v in _mask_rates.values()):
+        append_ledger_event("kn_judge", {
+            "relevant_rate_h": _mask_rates["h"],
+            "relevant_rate_kt": _mask_rates["kt"],
+            "relevant_rate_sag": _mask_rates["sag"],
+            "sample_count_h": out.get("kn_judge_sample_count_h"),
+            "sample_count_kt": out.get("kn_judge_sample_count_kt"),
+            "sample_count_sag": out.get("kn_judge_sample_count_sag"),
+        })
     return out
 
 

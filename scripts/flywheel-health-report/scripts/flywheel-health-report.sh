@@ -22,7 +22,7 @@ cron_init "flywheel-health-report"
 CRON_SKIP_FINISH_NOTIFY=true
 
 # ===== 环境变量（必须在 Runner 阶段 0 之前设置）=====
-HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
+export HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 CHAT_ID="${FEISHU_CHAT_ID:-}"
 REPORT_DIR="${HERMES_HOME}/logs/reports"
 

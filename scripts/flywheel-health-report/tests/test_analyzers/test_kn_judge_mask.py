@@ -269,6 +269,77 @@ def test_run_judge_within_window_sample_below_min():
     assert "sample_below_min" in out["kn_judge_error"]
 
 
+def test_run_judge_per_mask_gate_below_global_min():
+    """回归修复②：全局 min_sample=20 不再一刀切。
+
+    总窗口样本 15 条（>= mask_min_sample=12，< 全局 20）→ 旧代码会在 L358
+    整体 early-return（sample_below_min:15<20），连 partial mask 键都不写，
+    导致单路达标也被饿死。修复后：放行 judge，达标单路正常产出 mask 键；
+    同时 per-mask 守卫对样本不足（如 kt=0）的 mask 写 None 而非 0.0（不虚构）。
+    """
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    home = Path(tmp) / "hermes"
+    (home / "plugins" / "knowledge-navigation").mkdir(parents=True)
+    (home / "plugins" / "knowledge-navigation" / "trace.log").write_text("x\n", encoding="utf-8")
+
+    recent = [(NOW - timedelta(days=1)).isoformat() for _ in range(15)]
+    fake_records = [{"timestamp": t} for t in recent]
+    # knowledge_tree 在所有 recall 中都为 None → kt 计数 0；h/sag 有值
+    score = {"overall": 0.8, "hindsight": 0.9, "knowledge_tree": None, "sag": 0.7}
+    with mock.patch.object(kn_judge, "_ensure_collect_baseline_imported", return_value=True), \
+         mock.patch.object(kn_judge, "_collect_all_recalls", return_value=fake_records), \
+         mock.patch.object(kn_judge, "_load_llm_config", return_value={"url": "u", "key": "k", "model": "m"}), \
+         mock.patch.object(kn_judge, "_judge_one_masked", return_value=(score, True)):
+        out = kn_judge.run_judge_within_window(home, since_iso="2000-01-01T00:00:00", until_iso="")
+
+    # 不再被全局 20 门拦下：放行且产出 mask 键
+    assert out.get("kn_judge_error") is None, out.get("kn_judge_error")
+    assert out["kn_judge_sample_count"] == 15
+    assert out["kn_judge_fallback"] is False
+    # 达标单路 h/sag：计数与 rate 均正常
+    assert out["kn_judge_sample_count_sag"] == 15
+    assert out["kn_judge_relevant_rate_sag"] == 1.0  # 0.7>=0.5 → rel=1.0
+    assert out["kn_judge_sample_count_h"] == 15
+    # 样本不足单路 kt：只写计数，rate 显式 None（不再用 0.0 误导）
+    assert out["kn_judge_sample_count_kt"] == 0
+    assert out["kn_judge_relevant_rate_kt"] is None
+
+
+def test_run_judge_llm_config_missing_falls_back_with_mask_keys():
+    """回归修复①：LLM 配置缺失（端点临时不可用）时不再静默断裂反馈。
+
+    旧路径：L364-366 直接 early-return，只写全局 count、不写 mask 键 →
+    tuner 整段无 mask 反馈 → 飞轮在 LLM outage 期失聪。
+    修复后：走 _kn_judge_fallback 产出 mask 级键（粗估），保证闭环不饿死。
+    """
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    home = Path(tmp) / "hermes"
+    (home / "plugins" / "knowledge-navigation").mkdir(parents=True)
+    (home / "plugins" / "knowledge-navigation" / "trace.log").write_text("x\n", encoding="utf-8")
+
+    recent = [(NOW - timedelta(days=1)).isoformat() for _ in range(20)]
+    fake_records = [
+        {"timestamp": t, "avg_score": 0.7, "kept_results": 3,
+         "hs_kept": 2, "kt_kept": 1, "sag_kept": 3}
+        for t in recent
+    ]
+    with mock.patch.object(kn_judge, "_ensure_collect_baseline_imported", return_value=True), \
+         mock.patch.object(kn_judge, "_collect_all_recalls", return_value=fake_records), \
+         mock.patch.object(kn_judge, "_load_llm_config", return_value=None):  # LLM 不可用
+        out = kn_judge.run_judge_within_window(home, since_iso="2000-01-01T00:00:00", until_iso="")
+
+    # 走 fallback 而非硬失败
+    assert out.get("kn_judge_fallback") is True
+    assert out.get("kn_judge_error") == "llm_config_missing"
+    # mask 级键齐全（粗估）
+    for short in ("h", "kt", "sag"):
+        assert f"kn_judge_sample_count_{short}" in out
+        assert f"kn_judge_relevant_rate_{short}" in out
+        assert f"kn_judge_avg_relevance_{short}" in out
+
+
 # =====================================================================
 # T4: tuner 信任门控 + 粗→细 + best-so-far
 # =====================================================================
@@ -403,6 +474,8 @@ if __name__ == "__main__":
     test_judge_one_masked_empty_content_fails()
     test_run_judge_within_window_aggregation()
     test_run_judge_within_window_sample_below_min()
+    test_run_judge_per_mask_gate_below_global_min()
+    test_run_judge_llm_config_missing_falls_back_with_mask_keys()
     test_feedback_key_trusted_global_vs_mask()
     test_param_judge_trusted_any_subjective_ok()
     test_determine_direction_coarse_first_tune()
