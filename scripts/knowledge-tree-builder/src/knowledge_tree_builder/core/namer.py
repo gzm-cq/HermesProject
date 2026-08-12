@@ -54,7 +54,7 @@ def name_node(
     name = call_llm(
         prompt=prompt,
         temperature=0,
-        max_tokens=32,
+        max_tokens=8192,
         api_url=api_url,
         api_key=api_key,
         model=model,

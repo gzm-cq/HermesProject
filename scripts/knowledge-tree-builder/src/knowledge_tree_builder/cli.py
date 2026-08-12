@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import typer
 
 from knowledge_tree_builder.commands._utils import JSONFormatter, setup_logging
@@ -37,6 +39,26 @@ from knowledge_tree_builder.commands.complex import cmd_consolidate
 from knowledge_tree_builder.commands.lineage import cmd_lineage_show, cmd_lineage_export
 from knowledge_tree_builder.commands.check_freshness import cmd_check_freshness
 from knowledge_tree_builder.commands.run import _run_pipeline
+
+# ── 统一反馈账本（F-1）：跨飞轮事件追加 ──────────────
+def _add_common_to_path() -> bool:
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        cand = os.path.join(d, "common")
+        if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "ledger.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            return True
+        d = os.path.dirname(d)
+    return False
+
+
+_add_common_to_path()
+try:
+    from ledger import append_ledger_event
+except Exception:  # noqa: BLE001
+    def append_ledger_event(*_a, **_k):  # type: ignore
+        return False
 from knowledge_tree_builder.core.cache_manager import CacheManager
 from knowledge_tree_builder.commands.deprecated import (
     cmd_run_old,
@@ -296,6 +318,12 @@ def run(
         concurrent=concurrent,
         verbose=verbose,
     )
+    # F-1 统一反馈账本：记录知识树构建触发（跨循环关联；精确条目数由管线内部统计，后续可回填）
+    append_ledger_event("kt_build", {
+        "phase": phase,
+        "input_dir": input_dir,
+        "dry_run": dry_run,
+    })
 
 
 @app.command()

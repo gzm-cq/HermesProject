@@ -23,7 +23,7 @@ def extract_knowledge_points(
     api_key: str = "",
     model: str = "s-deepseek-v4-flash",
     temperature: float = 0,
-    max_tokens: int = 2048,
+    max_tokens: int = 8192,
 ) -> list[str]:
     """用 LLM 从文章中提取最核心的 3-8 个知识点。
 
@@ -76,7 +76,7 @@ def extract_knowledge_points_with_temporal(
     api_key: str = "",
     model: str = "s-deepseek-v4-flash",
     temperature: float = 0,
-    max_tokens: int = 3072,
+    max_tokens: int = 8192,
 ) -> list[dict[str, Any]]:
     """用 LLM 提取知识点并附带 temporal 信息（P3-9 时态感知）。
 
