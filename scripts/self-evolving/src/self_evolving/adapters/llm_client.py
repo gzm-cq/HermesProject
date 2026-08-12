@@ -37,7 +37,7 @@ class LLMClient:
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.3,
-        max_tokens: int = 2048,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
+        max_tokens: int = 8192,  # min 8192 for sensenova-6.8-flash-lite fallback JSON output
         response_format: dict | None = None,
     ) -> dict[str, Any]:
         """调用 LLM chat completion API（带重试，指数退避）"""

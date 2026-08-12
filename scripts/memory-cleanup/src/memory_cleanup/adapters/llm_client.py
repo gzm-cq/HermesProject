@@ -46,7 +46,7 @@ class LLMClient:
         if self._key and self._url.startswith("http://"):
             logger.warning("LLM API key transmitted over HTTP (not HTTPS)")
 
-    def _call(self, messages: list[dict[str, str]], max_tokens: int = 3000, json_mode: bool = False) -> str | None:
+    def _call(self, messages: list[dict[str, str]], max_tokens: int = 8192, json_mode: bool = False) -> str | None:
         """
         执行单次 LLM HTTP 调用，带指数退避 + jitter 重试。
         失败返回 None，最多重试 3 次。
@@ -82,7 +82,7 @@ class LLMClient:
                 self.total_prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
                 self.total_completion_tokens += int(usage.get("completion_tokens", 0) or 0)
                 # 处理 thinking 模式下 content 缺失的问题
-                # sensenova-6.7-flash-lite 等模型在 thinking 时可能只返回 reasoning 字段
+                # sensenova-6.8-flash-lite 等模型在 thinking 时可能只返回 reasoning 字段
                 msg = data["choices"][0].get("message", {})
                 content = msg.get("content")
                 if content is None:
@@ -179,7 +179,7 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=3000, json_mode=True)
+        raw = self._call(messages, max_tokens=8192, json_mode=True)
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None:
@@ -232,7 +232,7 @@ class LLMClient:
             {"role": "user", "content": judge_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=2048, json_mode=True)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
+        raw = self._call(messages, max_tokens=8192, json_mode=True)  # min 8192 for sensenova-6.8-flash-lite fallback JSON output
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None:

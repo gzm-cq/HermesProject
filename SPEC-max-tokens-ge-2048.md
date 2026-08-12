@@ -1,43 +1,43 @@
-# SPEC: max_tokens 统一提升到 ≥2048（适配 sensenova-6.7-flash-lite fallback）
+# SPEC: max_tokens 统一提升到 ≥2048（适配 sensenova-6.8-flash-lite fallback）
 
 ## 背景
-sensenova-6.7-flash-lite 在 Bifrost fallback 链路中（第1 fallback），该模型要求 max_tokens≥512 才能返回完整 JSON，否则 finish_reason=length。安全起见统一提升到 ≥2048。
+sensenova-6.8-flash-lite 在 Bifrost fallback 链路中（第1 fallback），该模型要求 max_tokens≥512 才能返回完整 JSON，否则 finish_reason=length。安全起见统一提升到 ≥2048。
 
 ## 改动文件列表（全部在 /mnt/d/HermesProject/）
 
 ### P0 — Router LLM 调用（fallback 必挂）
 1. `plugins/knowledge-navigation/src/knowledge_navigation/core/router.py:261`
    - `"max_tokens": 512` → `"max_tokens": 2048`
-   - 注释更新：`# Round3: 512→2048 适配 sensenova-6.7-flash-lite fallback（需≥2048返回完整JSON）`
+   - 注释更新：`# Round3: 512→2048 适配 sensenova-6.8-flash-lite fallback（需≥2048返回完整JSON）`
 
 ### P1 — self-evolving operators
 2. `scripts/self-evolving/src/self_evolving/operators/recombination.py:183`
    - `max_tokens=512` → `max_tokens=2048`
-   - 加注释：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output`
+   - 加注释：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output`
 3. `scripts/self-evolving/src/self_evolving/operators/revision.py:229`
    - `max_tokens: int = 1024` → `max_tokens: int = 2048`
-   - 加注释：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output`
+   - 加注释：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output`
 
 ### P2 — llm_client defaults（json_mode=True，必须≥2048）
 4. `scripts/memory-cleanup/src/memory_cleanup/adapters/llm_client.py:49`
    - `max_tokens: int = 3000` → **保留**（已≥2048）
 5. `scripts/memory-cleanup/src/memory_cleanup/adapters/llm_client.py:225`
    - `max_tokens=800` → `max_tokens=2048`
-   - 加注释：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output`
+   - 加注释：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output`
 6. `scripts/recall-eval/src/recall_eval/adapters/llm_client.py:66`
    - `max_tokens: int = 1000` → `max_tokens: int = 2048`
-   - 加注释：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output`
+   - 加注释：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output`
 7. `scripts/recall-eval/src/recall_eval/adapters/llm_client.py:170,214,259`
    - `max_tokens=1000` → `max_tokens=2048`（3处调用点）
-   - 加注释：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output`
+   - 加注释：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output`
 8. `scripts/self-evolving/src/self_evolving/adapters/llm_client.py:40`
    - `max_tokens: int = 1024` → `max_tokens: int = 2048`
-   - 加注释：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output`
+   - 加注释：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output`
 
 ### P3 — dream-synth（非关键路径，但统一）
 9. `scripts/dream-synth/scripts/dream-daily.py:107`
    - `max_tokens=1024` → `max_tokens=2048`
-   - 加注释：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output`
+   - 加注释：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output`
 
 ### P4 — skillopt-sleep backend（多处，统一默认值）
 10. `scripts/skillopt-sleep/skillopt_sleep/backend.py:348,359,591,739,915,1015,1117,864`
@@ -54,7 +54,7 @@ sensenova-6.7-flash-lite 在 Bifrost fallback 链路中（第1 fallback），该
 11. `/root/.hermes/config.yaml` — model section 下添加 `max_tokens: 2048`
 
 ## ⚠️ 重要约束
-- **所有改动必须加中文注释**说明原因：`# min 2048 for sensenova-6.7-flash-lite fallback JSON output (sensenova-6.7-flash-lite需≥512返回完整JSON，安全值≥2048)`
+- **所有改动必须加中文注释**说明原因：`# min 2048 for sensenova-6.8-flash-lite fallback JSON output (sensenova-6.8-flash-lite需≥512返回完整JSON，安全值≥2048)`
 - **不改**已经 ≥2048 的值（如 memory-cleanup llm_client.py:49 的默认值3000、knowledge-tree-builder的3072/4096等）
 - **不改** skillopt-sleep backend.py:553（已为2048）和 knowledge-tree-builder/namer.py:57（max_tokens=32是命名任务，输出极短，不需要改）
 

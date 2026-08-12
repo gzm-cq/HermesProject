@@ -9,16 +9,16 @@
 ### 已配置（.env）
 
 ```bash
-LLM_MODEL=sensenova-6.7-flash-lite          # 通用默认
+LLM_MODEL=sensenova-6.8-flash-lite          # 通用默认
 KT_LLM_MODEL=s-deepseek-v4-flash            # 知识树专用
-KN_SKILL_MATCHER_MODEL=sensenova-6.7-flash-lite  # 技能匹配专用
-RECALL_EVAL_MODEL=sensenova-6.7-flash-lite  # 召回评估专用
+KN_SKILL_MATCHER_MODEL=sensenova-6.8-flash-lite  # 技能匹配专用
+RECALL_EVAL_MODEL=sensenova-6.8-flash-lite  # 召回评估专用
 ```
 
 ### 已配置（systemd env）
 
 ```bash
-KN_ROUTER_MODEL=sensenova-6.7-flash-lite    # 知识导航 Router
+KN_ROUTER_MODEL=sensenova-6.8-flash-lite    # 知识导航 Router
 ```
 
 ### 硬编码默认值（需改为读 env）
@@ -34,8 +34,8 @@ KN_ROUTER_MODEL=sensenova-6.7-flash-lite    # 知识导航 Router
 ### Hermes config.yaml（保持不变）
 
 ```yaml
-auxiliary.kanban_decomposer.model: sensenova-6.7-flash-lite
-auxiliary.background_review.model: sensenova-6.7-flash-lite
+auxiliary.kanban_decomposer.model: sensenova-6.8-flash-lite
+auxiliary.background_review.model: sensenova-6.8-flash-lite
 model.default: s-deepseek-v4-flash  # 主模型不变
 ```
 
@@ -51,7 +51,7 @@ model.default: s-deepseek-v4-flash  # 主模型不变
 LLM_MODEL_MAIN=s-deepseek-v4-flash
 
 # 轻量模型（高频调用，Router/SkillMatcher/Background等）
-LLM_MODEL_LIGHT=sensenova-6.7-flash-lite
+LLM_MODEL_LIGHT=sensenova-6.8-flash-lite
 
 # 各子系统覆盖（可选，不设置则继承上面两个）
 MEMORY_CLEANUP_LLM_MODEL=              # 空=继承 LLM_MODEL_LIGHT
@@ -59,9 +59,9 @@ KT_LLM_MODEL=s-deepseek-v4-flash       # 知识树需要高质量
 CLUSTERING_LLM_MODEL=                  # 空=继承 LLM_MODEL_LIGHT
 SELF_EVOLVING_LLM_MODEL=               # 空=继承 LLM_MODEL_LIGHT
 DREAM_SYNTH_LLM_MODEL=                 # 空=继承 LLM_MODEL_LIGHT
-KN_ROUTER_MODEL=sensenova-6.7-flash-lite
-KN_SKILL_MATCHER_MODEL=sensenova-6.7-flash-lite
-RECALL_EVAL_MODEL=sensenova-6.7-flash-lite
+KN_ROUTER_MODEL=sensenova-6.8-flash-lite
+KN_SKILL_MATCHER_MODEL=sensenova-6.8-flash-lite
+RECALL_EVAL_MODEL=sensenova-6.8-flash-lite
 ```
 
 **继承规则**：子脚本先查自己的 env var，找不到则查 `LLM_MODEL_LIGHT`，再找不到则查 `LLM_MODEL_MAIN`。
@@ -69,7 +69,7 @@ RECALL_EVAL_MODEL=sensenova-6.7-flash-lite
 ### 2. systemd 服务环境变量
 
 `hermes-gateway.service` 的 Environment 中已包含：
-- `KN_ROUTER_MODEL=sensenova-6.7-flash-lite` ✅
+- `KN_ROUTER_MODEL=sensenova-6.8-flash-lite` ✅
 - `KN_ROUTER_API_KEY=...` ✅
 
 无需修改。
