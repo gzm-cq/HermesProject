@@ -35,6 +35,7 @@ from .analyzers.clustering import analyze_clustering
 from .analyzers.kn_baseline import analyze_kn_baseline, analyze_data_credibility
 from .analyzers.kn_judge import run_judge_within_window, summarize_param_tuning
 from .analyzers.memory_cleanup import analyze_memory_cleanup
+from .analyzers.self_evolving import analyze_self_evolving
 from .recommendations import generate_recommendations
 from .runner import load_runner_summary
 
@@ -119,6 +120,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     cluster_issues, cluster_m, cluster_trend = analyze_clustering(data_flywheel_dir)
     kn_issues, kn_m, kn_trend = analyze_kn_baseline(kn_baseline_dir)
     memory_issues, memory_m, memory_trend = analyze_memory_cleanup(home / MEMORY_DIR_SUBPATH, data_window)
+    se_issues, se_m, se_trend = analyze_self_evolving(home)
 
     # ===== KN LLM Judge：知识导航召回质量评估（KN_MIN_SCORE 调优主反馈）=====
     #   since = CN 昨天 00:00 (CST = UTC+8)，until = CN 今天 00:00
@@ -159,7 +161,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
 
     all_issues = (cron_issues + router_issues + skill_issues + skill_usage_issues +
                   token_issues + sag_contr_issues + error_issues + kt_issues +
-                  cluster_issues + kn_issues + memory_issues +
+                  cluster_issues + kn_issues + memory_issues + se_issues +
                   integrity_issues + dep_issues)
     p0 = [i for i in all_issues if i["severity"] == "P0"]
     p1 = [i for i in all_issues if i["severity"] == "P1"]
@@ -268,7 +270,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             status_disp = info["status"]
             icon = "✅" if status_disp == "success" else "❌" if status_disp == "fail" else "⚪"
             fw = _CRON_TO_FLYWHEEL.get(name, name)
-            run_short = info["run_at"][:16] if info["run_at"] != "—" else "—"
+            run_short = (info["run_at"] or "—")[:16] if info["run_at"] else "—"
             elapsed_str = f"{info['elapsed']}s" if info['elapsed'] else "—"
             ann = elapsed_ann.get(name, "—")
         status_text = {"internal_running": "内部执行中", "success": "成功", "fail": "失败", "skipped": "跳过"}.get(status_disp, status_disp)
@@ -534,6 +536,23 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         L.append(f"- 耗时: {memory_m['elapsed_s']}s | 模式: {memory_m['mode']}")
     L.append("")
 
+    # 能力飞轮 / Self-Evolving（F-5 + B 自动写回闭环）
+    L.append("### 能力飞轮 / Self-Evolving")
+    L.append("")
+    if se_m.get("status") == "no_data":
+        L.append("- 暂无 Self-Evolving 产出（尚未运行，或输出目录/写回块均为空）")
+    else:
+        L.append(f"- 最近运行: {se_m.get('last_run') or '—'}")
+        L.append(f"- 驱动产出文件: {se_m.get('output_files', 0)}（声明写回 {se_m.get('applied_from_output', 0)}，精炼未落地 {se_m.get('refined_not_applied', 0)}）")
+        L.append(f"- **实际写回 SKILL.md**: {se_m.get('se_applied_skill_count', 0)} 个 skill | 最近写回: {se_m.get('last_se_applied') or '—'}")
+        if se_m.get("se_applied_skills"):
+            L.append(f"- 已进化 skill: {', '.join(se_m['se_applied_skills'][:10])}")
+        if se_m.get("ledger_deployed"):
+            L.append(f"- 统一账本(ledger): {se_m.get('ledger_events', 0)} 事件（applied={se_m.get('ledger_applied', 0)}, blocked={se_m.get('ledger_blocked', 0)}）")
+        else:
+            L.append("- 📝 统一账本(ledger)未部署：applied/blocked 计数缺失，建议将 scripts/common 纳入部署清单（F-1 待部署）")
+    L.append("")
+
     # 全局错误
     L.append("### 全局错误监控")
     L.append("")
@@ -655,6 +674,11 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "memory_compress_count": memory_m.get("total_compress", 0),
         "error_count": error_m.get("error_count", 0),
         "warning_count": error_m.get("warning_count", 0),
+        # 能力飞轮 / Self-Evolving（F-5 + B）
+        "se_output_files": se_m.get("output_files", 0),
+        "se_applied_skill_count": se_m.get("se_applied_skill_count", 0),
+        "se_last_run": se_m.get("last_run"),
+        "se_last_se_applied": se_m.get("last_se_applied"),
     })
 
     # === 优化方向 ===

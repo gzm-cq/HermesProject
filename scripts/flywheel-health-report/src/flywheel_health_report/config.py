@@ -21,6 +21,8 @@ SKILL_USAGE_SUBPATH = Path("skills") / ".usage.json"
 ERROR_LOG_SUBPATH = Path("logs") / "errors.log"
 MEMORY_DIR_SUBPATH = Path("memories")
 JOBS_JSON_SUBPATH = Path("cron") / "jobs.json"
+SELF_EVOLVING_OUTPUT_SUBPATH = Path("self-evolving") / "output"
+LEDGER_SUBPATH = Path("data") / "flywheel" / "ledger.jsonl"
 
 # === Thresholds ===
 TH = {
@@ -55,6 +57,8 @@ TH = {
     # 记忆清理
     "memory_char_usage_high_pct": 90,
     "memory_cleanup_stale_hours": 48,
+    # Self-Evolving（能力飞轮）：每日 17:30 调度，超过该时长无产出视为停滞
+    "se_stale_hours": 36,
 }
 
 # === 推荐生成阈值（generate_recommendations 专用，与告警 TH 区分） ===
@@ -115,6 +119,8 @@ ACTIVE_CRON_JOBS = frozenset({
     "dream-daily",
     "每周深度研究-知识树学习",
     "system-health-check",
+    # 能力飞轮：Self-Evolving 自动写回闭环（F-5 + B）
+    "self-evolving-nightly",
 })
 
 # 已知的非飞轮 state 文件白名单（cron 基础设施 job，不纳入巡检报告）
@@ -139,9 +145,10 @@ _CRON_TO_FLYWHEEL = {
     "dream-daily": "知识路",
     "每周深度研究-知识树学习": "知识树",
     "system-health-check": "系统",
+    "self-evolving-nightly": "能力飞轮",
 }
 
-_FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识路", "系统"]
+_FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识路", "系统", "能力飞轮"]
 
 # === Required output files for integrity check ===
 REQUIRED_OUTPUTS = {
@@ -207,6 +214,17 @@ PARAM_DEFS = [
     # === 因果链提权（只有 KN_ENABLE_CAUSAL_CHAIN=true 时生效，否则反馈为平→auto-tuner 自动锁定）===
     ("KN_CAUSAL_BOOST_ALPHA",      0.05, 0.02, 0.20, 0.01, "kn_judge_relevant_rate_h"),
     ("KN_CAUSAL_BOOST_CAP",        1.10, 1.05, 1.30, 0.05, "kn_judge_relevant_rate_h"),
+    # === Skill 路控制环（F-2）：让数据飞轮能"测"更能"控" ===
+    #     auto-tuner 基于 skill_used_count 反馈驱动执行参数，经 .env 下发到
+    #     skillopt_runner._load_skillopt_env_overrides() 消费（SKILLOPT_ENABLED/MAX_PER_NIGHT/COOLDOWN_DAYS）。
+    #     范围刻意收紧，即便 auto-tuner 把它们推到边界也是安全值（不会无限 churn）。
+    #     注：SKILLOPT_ENABLED 是手动总开关（默认 1，置 0 整轮跳过），bool 不适合连续搜索，
+    #         不进 auto-tuner，由运维在 .env 直接维护。
+    ("SKILLOPT_MAX_PER_NIGHT",     1, 1, 3, 1, "skill_used_count"),
+    ("SKILLOPT_COOLDOWN_DAYS",     3, 1, 5, 1, "skill_used_count"),
+    # === SAG 生产端闭环（F-3）：dream-daily 读取 DREAM_PROMOTE_THRESHOLD（.env），
+    #     auto-tuner 基于 kn_judge_relevant_rate_sag 反馈动态调节晋升阈值（消费侧质量差→收紧晋升）。
+    ("DREAM_PROMOTE_THRESHOLD",    0.6, 0.3, 0.9, 0.05, "kn_judge_relevant_rate_sag"),
 ]
 
 FEEDBACK_KEYS = [

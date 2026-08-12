@@ -9,6 +9,7 @@ from flywheel_health_report.parsers import (
     parse_trace_log,
     append_daily_summary,
     load_daily_summary,
+    parse_cron_jobs_json,
 )
 
 
@@ -139,3 +140,27 @@ class TestDailySummary:
     def test_load_missing_returns_empty(self, tmp_path: Path) -> None:
         """文件不存在时返回空列表。"""
         assert load_daily_summary(tmp_path) == []
+
+
+# ========== parse_cron_jobs_json ==========
+
+class TestParseCronJobsJson:
+    """jobs.json 兜底解析（无 cron-state 文件时）。"""
+
+    def test_null_last_run_at_coerced_to_dash(self, tmp_path: Path) -> None:
+        """last_run_at 为 null 时不应返回 None（否则渲染任务可靠性表会 TypeError）。"""
+        home = tmp_path / "h"
+        cron = home / "cron"
+        cron.mkdir(parents=True)
+        jobs = {
+            "jobs": [
+                {"name": "dream-daily", "enabled": True,
+                 "last_status": "ok", "last_run_at": None},
+            ]
+        }
+        (cron / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+        res = parse_cron_jobs_json(home, {})
+        assert "dream-daily" in res
+        assert res["dream-daily"]["run_at"] == "—"
+        assert res["dream-daily"]["status"] == "success"
+

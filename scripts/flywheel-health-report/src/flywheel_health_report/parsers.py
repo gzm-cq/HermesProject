@@ -122,7 +122,7 @@ def parse_cron_jobs_json(hermes_home: Path,
         supplementary[name] = {
             "job_name": name,
             "status": _STATUS_MAP.get(last_status, "unknown"),
-            "run_at": job.get("last_run_at", "—"),
+            "run_at": job.get("last_run_at") or "—",
             "elapsed_seconds": 0,  # not tracked in jobs.json
             "last_error": job.get("last_error") or "",
             "source": "jobs.json",  # mark origin for report rendering
