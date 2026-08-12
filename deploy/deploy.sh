@@ -33,6 +33,7 @@
 #   cron-wrappers              cron 定时任务 wrapper 脚本（统一部署到 /root/.hermes/scripts/）
 #   flywheel-health-report    飞轮健康报告+参数自优化调优器
 #   system-health-check       系统健康巡检脚本
+#   common                    公共库（F-1 统一账本等）
 
 set -euo pipefail
 
@@ -70,6 +71,7 @@ declare -A PROJECT_INFO=(
   [cron-wrappers]="cron 定时任务 wrapper 脚本"
   [system-health-check]="系统健康巡检脚本"
   [flywheel-health-report]="飞轮健康报告+参数自优化调优器"
+  [common]="公共库（F-1 统一账本等）"
 )
 
 # ===== 子命令: list =====
