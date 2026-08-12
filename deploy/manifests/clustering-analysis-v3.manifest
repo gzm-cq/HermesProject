@@ -9,7 +9,6 @@
 src/clustering_analysis/**/*.py
 scripts/**/*.py
 scripts/**/*.sh
-compat/clustering_analysis_v3/**/*.py
 config/**/*.yaml
 pyproject.toml
 README.md
