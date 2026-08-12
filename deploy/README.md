@@ -10,6 +10,7 @@ deploy/
 ├── lib/
 │   └── common.sh                # 共享函数库 —— 全部部署/回滚/清理逻辑
 ├── projects/
+│   ├── ai-report-system.sh      # AI 报告生成系统配置
 │   ├── clustering-analysis-v3.sh# 聚类分析配置
 │   ├── cron-common.sh           # cron 公共库配置
 │   ├── cron-wrappers.sh         # cron wrapper 集合配置
@@ -24,6 +25,7 @@ deploy/
 │   ├── skillopt-sleep.sh        # SkillOpt Sleep 配置
 │   └── system-health-check.sh   # 系统健康巡检配置
 └── manifests/                   # 部署清单（glob 模式，各项目独立）
+    ├── ai-report-system.manifest
     ├── clustering-analysis-v3.manifest
     ├── cron-common.manifest
     ├── cron-wrappers.manifest
@@ -43,6 +45,7 @@ deploy/
 
 | 项目 | 源 | 目标 | 技能部署 | 重启服务 |
 |------|------|------|---------|----------|
+| `ai-report-system` | `scripts/ai-report-system/` | `/root/.hermes/scripts/ai-report-system/` | `skills/` → `/root/.hermes/skills/` | — |
 | `clustering-analysis-v3` | `scripts/clustering-analysis-v3/` | `/root/.hermes/scripts/clustering-analysis-v3/` | `skills/` → `/root/.hermes/skills/` | — |
 | `cron-common` | — | — | — | — |
 | `cron-wrappers` | `scripts/cron-wrappers/` | `/root/.hermes/scripts/cron-wrappers/` | — | — |
@@ -64,21 +67,21 @@ deploy/
 ./deploy/deploy.sh list
 
 # 2. 预览将部署的文件（不动文件系统）
-./deploy/deploy.sh plan clustering-analysis-v3
+./deploy/deploy.sh plan ai-report-system
 
 # 3. 一键部署（默认会要求 yes 确认；加 --yes 自动确认）
-./deploy/deploy.sh deploy clustering-analysis-v3
+./deploy/deploy.sh deploy ai-report-system
 ./deploy/deploy.sh deploy knowledge-navigation --yes
 
 # 4. 查看历史
-./deploy/deploy.sh history clustering-analysis-v3
+./deploy/deploy.sh history ai-report-system
 
 # 5. 回滚（默认回到最近一次；也可指定时间戳）
-./deploy/deploy.sh rollback clustering-analysis-v3
-./deploy/deploy.sh rollback clustering-analysis-v3 20260526-103000
+./deploy/deploy.sh rollback ai-report-system
+./deploy/deploy.sh rollback ai-report-system 20260526-103000
 
 # 6. 项目脚本也可直接调用（无需经过分发器）
-./deploy/projects/clustering-analysis-v3.sh plan
+./deploy/projects/ai-report-system.sh plan
 ./deploy/projects/memory-cleanup.sh deploy --yes
 ```
 

@@ -18,8 +18,8 @@
 | `scripts/clustering-analysis-v3/` | L4 Hindsight 聚类+因果链 (CLI: `clustering-analysis`) |
 | `scripts/self-evolving/` | 自进化飞轮基线监控 |
 | `scripts/memory-cleanup/` | L2/L3 MEMORY.md/USER.md 清理 |
+| `scripts/ai-report-system/` | AI 报告生成系统 |
 | `scripts/system-health-check/` | 系统健康巡检 cron |
-| `libs/hermes_common/` | 统一共享库（F-1 账本 / LLM 护栏 / 文本工具，脚本层与插件层共用） |
 | `deploy/` | 统一部署脚本 (`deploy/deploy.sh`) + manifests |
 | `plugins/` 根目录 | Hermes gateway plugins (plugin.yaml + __init__.py) |
 

@@ -15,6 +15,7 @@
 # 共享函数库位于 deploy/lib/common.sh。
 #
 # 项目列表:
+#   ai-report-system          AI 报告生成系统
 #   clustering-analysis-v3    聚类分析
 #   drawio-generator          Draw.io/SVG 矢量图生成
 #   daily-learn               每日在线学习脚本
@@ -52,6 +53,7 @@ PROJECTS_DIR="$SCRIPT_DIR/projects"
 
 # ===== 项目信息（仅用于 list） =====
 declare -A PROJECT_INFO=(
+  [ai-report-system]="AI 报告生成系统"
   [clustering-analysis-v3]="聚类分析"
   [drawio-generator]="Draw.io/SVG 矢量图生成"
   [daily-learn]="每日在线学习脚本"
