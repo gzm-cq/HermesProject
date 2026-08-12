@@ -118,7 +118,7 @@ def make_llm_miner(
         for d in digests[:max_sessions]:
             if not d.user_prompts:
                 continue
-            raw = backend._call(_digest_to_prompt(d), max_tokens=2048)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output  # type: ignore[attr-defined]
+            raw = backend._call(_digest_to_prompt(d), max_tokens=2048)  # min 2048 for sensenova-6.8-flash-lite fallback JSON output  # type: ignore[attr-defined]
             arr = _extract_json(raw, "array")
             if not isinstance(arr, list):
                 continue

@@ -131,7 +131,7 @@ def run_slow_update(
         f"# Cross-night outcome summary\n{summary}\n\n"
         f"# Prior long-term guidance (refine this)\n{prev_slow_content or '(none)'}"
     )
-    raw = backend._call(prompt, max_tokens=2048)  # min 2048 for sensenova-6.7-flash-lite fallback JSON output  # type: ignore[attr-defined]
+    raw = backend._call(prompt, max_tokens=2048)  # min 2048 for sensenova-6.8-flash-lite fallback JSON output  # type: ignore[attr-defined]
     obj = _extract_json(raw, "object")
     if isinstance(obj, dict):
         g = str(obj.get("guidance", "")).strip()
