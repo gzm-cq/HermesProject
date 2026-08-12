@@ -4,7 +4,7 @@
 >
 > **Goal**：用 LLM Router 替代当前 turn_gate + _classify_intent 规则体系，由 Router 决策 Hindsight/KT/Skill 三路是否注入，各路内部检索策略自治。
 > **Architecture**：pre_llm_call 入口保留来源门控 + 系统提示词门控（零成本预检），之后调用 LLM Router 输出 {h, kt, s} mask，只执行 mask 激活的路径。
-> **Tech Stack**：Python, LiteLLM (through local gateway), sensenova-6.7-flash-lite
+> **Tech Stack**：Python, LiteLLM (through local gateway), sensenova-6.8-flash-lite
 ---
 
 ## 当前状态
@@ -283,7 +283,7 @@ if circuit_is_open():
 
 ```python
 # 新增 dataclass 字段
-router_model: str = field(default="sensenova-6.7-flash-lite")
+router_model: str = field(default="sensenova-6.8-flash-lite")
 router_api_url: str = field(default="http://127.0.0.1:4142/v1")
 router_api_key: str = field(default="")
 router_timeout: int = field(default=5)

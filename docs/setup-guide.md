@@ -286,7 +286,7 @@ FEISHU_HOME_CHANNEL=oc_xxx
 | `KN_MAX_RESULTS` | `3` | 最多注入条数 |
 | `KN_CB_THRESHOLD` | `3` | 熔断器阈值 |
 | `KN_CB_COOLDOWN` | `120` | 熔断冷却时间（s） |
-| `KN_ROUTER_MODEL` | `sensenova-6.7-flash-lite` | Router 模型 |
+| `KN_ROUTER_MODEL` | `sensenova-6.8-flash-lite` | Router 模型 |
 | `KN_ROUTER_API_URL` | `http://127.0.0.1:4142/v1` | Router LLM 端点 |
 
 完整列表见 `plugins/knowledge-navigation/src/knowledge_navigation/config.py`。

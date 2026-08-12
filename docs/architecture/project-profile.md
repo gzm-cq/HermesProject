@@ -54,7 +54,7 @@ Hermes Agent 的插件和脚本项目仓库，为 Hermes 提供增强能力：
 
 | 用途 | 模型 | 提供商 | 认证 | 备注 |
 |------|------|--------|------|------|
-| 主对话模型 | sensenova-6.7-flash-lite | SenseNova | SN_API_KEY / SN_BASE_URL | 日常对话、推理 |
+| 主对话模型 | sensenova-6.8-flash-lite | SenseNova | SN_API_KEY / SN_BASE_URL | 日常对话、推理 |
 | Hindsight LLM | s-deepseek-v4-flash | DeepSeek via SiliconFlow | SILICONFLOW_API_KEY | 生成、聚合 |
 | Embedding | BAAI/bge-m3 | SiliconFlow | SILICONFLOW_API_KEY | 512 token 限制 |
 | Reranker | rrf（当前） / BAAI/bge-reranker-v2-m3 | SiliconFlow | SILICONFLOW_API_KEY | 当前因 400 问题切为 rrf，备用 Qwen3-Reranker-0.6B |

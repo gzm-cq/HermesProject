@@ -159,7 +159,7 @@ our_cfg['projects'] = skill_paths
 model: "doubao-auto"
 ```
 
-但当前 Hermes 统一模型路由偏好是 LiteLLM 网关 + `sensenova-6.7-flash-lite`。需要按当前配置源验证后更新，避免 SkillOpt 使用旧模型名。
+但当前 Hermes 统一模型路由偏好是 LiteLLM 网关 + `sensenova-6.8-flash-lite`。需要按当前配置源验证后更新，避免 SkillOpt 使用旧模型名。
 
 ---
 
@@ -530,7 +530,7 @@ cfg = load_config(**sleep_cfg)
 |---|---|
 | 来源 | P1-5 |
 | 当前状态 | `model: doubao-auto` 可能陈旧 |
-| 目标状态 | 读取或写明当前模型路由；若当前主模型是 `sensenova-6.7-flash-lite`，同步配置和 README |
+| 目标状态 | 读取或写明当前模型路由；若当前主模型是 `sensenova-6.8-flash-lite`，同步配置和 README |
 | 期望目标 | SkillOpt 优化调用走当前稳定模型，不因旧模型名失败 |
 | 改动位置 | `scripts/skillopt-runner/config.yaml`, `README.md` |
 | 测试位置 | 配置读取测试 / dry-run 实测 |
