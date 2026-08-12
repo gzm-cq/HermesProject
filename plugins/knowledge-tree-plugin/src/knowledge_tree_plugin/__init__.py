@@ -29,23 +29,29 @@ if not (_KT_SRC / "knowledge_tree_builder" / "__init__.py").exists():
         _KT_SRC_STR,
     )
 
-# 注入统一共享库 hermes_common 路径（必须在 import hermes_common 前）
-_HPC_ENV = os.environ.get("HERMES_COMMON_SRC")
-if _HPC_ENV:
-    _HPC_SRC = Path(_HPC_ENV)
-else:
-    _HPC_SRC = Path(__file__).resolve().parent.parent.parent.parent.parent \
-        / "libs" / "hermes_common"
-_HPC_SRC_STR = str(_HPC_SRC)
-if _HPC_SRC_STR not in sys.path:
-    sys.path.insert(0, _HPC_SRC_STR)
-if not (_HPC_SRC / "hermes_common" / "__init__.py").exists():
-    import logging
-    logging.getLogger(__name__).warning(
-        "hermes_common 路径未找到: %s（共享工具将不可用，"
-        "设置 HERMES_COMMON_SRC 环境变量指向正确的 libs/hermes_common 目录）",
-        _HPC_SRC_STR,
-    )
+# 统一共享库 hermes_common bootstrap（唯一入口：双路径自定位 + 缺包哨兵）
+try:
+    from hermes_common import bootstrap  # noqa: F401
+except ImportError:
+    _parent = os.environ.get("HERMES_COMMON_SRC") or ""
+    if not _parent:
+        _d = Path(__file__).resolve().parent
+        for _ in range(12):
+            _cand = _d / "libs" / "hermes_common"
+            if (_cand / "hermes_common" / "__init__.py").is_file():
+                _parent = str(_cand)
+                break
+            if _d.parent == _d:
+                break
+            _d = _d.parent
+    if not _parent:
+        _prod = "/root/.hermes/lib"
+        if os.path.isfile(os.path.join(_prod, "hermes_common", "__init__.py")):
+            _parent = _prod
+    if _parent and _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    from hermes_common import bootstrap  # noqa: F401
+bootstrap()
 
 from knowledge_tree_plugin.hooks import post_llm_call
 

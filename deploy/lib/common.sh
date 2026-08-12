@@ -334,6 +334,28 @@ cmd_deploy() {
     fi
   fi
 
+  # 引用一致性断言：部署后扫描消费方源码，确认无旧库引用残留（防回落）。
+  # 由项目脚本通过 REFERENCE_CHECK_DIRS / REFERENCE_CHECK_PATTERNS 配置。
+  if [[ ${#REFERENCE_CHECK_DIRS[@]:-0} -gt 0 && ${#REFERENCE_CHECK_PATTERNS[@]:-0} -gt 0 ]]; then
+    log "==> 引用一致性断言（扫描旧库引用残留）"
+    local rc_found=0
+    for _rd in "${REFERENCE_CHECK_DIRS[@]}"; do
+      [[ -d "$_rd" ]] || continue
+      for pat in "${REFERENCE_CHECK_PATTERNS[@]}"; do
+        if sudo grep -rIl --include='*.py' -E "$pat" "$_rd" 2>/dev/null | head -1 | grep -q .; then
+          warn "检测到旧库引用残留，模式 '$pat' 命中 $PROJECT_NAME 部署范围:"
+          sudo grep -rIn --include='*.py' -E "$pat" "$_rd" 2>/dev/null | head -20
+          rc_found=1
+        fi
+      done
+    done
+    if [[ $rc_found -eq 1 ]]; then
+      err "引用一致性断言失败：存在旧库引用残留，请修复后重新部署"
+      exit 1
+    fi
+    ok "引用一致性断言通过（无旧库引用残留）"
+  fi
+
   ok "部署完成: $PROJECT_NAME ($total 文件)"
   ok "备份目录: $backup_dir"
   ok "回滚命令: $SCRIPT_DIR/deploy.sh rollback $PROJECT_NAME $ts"

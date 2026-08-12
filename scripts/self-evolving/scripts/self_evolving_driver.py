@@ -26,42 +26,32 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 # ── 统一反馈账本（F-1）bootstrap ──────────────────────
-def _add_hermes_common_to_path() -> bool:
-    """将统一共享库 hermes_common 的父目录注入 sys.path。
-
-    查找顺序：① 开发态仓库 libs/hermes_common；② 生产部署 /root/.hermes/lib。
-    """
-    # 1) 开发态：从 __file__ 向上定位仓库根（含 libs/ 的目录）
-    d = os.path.dirname(os.path.abspath(__file__))
-    root = None
-    for _ in range(12):
-        if os.path.isdir(os.path.join(d, "libs")):
-            root = d
-            break
-        parent = os.path.dirname(d)
-        if parent == d:
-            break
-        d = parent
-    if root is not None:
-        pkg_parent = os.path.join(root, "libs", "hermes_common")
-        if os.path.isfile(os.path.join(pkg_parent, "hermes_common", "__init__.py")):
-            if pkg_parent not in sys.path:
-                sys.path.insert(0, pkg_parent)
-            return True
-    # 2) 生产部署
-    prod = "/root/.hermes/lib"
-    if os.path.isfile(os.path.join(prod, "hermes_common", "__init__.py")) and prod not in sys.path:
-        sys.path.insert(0, prod)
-        return True
-    return False
-
-
-_add_hermes_common_to_path()
 try:
-    from hermes_common.ledger import append_ledger_event
-except Exception:  # noqa: BLE001
-    def append_ledger_event(*_a, **_k):  # type: ignore
-        return False
+    from hermes_common import bootstrap  # noqa: F401
+except ImportError:
+    import os as _os
+    import sys as _sys
+    from pathlib import Path as _Path
+    _parent = _os.environ.get("HERMES_COMMON_SRC") or ""
+    if not _parent:
+        _d = _Path(__file__).resolve().parent
+        for _ in range(12):
+            _cand = _d / "libs" / "hermes_common"
+            if (_cand / "hermes_common" / "__init__.py").is_file():
+                _parent = str(_cand)
+                break
+            if _d.parent == _d:
+                break
+            _d = _d.parent
+    if not _parent:
+        _prod = "/root/.hermes/lib"
+        if _os.path.isfile(_os.path.join(_prod, "hermes_common", "__init__.py")):
+            _parent = _prod
+    if _parent and _parent not in _sys.path:
+        _sys.path.insert(0, _parent)
+    from hermes_common import bootstrap  # noqa: F401
+bootstrap()
+from hermes_common.ledger import append_ledger_event
 
 from self_evolving.operators.revision import revise
 from self_evolving.operators.refinement import refine

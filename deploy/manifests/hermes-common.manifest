@@ -6,11 +6,13 @@
 #       消费方在 bootstrap 阶段将 libs/hermes_common(开发态)或 /root/.hermes/lib(生产态)
 #       注入 sys.path 后 `from hermes_common.xxx import ...`。
 #
+# 部署方式 = 纯路径注入（整体拷贝到 /root/.hermes/lib/hermes_common，不 pip install）。
+# 因此 pyproject.toml 仅作开发态 ruff/black 配置，不随部署下发（清单不包含它）。
+#
 # 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
 
 # === Include ===
 hermes_common/**/*.py
-pyproject.toml
 
 # === Exclude ===
 !**/__pycache__/**
