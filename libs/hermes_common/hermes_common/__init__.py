@@ -31,6 +31,7 @@ __all__ = [
     "extract_keywords",
     "ensure_on_path",
     "bootstrap",
+    "llm_guard",
 ]
 
 
@@ -70,9 +71,16 @@ def bootstrap() -> str:
     """
     parent = ensure_on_path()
     # 校验父目录下确实存在本包（生产态防部署缺失）
-    if not os.path.isfile(os.path.join(parent, "hermes_common", "__init__.py")):
+    pkg_dir = os.path.join(parent, "hermes_common")
+    if not os.path.isfile(os.path.join(pkg_dir, "__init__.py")):
         raise ImportError(
-            f"hermes_common 包缺失：{os.path.join(parent, 'hermes_common')} 不存在。"
+            f"hermes_common 包缺失：{pkg_dir} 不存在。"
+            "请检查部署（生产 /root/.hermes/lib）或 HERMES_COMMON_SRC 指向。"
+        )
+    # 校验核心子模块完整（llm_guard 通过 importlib 独立加载，缺此文件会静默降级为 no-op 桩）
+    if not os.path.isfile(os.path.join(pkg_dir, "llm_guard.py")):
+        raise ImportError(
+            f"hermes_common.llm_guard 子模块缺失：{os.path.join(pkg_dir, 'llm_guard.py')} 不存在。"
             "请检查部署（生产 /root/.hermes/lib）或 HERMES_COMMON_SRC 指向。"
         )
     return parent
@@ -83,3 +91,4 @@ ensure_on_path()
 
 from .ledger import append_ledger_event  # noqa: E402
 from .text_utils import CJK_STOP_CHARS, extract_keywords  # noqa: E402
+from . import llm_guard  # noqa: E402
