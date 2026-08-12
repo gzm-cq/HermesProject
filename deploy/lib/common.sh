@@ -336,7 +336,9 @@ cmd_deploy() {
 
   # 引用一致性断言：部署后扫描消费方源码，确认无旧库引用残留（防回落）。
   # 由项目脚本通过 REFERENCE_CHECK_DIRS / REFERENCE_CHECK_PATTERNS 配置。
-  if [[ ${#REFERENCE_CHECK_DIRS[@]:-0} -gt 0 && ${#REFERENCE_CHECK_PATTERNS[@]:-0} -gt 0 ]]; then
+  REFERENCE_CHECK_DIRS=("${REFERENCE_CHECK_DIRS[@]:-}")
+  REFERENCE_CHECK_PATTERNS=("${REFERENCE_CHECK_PATTERNS[@]:-}")
+  if [[ ${#REFERENCE_CHECK_DIRS[@]} -gt 0 && ${#REFERENCE_CHECK_PATTERNS[@]} -gt 0 ]]; then
     log "==> 引用一致性断言（扫描旧库引用残留）"
     local rc_found=0
     for _rd in "${REFERENCE_CHECK_DIRS[@]}"; do
