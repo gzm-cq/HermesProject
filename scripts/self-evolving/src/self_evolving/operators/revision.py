@@ -164,7 +164,7 @@ class RevisionConfig:
     llm_model: str = "s-deepseek-v4-flash"
     llm_api_key: str = ""
     llm_timeout: int = 60
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int = 8192
 
     @classmethod
     def from_yaml(cls, path: str = None) -> "RevisionConfig":

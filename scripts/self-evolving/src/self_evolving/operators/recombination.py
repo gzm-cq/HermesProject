@@ -186,7 +186,7 @@ class RecombinationOperator:
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.1,
-                max_tokens=2048,  # min 2048 for sensenova-6.7-flash-lite fallback JSON output
+                max_tokens=8192,  # min 8192 for sensenova-6.8-flash-lite fallback JSON output
                 response_format={"type": "json_object"},
             )
             text = self._llm.extract_content(resp)
@@ -492,7 +492,7 @@ class RecombinationOperator:
     def _llm_extract_text(self, messages: list[dict]) -> str:
         """LLM 调用返回纯文本（内部辅助）。"""
         try:
-            resp = self._llm.chat_completion(messages=messages, temperature=0.2, max_tokens=4096)
+            resp = self._llm.chat_completion(messages=messages, temperature=0.2, max_tokens=8192)
             return self._llm.extract_content(resp)
         except Exception:
             logger.warning("LLM 提取文本失败，返回空字符串", exc_info=True)

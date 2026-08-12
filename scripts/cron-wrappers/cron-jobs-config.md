@@ -10,7 +10,7 @@
 
 ## 任务一览
 
-> 真相源：`~/.hermes/cron/jobs.json`。本表与 jobs.json 的 `name` 字段、`schedule.expr` 字段保持一致。共 15 个任务：13 no_agent 脚本 + 2 agent 任务。
+> 真相源：`~/.hermes/cron/jobs.json`。本表与 jobs.json 的 `name` 字段、`schedule.expr` 字段保持一致。共 16 个任务：14 no_agent 脚本 + 2 agent 任务。
 
 | # | name | schedule | 类型 | script | workdir |
 |---|------|----------|------|--------|---------|
@@ -29,6 +29,7 @@
 | 13 | dream-daily | `0 16 * * *` | no_agent | `dream-synth/scripts/dream-daily.sh` | `/root/.hermes/scripts/dream-synth` |
 | 14 | cron-periodic-detect | `0 * * * *` | no_agent | `cron-periodic-detect.sh` | — |
 | 15 | 论文投稿提醒-改投 | once 2026-08-06 09:00 | agent | —（LLM prompt 驱动） | — |
+| 16 | self-evolving-nightly | `30 17 * * *` | no_agent | `self-evolving/self-evolving-nightly.sh` | `/root/.hermes/scripts/self-evolving` |
 
 **说明：**
 - `name` 列与 `~/.hermes/cron/jobs.json` 中的 `name` 字段一致，作为 cron job 主键
@@ -41,6 +42,7 @@
 - agent 类型任务没有 script，由 Hermes cron 调度 LLM 代理执行 prompt
 - cron-periodic-detect 每小时整点运行，独立于飞轮 14 任务，负责失败 job 检测与去重告警
 - 论文投稿提醒-改投是一次性任务（2026-08-06 09:00），到期后由 Hermes 自动归档
+- self-evolving-nightly(17:30) 在 skillopt(15:00) 之后运行，消费其失败轨迹（failed_tasks）做 Revision→Refinement，并自动写回对应 SKILL.md（F-5 闭环 + B 自动回写）；排在 dream-daily(16:00) 之后避开 LLM 网关高峰。部署目标/工作目录为 `/root/.hermes/scripts/self-evolving`（与 self-evolving.manifest 一致）。运行时需在 `~/.hermes/cron/jobs.json` 同步新增同名 `self-evolving-nightly` 条目，`schedule.expr="30 17 * * *"`，`script="self-evolving/self-evolving-nightly.sh"`，`workdir="/root/.hermes/scripts/self-evolving"`，`no_agent=true`。
 
 ---
 

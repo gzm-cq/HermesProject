@@ -190,7 +190,7 @@ refinement:
 
 # 通用配置
 common:
-  llm_model: sensenova-6.7-flash-lite
+  llm_model: sensenova-6.8-flash-lite
   embedding_model: bge-large-zh-v1.5
   output_format: markdown
 ```

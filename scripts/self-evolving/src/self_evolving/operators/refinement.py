@@ -192,7 +192,7 @@ class RefinementOperator:
             timeout=self.config.llm_timeout,
         )
 
-    def _call_llm_json(self, messages: list[dict], max_tokens: int = 2048) -> dict:
+    def _call_llm_json(self, messages: list[dict], max_tokens: int = 8192) -> dict:
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.1,
@@ -205,7 +205,7 @@ class RefinementOperator:
             logger.warning("LLM 调用失败: %s", e)
             return {}
 
-    def _call_llm_text(self, messages: list[dict], max_tokens: int = 4096) -> str:
+    def _call_llm_text(self, messages: list[dict], max_tokens: int = 8192) -> str:
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.3,
