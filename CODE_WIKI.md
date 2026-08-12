@@ -1142,7 +1142,7 @@ scope: kn | kt | mem | cluster | deploy | report | skillopt | evo | cron | drawi
 
 | 用途 | 模型 | 提供商 |
 |------|------|--------|
-| 主对话模型 | sensenova-6.7-flash-lite | SenseNova |
+| 主对话模型 | sensenova-6.8-flash-lite | SenseNova |
 | Hindsight LLM | s-deepseek-v4-flash | DeepSeek via SiliconFlow |
 | Embedding | BAAI/bge-m3 | SiliconFlow |
 | Reranker | BAAI/bge-reranker-v2-m3 | SiliconFlow |
