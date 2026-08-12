@@ -13,4 +13,7 @@
 - 临时调试记录
 
 输出 JSON（不要其他内容）：
-{"promote": true/false, "category": "concepts|analyses|decisions", "reason": "选择理由"}
+{"promote": true/false, "score": 0.0-1.0, "category": "concepts|analyses|decisions", "reason": "选择理由"}
+
+score = 你对该笔记长期价值的置信度（0=完全不确定/低价值，1=高度确定/高价值）。
+promote=true 时 score 必须 >= 下方注入的「当前晋升阈值」。

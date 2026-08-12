@@ -98,6 +98,75 @@ if _env_cheap or _env_smart:
     if _env_smart:
         CFG["llm"]["smart"] = _env_smart
 
+# ── 统一反馈账本（F-1）：跨飞轮事件追加 ──────────────
+def _add_common_to_path() -> bool:
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        cand = os.path.join(d, "common")
+        if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "ledger.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            return True
+        d = os.path.dirname(d)
+    return False
+
+
+_add_common_to_path()
+try:
+    from ledger import append_ledger_event
+except Exception:  # noqa: BLE001
+    def append_ledger_event(*_a, **_k):  # type: ignore
+        return False
+
+
+# ── SAG 生产端闭环（F-3）：晋升阈值取自 .env（auto-tuner 调优），兜底 config.yaml ──
+def _load_promote_threshold() -> float:
+    """读取 DREAM_PROMOTE_THRESHOLD（.env > config.yaml > 0.6）。"""
+    default = float(CFG.get("promote", {}).get("threshold", 0.6))
+    home = os.environ.get("HERMES_HOME") or "/root/.hermes"
+    envf = os.path.join(home, ".env")
+    try:
+        with open(envf, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                if k.strip() == "DREAM_PROMOTE_THRESHOLD":
+                    return float(v.strip())
+    except (OSError, ValueError):
+        pass
+    return default
+
+
+def _read_latest_relevant_rate_sag() -> float | None:
+    """从 daily-summary-history.jsonl 读取最近一条 kn_judge_relevant_rate_sag（非 None）。"""
+    home = os.environ.get("HERMES_HOME") or "/root/.hermes"
+    hist = os.path.join(home, "data", "flywheel", "daily-summary-history.jsonl")
+    if not os.path.isfile(hist):
+        return None
+    try:
+        with open(hist, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    for raw in reversed(lines[-200:]):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        v = rec.get("kn_judge_relevant_rate_sag")
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 # ── LLM 调用 ─────────────────────────────────────────
 def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float = 0.3) -> str:
     """通过 LiteLLM 网关调用 LLM"""
@@ -749,8 +818,23 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
         print("  promote: 无反思笔记，跳过")
         return []
 
+    # F-3 SAG 生产端闭环：晋升阈值来自 .env（auto-tuner 调优），消费侧质量差则收紧
+    threshold = _load_promote_threshold()
+    sag_rate = _read_latest_relevant_rate_sag()
+    sag_str = f"{sag_rate:.2f}" if sag_rate is not None else "N/A"
+    print(f"  promote 控制环: threshold={threshold:.2f}, relevant_rate_sag={sag_str}")
+
     smart_model = CFG["llm"]["smart"]
     prompt_tmpl = load_prompt("promote-judge")
+    # 注入控制环上下文：当前晋升阈值 + 消费侧相关性，约束 LLM 的 promote/score 判定
+    promote_ctx = (
+        f"\n\n[晋升控制环]\n"
+        f"当前晋升阈值 threshold = {threshold:.2f}（score >= threshold 才允许晋升）。\n"
+        f"消费者相关性 relevant_rate_sag = {sag_str}（0~1，越低表示 SAG 内容在检索侧越不相关，"
+        f"越应收紧晋升、只留高置信笔记）。\n"
+        f"若你认为该笔记值得晋升，请在 score 字段给出 0~1 置信度；"
+        f"promote=true 时 score 必须 >= {threshold:.2f}。"
+    )
     promote_log = CFG["cache"]["promote_log"]
     max_workers = CFG.get("llm", {}).get("promote_workers", 1)
     llm_throttle_s = CFG.get("llm", {}).get("throttle_seconds", 0.0)
@@ -777,7 +861,7 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
     if max_workers <= 1:
         verdicts = []
         for r in tqdm(candidates, desc="  Promote 判断", total=len(candidates)):
-            prompt = prompt_tmpl + "\n\n反思笔记：\n" + r["content"][:3000]
+            prompt = prompt_tmpl + promote_ctx + "\n\n反思笔记：\n" + r["content"][:3000]
             try:
                 verdict = call_llm_json(prompt, smart_model)
                 verdicts.append((r, verdict))
@@ -788,7 +872,7 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
                 time.sleep(llm_throttle_s)
     else:
         def _judge_one(r):
-            prompt = prompt_tmpl + "\n\n反思笔记：\n" + r["content"][:3000]
+            prompt = prompt_tmpl + promote_ctx + "\n\n反思笔记：\n" + r["content"][:3000]
             try:
                 verdict = call_llm_json(prompt, smart_model)
                 return (r, verdict)
@@ -812,8 +896,17 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
     for r, verdict in verdicts:
         if verdict is None:
             continue
+        # F-3 双门控：LLM 判定 promote=true 且 score 达到动态阈值才晋升
+        score = verdict.get("score")
+        try:
+            score_f = float(score) if score is not None else 0.0
+        except (TypeError, ValueError):
+            score_f = 0.0
         if not verdict.get("promote", False):
-            print(f"  PROMOTE SKIP: {r['title'][:40]} → {verdict.get('reason','')}")
+            print(f"  PROMOTE SKIP: {r['title'][:40]} → {verdict.get('reason','')}（promote=false）")
+            continue
+        if score_f < threshold:
+            print(f"  PROMOTE SKIP: {r['title'][:40]} → score {score_f:.2f} < 阈值 {threshold:.2f}（{verdict.get('reason','')}）")
             continue
 
         sid = r["session_id"]
@@ -865,6 +958,15 @@ date: {datetime.now().strftime('%Y-%m-%d')}
         with open(promote_log, "a", encoding="utf-8") as f:
             for line in promote_log_lines:
                 f.write(line + "\n")
+
+    # F-1 统一反馈账本：记录本次晋升控制环结果（跨循环关联 SAG 生产/消费质量）
+    append_ledger_event("dream_promote", {
+        "count": len(promoted),
+        "candidates": len(candidates),
+        "threshold": round(threshold, 2),
+        "sag_rate": sag_rate,
+        "dry_run": dry_run,
+    })
 
     elapsed = time.time() - t0
     print(f"  📊 归档完成: {len(promoted)}/{len(candidates)} 晋升 | 耗时 {elapsed:.1f}s")

@@ -23,6 +23,12 @@ sag:
 feishu:
   chat_id: ""   # 留空：由环境变量 FEISHU_CHAT_ID 提供；两者皆空则跳过飞书推送
 
+# 晋升控制环（F-3）：promote 阶段晋升门槛。
+# 运行时可被 HERMES_HOME/.env 的 DREAM_PROMOTE_THRESHOLD 覆盖（由 auto-tuner
+# 基于 kn_judge_relevant_rate_sag 反馈动态调优）。score >= threshold 才允许晋升。
+promote:
+  threshold: 0.6
+
 # Wiki
 wiki:
   base_path: "/mnt/c/Users/1/Desktop/AI/my-knowledge/axiom/wiki/pages"
