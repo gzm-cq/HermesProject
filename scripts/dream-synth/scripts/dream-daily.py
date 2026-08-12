@@ -140,7 +140,15 @@ def _load_promote_threshold() -> float:
 
 
 def _read_latest_relevant_rate_sag() -> float | None:
-    """从 daily-summary-history.jsonl 读取最近一条 kn_judge_relevant_rate_sag（非 None）。"""
+    """从 daily-summary-history.jsonl 读取 kn_judge_relevant_rate_sag 的稳健聚合值。
+
+    鲁棒化（修复 SAG 数据稀疏导致的误收紧）：
+      - 早期实现只取「最近一条非 None」，但当该字段在历史上大多为 None、仅零星出现
+        低值（如 0.36）时，会把单个低值当作权威信号去收紧 promote 门控，误杀本该晋升的笔记。
+      - 现改为：取最近 200 行中所有非 None 值，计算其中位数；并引入「稀疏度」判定——
+        若有效样本占比过低（< MIN_SAMPLE_RATIO），视为信号不可靠，返回 None（不收紧）。
+      - 仅当数据足够密集且偏低时，才保留 F-3 的「消费者相关性低→收紧晋升」语义。
+    """
     home = os.environ.get("HERMES_HOME") or "/root/.hermes"
     hist = os.path.join(home, "data", "flywheel", "daily-summary-history.jsonl")
     if not os.path.isfile(hist):
@@ -150,7 +158,9 @@ def _read_latest_relevant_rate_sag() -> float | None:
             lines = f.readlines()
     except OSError:
         return None
-    for raw in reversed(lines[-200:]):
+    window = lines[-200:]
+    values: list[float] = []
+    for raw in window:
         raw = raw.strip()
         if not raw:
             continue
@@ -159,12 +169,24 @@ def _read_latest_relevant_rate_sag() -> float | None:
         except json.JSONDecodeError:
             continue
         v = rec.get("kn_judge_relevant_rate_sag")
-        if v is not None:
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return None
-    return None
+        if v is None:
+            continue
+        try:
+            values.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    # 稀疏度判定：有效样本占比不足 → 信号不可靠，不收紧（避免单个低值误杀）
+    MIN_SAMPLE_RATIO = 0.3
+    if not values:
+        return None
+    if len(values) < max(3, len(window) * MIN_SAMPLE_RATIO):
+        return None
+    # 中位数聚合：对单个离群低值不敏感
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    median = ordered[mid] if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    return median
 
 
 # ── LLM 调用 ─────────────────────────────────────────
@@ -195,7 +217,7 @@ def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float
 def call_llm_json(prompt: str, model: str, max_retries: int = 2) -> dict:
     """调用 LLM 并解析 JSON 输出（temperature=0，带重试）"""
     for attempt in range(max_retries + 1):
-        raw = call_llm(prompt, model, max_tokens=8192, temperature=0.0)  # 8192 for s-deepseek-v4-flash reasoning model output
+        raw = call_llm(prompt, model, max_tokens=16384, temperature=0.0)  # 16384 for s-deepseek-v4-flash reasoning model output
         # 先尝试直接解析
         try:
             return json.loads(raw)

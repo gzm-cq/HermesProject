@@ -151,7 +151,7 @@ def reflect_on_failure(
         response = client.chat_completion(
             messages=messages,
             temperature=0.3,
-            max_tokens=8192,  # min 8192 for sensenova-6.8-flash-lite fallback JSON output
+            max_tokens=16384,  # min 16384 for sensenova-6.8-flash-lite fallback JSON output
             response_format={"type": "json_object"},
         )
         text = client.extract_content(response)

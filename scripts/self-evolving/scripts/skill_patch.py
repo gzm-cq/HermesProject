@@ -8,8 +8,10 @@
     - 按 task_id 去重：同一失败任务重复跑只保留一份应用记录，避免无限堆积。
     - 原子写：先备份，写盘失败回滚备份。
 
-注意：本模块刻意放在 self-evolving 本地（scripts/self-evolving/scripts/），
-不依赖未部署到生产机的 scripts/common，保证 self-evolving 自包含可独立运行。
+注意：本模块刻意放在 self-evolving 本地（scripts/self-evolving/scripts/）。
+LLM 护栏统一来自部署到生产机的 scripts/common（路径 /root/.hermes/scripts/common，
+经 `deploy.sh deploy common` 部署）；self-evolving 的各 LLM 客户端通过
+_load_common_llm_guard() 加载该唯一来源，common 是稳定且必须部署的依赖。
 """
 
 from __future__ import annotations

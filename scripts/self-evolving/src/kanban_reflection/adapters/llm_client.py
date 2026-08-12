@@ -1,22 +1,70 @@
-"""LLM 调用适配器 — 封装 API 调用
+"""LLM 调用适配器 — 封装 API 调用（护栏统一由 scripts/common/llm_guard 提供）。
 
 通过 urllib.request（stdlib）调用兼容 OpenAI API 格式的 LLM 服务。
+
+所有护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
+超时不再重试 / 限速 / 空内容重试）统一由公共模块 ``scripts/common/llm_guard`` 的
+``guarded_chat_completion`` **单一实现**提供，本文件仅做薄封装。与 self_evolving
+客户端共用同一套护栏（均经 _load_common_llm_guard 加载 common），消除漂移。
+
+max_tokens 钳制保留本项目原值 [16384, 16384]（上限防慢模型生成过长超时，
+下限防推理模型 reasoning 吃光致 content 空）。
 """
 
-import json
+import importlib.util
 import logging
-import urllib.request
-import urllib.error
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-class LLMClient:
-    """LLM API 调用客户端
+def _load_common_llm_guard():
+    """定位并加载 scripts/common/llm_guard.py（唯一事实来源）。
 
-    使用 urllib.request（零外部依赖），兼容 LiteLLM / OpenAI API。
+    查找顺序：① 自本文件向上递归查找 <某级目录>/common/llm_guard.py；
+    ② 已知生产部署路径 /root/.hermes/scripts/common/llm_guard.py。
+    若均失败，抛出明确错误，提示先 `deploy.sh deploy common`。
     """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates: list[str] = []
+    d = here
+    for _ in range(8):
+        candidates.append(os.path.join(d, "common", "llm_guard.py"))
+        d = os.path.dirname(d)
+    candidates.append("/root/.hermes/scripts/common/llm_guard.py")
+    for path in candidates:
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("hermes_common_llm_guard", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise ImportError(
+        "无法定位 scripts/common/llm_guard.py。请确认公共库已部署："
+        "在仓库根目录执行 `./deploy/deploy.sh deploy common`"
+    )
+
+
+_lg = _load_common_llm_guard()
+guarded_chat_completion = _lg.guarded_chat_completion
+make_urllib_post = _lg.make_urllib_post
+extract_content = _lg.extract_content
+parse_json_response = _lg.parse_json_response
+RateLimiter = _lg.RateLimiter
+
+DEFAULT_MAX_RETRIES = 3
+
+# 全局限流：相邻两次 LLM 请求之间的最小间隔（秒）。
+_DEFAULT_MIN_CALL_INTERVAL = float(os.environ.get("HERMES_SE_MIN_CALL_INTERVAL", "0.5"))
+_rate_limiter = RateLimiter(_DEFAULT_MIN_CALL_INTERVAL)
+
+# 本项目 max_tokens 钳制区间 [16384, 16384]
+_MAX_TOKENS_FLOOR = 16384
+_MAX_TOKENS_CAP = 16384
+
+
+class LLMClient:
+    """LLM API 调用客户端（零外部依赖，兼容 LiteLLM / OpenAI API）"""
 
     def __init__(
         self,
@@ -24,92 +72,44 @@ class LLMClient:
         model: str,
         api_key: str = "",
         timeout: int = 60,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         self._api_url = api_url.rstrip("/")
         self._model = model
         self._api_key = api_key
         self._timeout = timeout
+        self._max_retries = max_retries
+        # 传输回调统一由 common 的 urllib 实现提供
+        self._post_fn = make_urllib_post(self._api_url, self._api_key)
 
     def chat_completion(
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.3,
-        max_tokens: int = 8192,  # min 8192 for sensenova-6.8-flash-lite fallback JSON output
+        max_tokens: int = _MAX_TOKENS_FLOOR,
         response_format: dict | None = None,
     ) -> dict[str, Any]:
-        """调用 LLM chat completion API
-
-        Args:
-            messages: OpenAI 格式消息列表
-            temperature: 生成温度（反思任务用低温保持稳定性）
-            max_tokens: 最大输出 token
-            response_format: 响应格式约束（如 {"type": "json_object"}）
-
-        Returns:
-            LLM 返回的完整 JSON 响应
-
-        Raises:
-            ConnectionError: API 不可达
-            ValueError: 响应格式异常
-        """
-        body = {
-            "model": self._model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if response_format:
-            body["response_format"] = response_format
-
-        data = json.dumps(body).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-        }
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-
-        req = urllib.request.Request(
-            self._api_url,
-            data=data,
-            headers=headers,
-            method="POST",
+        """调用 LLM chat completion API（带全护栏，委托 common.guarded_chat_completion）。"""
+        json_mode = bool(response_format and response_format.get("type") == "json_object")
+        return guarded_chat_completion(
+            self._post_fn,
+            model=self._model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            min_interval=_DEFAULT_MIN_CALL_INTERVAL,
+            max_tokens_floor=_MAX_TOKENS_FLOOR,
+            max_tokens_cap=_MAX_TOKENS_CAP,
+            rate_limiter=_rate_limiter,
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8", errors="replace")
-            logger.error("LLM API HTTP %s: %s", e.code, error_body)
-            raise ConnectionError(f"LLM API HTTP {e.code}: {error_body}") from e
-        except urllib.error.URLError as e:
-            logger.error("LLM API 不可达: %s", e.reason)
-            raise ConnectionError(f"LLM API 不可达: {e.reason}") from e
-        except json.JSONDecodeError as e:
-            logger.error("LLM 响应 JSON 解析失败: %s", e)
-            raise ValueError(f"LLM 响应 JSON 解析失败: {e}") from e
-
-        return result
-
     def extract_content(self, response: dict[str, Any]) -> str:
-        """从 API 响应中提取文本内容"""
-        try:
-            return response["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as e:
-            raise ValueError(f"LLM 响应格式异常: {e}") from e
+        """从 API 响应中提取文本内容（content 空时兜底 reasoning）。"""
+        return extract_content(response["choices"][0]["message"])
 
     def parse_json_response(self, text: str) -> dict[str, Any]:
-        """从 LLM 响应文本中解析 JSON
-
-        兼容 LLM 返回 markdown 包裹 ```json ... ``` 的情况。
-        """
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            # 去除 markdown 代码块标记
-            for prefix in ("```json\n", "```json", "```\n", "```"):
-                if cleaned.startswith(prefix):
-                    cleaned = cleaned[len(prefix):]
-                    break
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-        return json.loads(cleaned.strip())
+        """从 LLM 响应文本中解析 JSON，兼容 markdown 包裹 / 思考前缀 / 尾部多余文本。"""
+        return parse_json_response(text)

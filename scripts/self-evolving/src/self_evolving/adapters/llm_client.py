@@ -1,19 +1,66 @@
-"""LLM 调用适配器 — 封装 API 调用
+"""LLM 调用适配器 — 封装 API 调用（护栏统一由 scripts/common/llm_guard 提供）。
 
-通过 urllib.request（零外部依赖）调用兼容 OpenAI API 格式的 LLM 服务。
+通过 urllib.request（stdlib）调用兼容 OpenAI API 格式的 LLM 服务。
+
+所有护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
+超时不再重试 / 限速 / 空内容重试）统一由公共模块 ``scripts/common/llm_guard`` 的
+``guarded_chat_completion`` **单一实现**提供，本文件仅做薄封装。common 是部署到
+``/root/.hermes/scripts/common`` 的稳定单一源，self-evolving 经 _load_common_llm_guard()
+加载，不再内置副本（避免护栏漂移）。
+
+max_tokens 下限保留本项目原值 32768（sensenova-6.8-flash-lite 推理模型 reasoning
+吃光预算致 content 空，需足够大）。
 """
-import json
+
+import importlib.util
 import logging
-import time
-import urllib.request
-import urllib.error
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 默认重试配置
+
+def _load_common_llm_guard():
+    """定位并加载 scripts/common/llm_guard.py（唯一事实来源）。
+
+    查找顺序：① 自本文件向上递归查找 <某级目录>/common/llm_guard.py；
+    ② 已知生产部署路径 /root/.hermes/scripts/common/llm_guard.py。
+    若均失败，抛出明确错误，提示先 `deploy.sh deploy common`。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates: list[str] = []
+    d = here
+    for _ in range(8):
+        candidates.append(os.path.join(d, "common", "llm_guard.py"))
+        d = os.path.dirname(d)
+    candidates.append("/root/.hermes/scripts/common/llm_guard.py")
+    for path in candidates:
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("hermes_common_llm_guard", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise ImportError(
+        "无法定位 scripts/common/llm_guard.py。请确认公共库已部署："
+        "在仓库根目录执行 `./deploy/deploy.sh deploy common`"
+    )
+
+
+_lg = _load_common_llm_guard()
+guarded_chat_completion = _lg.guarded_chat_completion
+make_urllib_post = _lg.make_urllib_post
+extract_content = _lg.extract_content
+parse_json_response = _lg.parse_json_response
+RateLimiter = _lg.RateLimiter
+
 DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_BASE_DELAY = 1.0  # 秒，指数退避基数
+
+# 全局限流：相邻两次 LLM 请求之间的最小间隔（秒），避免零间隔狂发打满 RPM 配额。
+_DEFAULT_MIN_CALL_INTERVAL = float(os.environ.get("HERMES_SE_MIN_CALL_INTERVAL", "0.5"))
+_rate_limiter = RateLimiter(_DEFAULT_MIN_CALL_INTERVAL)
+
+# 本项目 max_tokens 下限（推理模型 reasoning 占预算，偏小会导致 content 空）
+_MAX_TOKENS_FLOOR = 32768
 
 
 class LLMClient:
@@ -32,116 +79,37 @@ class LLMClient:
         self._api_key = api_key
         self._timeout = timeout
         self._max_retries = max_retries
+        # 传输回调统一由 common 的 urllib 实现提供
+        self._post_fn = make_urllib_post(self._api_url, self._api_key)
 
     def chat_completion(
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.3,
-        max_tokens: int = 8192,  # min 8192 for sensenova-6.8-flash-lite fallback JSON output
+        max_tokens: int = _MAX_TOKENS_FLOOR,
         response_format: dict | None = None,
     ) -> dict[str, Any]:
-        """调用 LLM chat completion API（带重试，指数退避）"""
-        body = {
-            "model": self._model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if response_format:
-            body["response_format"] = response_format
-
-        data = json.dumps(body).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-
-        req = urllib.request.Request(
-            self._api_url, data=data, headers=headers, method="POST",
+        """调用 LLM chat completion API（带全护栏，委托 common.guarded_chat_completion）。"""
+        json_mode = bool(response_format and response_format.get("type") == "json_object")
+        return guarded_chat_completion(
+            self._post_fn,
+            model=self._model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            min_interval=_DEFAULT_MIN_CALL_INTERVAL,
+            max_tokens_floor=_MAX_TOKENS_FLOOR,
+            max_tokens_cap=None,
+            rate_limiter=_rate_limiter,
         )
 
-        last_exc: Exception | None = None
-        for attempt in range(1, self._max_retries + 1):
-            try:
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except (urllib.error.HTTPError, urllib.error.URLError) as e:
-                last_exc = e
-                # 仅对可重试错误重试：5xx、网络错误、URLError；4xx 不重试（业务错误）
-                if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500:
-                    error_body = e.read().decode("utf-8", errors="replace")
-                    logger.error("LLM API HTTP %s (业务错误，不重试): %s", e.code, error_body)
-                    raise ConnectionError(f"LLM API HTTP {e.code}: {error_body}") from e
-                if attempt < self._max_retries:
-                    delay = DEFAULT_RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                    logger.warning(
-                        "LLM 调用失败 (attempt %d/%d)，%0.1fs 后重试: %s",
-                        attempt, self._max_retries, delay, e,
-                    )
-                    time.sleep(delay)
-                # else: 达到最大重试次数，下方统一抛错
-            except json.JSONDecodeError as e:
-                # JSON 解析失败是 LLM 返回内容问题，重试无效，直接抛错
-                logger.error("LLM 响应 JSON 解析失败（不重试）: %s", e)
-                raise ValueError(f"LLM 响应 JSON 解析失败: {e}") from e
-        # 重试耗尽（仅 HTTPError/URLError 会走到这里）
-        logger.error("LLM 调用重试 %d 次后仍失败: %s", self._max_retries, last_exc)
-        if isinstance(last_exc, urllib.error.HTTPError):
-            raise ConnectionError(f"LLM API HTTP {last_exc.code}") from last_exc
-        if isinstance(last_exc, urllib.error.URLError):
-            raise ConnectionError(f"LLM API 不可达: {last_exc.reason}") from last_exc
-        raise ConnectionError(f"LLM 调用失败: {last_exc}") from last_exc
-
     def extract_content(self, response: dict[str, Any]) -> str:
-        """从 API 响应中提取文本内容"""
-        try:
-            return response["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as e:
-            raise ValueError(f"LLM 响应格式异常: {e}") from e
+        """从 API 响应中提取文本内容（content 空时兜底 reasoning）。"""
+        return extract_content(response["choices"][0]["message"])
 
     def parse_json_response(self, text: str) -> dict[str, Any]:
-        """从 LLM 响应文本中解析 JSON，兼容 markdown 代码块包裹与尾部多余内容。
-
-        部分模型（如 sensenova-6.8-flash-lite fallback）会在合法 JSON 之后
-        追加解释文本，导致标准 json.loads 报 "Extra data"。此处依次尝试：
-          1) 整体解析；2) raw_decode 提取首个完整 JSON 对象（容忍尾部多余
-             文本 / 多对象）；3) 兜底截取首个 `{` 到末个 `}`。
-        """
-        if text is None:
-            raise ValueError("LLM 响应文本为空")
-        cleaned = text.strip()
-        # 去掉 markdown 代码块包裹
-        if cleaned.startswith("```"):
-            for prefix in ("```json\n", "```json", "```\n", "```"):
-                if cleaned.startswith(prefix):
-                    cleaned = cleaned[len(prefix):]
-                    break
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-        # 1) 先尝试整体解析
-        try:
-            result = json.loads(cleaned)
-            if isinstance(result, dict):
-                return result
-            if isinstance(result, list) and result and isinstance(result[0], dict):
-                return result[0]
-        except json.JSONDecodeError:
-            pass
-        # 2) 稳健解析：提取首个完整 JSON 对象（容忍尾部多余文本 / 多对象）
-        try:
-            obj, _ = json.JSONDecoder().raw_decode(cleaned)
-            if isinstance(obj, dict):
-                return obj
-            if isinstance(obj, list) and obj and isinstance(obj[0], dict):
-                return obj[0]
-        except (json.JSONDecodeError, ValueError):
-            pass
-        # 3) 兜底：截取首个 { 到末个 }
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(cleaned[start:end + 1])
-            except json.JSONDecodeError:
-                pass
-        raise ValueError(f"无法从响应中解析 JSON: {text[:200]!r}")
+        """从 LLM 响应文本中解析 JSON，兼容 markdown 包裹 / 思考前缀 / 尾部多余文本。"""
+        return parse_json_response(text)

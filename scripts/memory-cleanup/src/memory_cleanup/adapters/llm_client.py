@@ -1,10 +1,15 @@
-"""LLM 调用适配器 — 封装 HTTP 调用、JSON 解析重试逻辑。"""
+"""LLM 调用适配器 — 封装 HTTP 调用、JSON 解析重试逻辑。
 
+所有 LLM 调用护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
+重试 / 429 退避 / 超时不再重试 / 限速 / 空内容重试）统一由 scripts/common/llm_guard 的
+``guarded_chat_completion`` **单一实现** 提供；本文件仅做薄封装，并保留业务层 JSON 正则兜底。
+"""
+
+import importlib.util
 import json
 import logging
-import random
+import os
 import re
-import time
 from typing import Any
 
 import requests
@@ -12,6 +17,43 @@ import requests
 from memory_cleanup.config import AppConfig, CONFIG
 
 logger = logging.getLogger(__name__)
+
+
+def _load_common_llm_guard():
+    """定位并加载 scripts/common/llm_guard.py（唯一事实来源）。
+
+    查找顺序：① 自本文件向上递归查找 <某级目录>/common/llm_guard.py；
+    ② 已知生产部署路径 /root/.hermes/scripts/common/llm_guard.py。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates: list[str] = []
+    d = here
+    for _ in range(8):
+        candidates.append(os.path.join(d, "common", "llm_guard.py"))
+        d = os.path.dirname(d)
+    candidates.append("/root/.hermes/scripts/common/llm_guard.py")
+    for path in candidates:
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("hermes_common_llm_guard", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise ImportError(
+        "无法定位 scripts/common/llm_guard.py。请确认公共库已部署："
+        "在仓库根目录执行 `./deploy/deploy.sh deploy common`"
+    )
+
+
+_lg = _load_common_llm_guard()
+guarded_chat_completion = _lg.guarded_chat_completion
+make_requests_post = _lg.make_requests_post
+extract_content = _lg.extract_content
+parse_json_response = _lg.parse_json_response
+RateLimiter = _lg.RateLimiter
+
+# 全局限流：相邻两次 LLM 请求之间的最小间隔（秒）。
+_DEFAULT_MIN_CALL_INTERVAL = float(os.environ.get("HERMES_SE_MIN_CALL_INTERVAL", "0.5"))
+_rate_limiter = RateLimiter(_DEFAULT_MIN_CALL_INTERVAL)
 
 
 def _truncate(text: str, max_len: int = 400) -> str:
@@ -40,94 +82,61 @@ class LLMClient:
         self._url = config.llm_url
         self._key = config.llm_key
         self._model = config.llm_model
+        self._post_fn = make_requests_post(self._url, self._key)
         self.total_prompt_tokens: int = 0
         self.total_completion_tokens: int = 0
 
         if self._key and self._url.startswith("http://"):
             logger.warning("LLM API key transmitted over HTTP (not HTTPS)")
 
-    def _call(self, messages: list[dict[str, str]], max_tokens: int = 8192, json_mode: bool = False) -> str | None:
+    def _call(self, messages: list[dict[str, str]], max_tokens: int = 16384, json_mode: bool = False) -> str | None:
+        """执行单次 LLM HTTP 调用（传输层统一由 common.guarded_chat_completion 处理重试/退避）。
+
+        失败（限流/超时/网络/空内容耗尽）返回 None，由调用方降级处理。
         """
-        执行单次 LLM HTTP 调用，带指数退避 + jitter 重试。
-        失败返回 None，最多重试 3 次。
-        """
-        base_delay = 1.0
-        for attempt in range(3):
-            try:
-                payload: dict[str, Any] = {
-                    "model": self._model,
-                    "messages": messages,
-                    "temperature": 0.05,
-                    "max_tokens": max_tokens,
-                }
-                if json_mode:
-                    payload["response_format"] = {"type": "json_object"}
-                r = requests.post(
-                    self._url,
-                    json=payload,
-                    headers={"Authorization": f"Bearer {self._key}"},
-                    timeout=120,
-                )
-                data = r.json()
-                # 检查顶层 error 字段（部分 API 在错误时仍返回 200 + choices）
-                if data.get("error"):
-                    logger.warning("LLM response contains error field: %s", str(data["error"])[:300])
-                    raise ValueError(f"LLM API error: {data['error']}")
-                # 校验 choices 键存在（LLM 返回 error/thinking 模式时可能缺失）
-                if "choices" not in data or not data["choices"]:
-                    logger.warning("LLM response missing 'choices': %s", str(data)[:300])
-                    raise KeyError("choices")
-                # 收集 token 使用量
-                usage = data.get("usage", {})
-                self.total_prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
-                self.total_completion_tokens += int(usage.get("completion_tokens", 0) or 0)
-                # 处理 thinking 模式下 content 缺失的问题
-                # sensenova-6.8-flash-lite 等模型在 thinking 时可能只返回 reasoning 字段
-                msg = data["choices"][0].get("message", {})
-                content = msg.get("content")
-                if content is None:
-                    content = msg.get("reasoning") or msg.get("reasoning_content")
-                    if content is not None:
-                        logger.debug("Content field missing, falling back to reasoning field")
-                    else:
-                        raise KeyError("content")
-                return str(content)
-            except Exception as e:
-                if attempt < 2:
-                    delay = base_delay * (2**attempt) + random.uniform(0, 1)
-                    logger.debug("LLM call attempt %d failed, retry in %.1fs: %s", attempt + 1, delay, e)
-                    time.sleep(delay)
-                    continue
-                logger.warning("LLM call failed after 3 attempts: %s", e)
-                return None
-        return None
+        try:
+            resp = guarded_chat_completion(
+                self._post_fn,
+                model=self._model,
+                messages=messages,
+                temperature=0.05,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                timeout=120,
+                max_retries=3,
+                min_interval=_DEFAULT_MIN_CALL_INTERVAL,
+                max_tokens_floor=16384,
+                max_tokens_cap=None,
+                rate_limiter=_rate_limiter,
+            )
+        except ConnectionError as e:
+            logger.warning("LLM call failed after retries: %s", e)
+            return None
+
+        # 部分 API 在 HTTP 200 时仍于顶层携带 error 字段，按失败处理
+        if isinstance(resp, dict) and resp.get("error"):
+            logger.warning("LLM response contains error field: %s", str(resp["error"])[:300])
+            return None
+
+        # 收集 token 使用量
+        usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
+        self.total_prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
+        self.total_completion_tokens += int(usage.get("completion_tokens", 0) or 0)
+
+        # 提取 content（统一护栏：content 空时兜底 reasoning / reasoning_content）
+        try:
+            return str(extract_content(resp["choices"][0]["message"]))
+        except (ValueError, KeyError) as e:
+            logger.warning("LLM response 解析 content 失败: %s", e)
+            return None
 
     @staticmethod
     def _parse_json(raw: str) -> dict[str, Any] | None:
-        """四路径 JSON 解析：正常 → strip/clean → 栈匹配 → 正则提取回退。"""
-        for fmt in [
-            lambda x: x.strip().strip("`").replace("json\n", "").replace("\n```", ""),
-            lambda x: x.strip(),
-        ]:
-            try:
-                return dict(json.loads(fmt(raw)))
-            except Exception:
-                continue
-        # 栈匹配回退：找到第一个 { 对应的 }，支持嵌套
-        start = raw.find("{")
-        if start >= 0:
-            depth = 0
-            for i in range(start, len(raw)):
-                c = raw[i]
-                if c == "{":
-                    depth += 1
-                elif c == "}":
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return dict(json.loads(raw[start : i + 1]))
-                        except Exception:
-                            break
+        """JSON 解析：先走公共健壮解析（markdown/思考前缀/括号级），失败再用领域正则兜底。"""
+        try:
+            return parse_json_response(raw)
+        except (ValueError, json.JSONDecodeError):
+            pass
         # 正则提取回退：从 LLM 输出中逐数组提取
         return LLMClient._regex_fallback_parse(raw)
 
@@ -179,7 +188,7 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=8192, json_mode=True)
+        raw = self._call(messages, max_tokens=16384, json_mode=True)
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None:
@@ -232,7 +241,7 @@ class LLMClient:
             {"role": "user", "content": judge_prompt},
         ]
 
-        raw = self._call(messages, max_tokens=8192, json_mode=True)  # min 8192 for sensenova-6.8-flash-lite fallback JSON output
+        raw = self._call(messages, max_tokens=16384, json_mode=True)  # min 16384 for sensenova-6.8-flash-lite fallback JSON output
         if raw is not None:
             result = self._parse_json(raw)
             if result is not None:

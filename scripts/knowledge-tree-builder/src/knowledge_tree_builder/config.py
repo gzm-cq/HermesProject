@@ -56,7 +56,7 @@ class AppConfig:
     llm_api_key: str = ""
     llm_model: str = "s-deepseek-v4-flash"
     extract_temperature: float = 0.0
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     llm_retries: int = 3
     llm_request_timeout_seconds: int = 120
     # Embedding

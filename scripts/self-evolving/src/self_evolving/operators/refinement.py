@@ -125,7 +125,7 @@ class RefinementConfig:
     llm_api_url: str = "http://127.0.0.1:4142/v1/chat/completions"
     llm_model: str = "sensenova-6.8-flash-lite"
     llm_api_key: str = ""
-    llm_timeout: int = 180
+    llm_timeout: int = 300
 
     @classmethod
     def from_yaml(cls, path: str = None) -> "RefinementConfig":
@@ -192,7 +192,7 @@ class RefinementOperator:
             timeout=self.config.llm_timeout,
         )
 
-    def _call_llm_json(self, messages: list[dict], max_tokens: int = 8192) -> dict:
+    def _call_llm_json(self, messages: list[dict], max_tokens: int = 16384) -> dict:
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.1,
@@ -205,7 +205,7 @@ class RefinementOperator:
             logger.warning("LLM 调用失败: %s", e)
             return {}
 
-    def _call_llm_text(self, messages: list[dict], max_tokens: int = 8192) -> str:
+    def _call_llm_text(self, messages: list[dict], max_tokens: int = 16384) -> str:
         try:
             resp = self._llm.chat_completion(
                 messages=messages, temperature=0.3,

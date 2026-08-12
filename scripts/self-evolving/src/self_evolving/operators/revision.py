@@ -163,8 +163,8 @@ class RevisionConfig:
     llm_api_url: str = "http://127.0.0.1:4142/v1/chat/completions"
     llm_model: str = "sensenova-6.8-flash-lite"
     llm_api_key: str = ""
-    llm_timeout: int = 180
-    llm_max_tokens: int = 8192
+    llm_timeout: int = 300
+    llm_max_tokens: int = 16384
 
     @classmethod
     def from_yaml(cls, path: str = None) -> "RevisionConfig":

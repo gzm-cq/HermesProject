@@ -1,7 +1,13 @@
-"""LLM API 调用封装 — OpenAI 兼容接口"""
+"""LLM API 调用封装 — OpenAI 兼容接口
 
+所有 LLM 调用护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
+重试 / 429 退避 / 超时不再重试 / 限速 / 空内容重试）统一由 scripts/common/llm_guard 的
+``guarded_chat_completion`` **单一实现** 提供；本文件仅做薄封装。
+"""
+
+import importlib.util
 import json
-import time
+import os
 from typing import Any
 
 try:
@@ -10,7 +16,39 @@ except ImportError:
     requests = None  # type: ignore[assignment]
 
 
-# 请求间间隔（秒），避免 QPS 过载
+def _load_common_llm_guard():
+    """定位并加载 scripts/common/llm_guard.py（唯一事实来源）。
+
+    查找顺序：① 自本文件向上递归查找 <某级目录>/common/llm_guard.py；
+    ② 已知生产部署路径 /root/.hermes/scripts/common/llm_guard.py。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates: list[str] = []
+    d = here
+    for _ in range(8):
+        candidates.append(os.path.join(d, "common", "llm_guard.py"))
+        d = os.path.dirname(d)
+    candidates.append("/root/.hermes/scripts/common/llm_guard.py")
+    for path in candidates:
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("hermes_common_llm_guard", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise ImportError(
+        "无法定位 scripts/common/llm_guard.py。请确认公共库已部署："
+        "在仓库根目录执行 `./deploy/deploy.sh deploy common`"
+    )
+
+
+_lg = _load_common_llm_guard()
+guarded_chat_completion = _lg.guarded_chat_completion
+make_requests_post = _lg.make_requests_post
+extract_content = _lg.extract_content
+parse_json_response = _lg.parse_json_response
+
+
+# 请求间间隔（秒），避免 QPS 过载（同时作为限速器最小间隔）
 LLM_QPS_INTERVAL: float = 0.3
 
 
@@ -19,7 +57,7 @@ def call_llm(
     *,
     system_prompt: str | None = None,
     temperature: float = 0,
-    max_tokens: int = 8192,
+    max_tokens: int = 16384,
     api_url: str = "http://127.0.0.1:4142/v1/chat/completions",
     api_key: str = "",
     model: str = "s-deepseek-v4-flash",
@@ -49,39 +87,27 @@ def call_llm(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    # 请求间间隔，避免 QPS 过载
-    time.sleep(LLM_QPS_INTERVAL)
+    # 传输层统一由 common.guarded_chat_completion 处理重试/退避/429/超时/空内容
+    post_fn = make_requests_post(api_url, api_key)
+    try:
+        resp = guarded_chat_completion(
+            post_fn,
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=False,
+            timeout=timeout_seconds,
+            max_retries=retries,
+            min_interval=LLM_QPS_INTERVAL,
+        )
+    except ConnectionError:
+        return ""
 
-    for attempt in range(retries):
-        try:
-            resp = requests.post(
-                api_url,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                    "Connection": "close",
-                },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-                timeout=(10, timeout_seconds),
-            )
-            resp.raise_for_status()
-            content = (
-                resp.json()
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            return content if content else ""
-        except Exception:
-            if attempt < retries - 1:
-                time.sleep(2**attempt)  # 失败后退避一次
-    return ""
+    try:
+        return str(extract_content(resp["choices"][0]["message"]))
+    except (ValueError, KeyError):
+        return ""
 
 
 def call_llm_json(
@@ -106,7 +132,7 @@ def call_llm_json(
         prompt=prompt,
         system_prompt=system_prompt,
         temperature=temperature,
-        max_tokens=8192,
+        max_tokens=16384,
         api_url=api_url,
         api_key=api_key,
         model=model,
@@ -116,27 +142,8 @@ def call_llm_json(
     if not text:
         return {"error": "empty_response"}
 
-    # 尝试直接解析
-    text = text.strip()
-    if text.startswith("```"):
-        # 去掉 markdown fence
-        lines = text.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-
+    # 健壮 JSON 解析（markdown/思考前缀/括号级），失败返回错误标记
     try:
-        return dict(json.loads(text))
-    except (json.JSONDecodeError, ValueError):
-        # 尝试找到 JSON 对象范围
-        for start in range(len(text)):
-            if text[start] == "{":
-                end = text.rfind("}")
-                if end > start:
-                    try:
-                        return dict(json.loads(text[start : end + 1]))
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+        return dict(parse_json_response(text))
+    except (ValueError, json.JSONDecodeError):
         return {"error": f"parse_failed: {text[:200]}"}

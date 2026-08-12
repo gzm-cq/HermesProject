@@ -28,6 +28,35 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MANIFEST_DIR="$SCRIPT_DIR/manifests"
 BACKUP_ROOT="/root/.hermes/backups"
 
+# ===== 共享目标目录自动识别 =====
+# 扫描 deploy/projects/*.sh，找出被 ≥2 个项目共用的 PROJECT_TGT（如
+# /root/.hermes/scripts 同时承载 cron-wrappers 与 system-health-check）。
+# 这类目录在首次部署时若做「全量防残留扫描」，会把兄弟项目（含 common）的文件
+# 当成残留删除。因此一旦命中，部署时强制关闭首次全量扫描并告警——不依赖各
+# 项目主动设置 FIRST_DEPLOY_CLEANUP=false，防止将来新增项目漏配把 common 冲掉。
+SHARED_TARGET_DIRS=()
+detect_shared_targets() {
+  local scripts_dir="$SCRIPT_DIR/projects"
+  [[ -d "$scripts_dir" ]] || return 0
+  declare -A _tgt_count=()
+  for _ps in "$scripts_dir"/*.sh; do
+    [[ -f "$_ps" ]] || continue
+    local _t; _t=$(grep -E '^[[:space:]]*PROJECT_TGT=' "$_ps" | head -1 | sed 's/^[[:space:]]*PROJECT_TGT=//')
+    [[ -z "$_t" ]] && continue
+    # 去掉赋值两侧引号（脚本里写作 PROJECT_TGT="/x"，但变量实际取值无引号）
+    _t="${_t#\"}"; _t="${_t%\"}"; _t="${_t#\'}"; _t="${_t%\'}"
+    _t="${_t%/}"
+    [[ -z "$_t" ]] && continue
+    _tgt_count["$_t"]=$(( ${_tgt_count["$_t"]:-0} + 1 ))
+  done
+  for _d in "${!_tgt_count[@]}"; do
+    if [[ ${_tgt_count["$_d"]} -gt 1 ]]; then
+      SHARED_TARGET_DIRS+=("$_d")
+    fi
+  done
+}
+detect_shared_targets
+
 # ===== 校验项目配置 =====
 validate_project() {
   PROJECT_TGT="${PROJECT_TGT%/}"
@@ -115,6 +144,21 @@ cmd_plan() {
 # ===== 子命令: deploy =====
 cmd_deploy() {
   local auto_yes="${1:-no}"
+
+  # 共享目标目录硬约束：命中则强制关闭首次全量防残留扫描。
+  # 这样即便项目脚本忘记设 FIRST_DEPLOY_CLEANUP=false，也不会在首次部署时
+  # 把共享目录下的兄弟项目（如 common）当成残留删除。
+  if [[ ${#SHARED_TARGET_DIRS[@]} -gt 0 ]]; then
+    for _sd in "${SHARED_TARGET_DIRS[@]}"; do
+      if [[ "$PROJECT_TGT" == "$_sd" ]]; then
+        if [[ "${FIRST_DEPLOY_CLEANUP:-true}" != "false" ]]; then
+          warn "目标目录 $PROJECT_TGT 被多个项目共用（共享目标目录），已强制关闭首次全量防残留扫描"
+          FIRST_DEPLOY_CLEANUP=false
+        fi
+        break
+      fi
+    done
+  fi
 
   local files; files=$(expand_manifest "$PROJECT_MANIFEST" "$PROJECT_SRC_ABS")
   [[ -z "$files" ]] && { err "清单展开为空，拒绝部署"; exit 1; }
@@ -217,9 +261,9 @@ cmd_deploy() {
       done
     fi
 
-    # 全量对比目标目录. Some projects deploy into a shared target directory
-    # (for example /root/.hermes/scripts). Those projects must opt out, or the
-    # first deployment would remove unrelated projects as "stale" files.
+    # 全量对比目标目录. 共享目标目录（如 /root/.hermes/scripts）已由
+    # SHARED_TARGET_DIRS 自动识别并在 cmd_deploy 入口强制 FIRST_DEPLOY_CLEANUP=false；
+    # 此处仍保留显式开关作为兜底，项目也可主动 opt-out。
     if [[ "${FIRST_DEPLOY_CLEANUP:-true}" == "false" ]]; then
       warn "跳过首次部署全量防残留扫描（共享目标目录）"
     else

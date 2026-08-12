@@ -240,7 +240,7 @@ def _judge_one_masked(rec: dict, config: dict | None) -> tuple[dict | None, Any]
         "model": config.get("model", "s-deepseek-v4-flash"),
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,
-        "max_tokens": 8192,
+        "max_tokens": 16384,
         "response_format": {"type": "json_object"},
     }).encode("utf-8")
     ctx = ssl.create_default_context()
