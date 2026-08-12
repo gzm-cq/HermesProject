@@ -56,6 +56,9 @@ desktop.ini
 .qoder/repowiki/
 .qoder/settings.local.json
 
+# === Agent 工具缓存 ===
+.opencode/
+
 # === 项目运行时产物 ===
 state/
 # 熔断器运行时状态文件（自动更新，不应纳入版本控制）
