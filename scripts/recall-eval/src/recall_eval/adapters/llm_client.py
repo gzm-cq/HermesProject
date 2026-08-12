@@ -1,7 +1,7 @@
 """LLM 调用适配器 — 封装 HTTP 调用、JSON 解析重试逻辑。
 
 所有 LLM 调用护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
-重试 / 429 退避 / 超时不再重试 / 限速 / 空内容重试）统一由 scripts/common/llm_guard 的
+重试 / 429 退避 / 超时不再重试 / 限速 / 空内容重试）统一由 hermes_common.llm_guard 的
 ``guarded_chat_completion`` **单一实现** 提供；本文件仅做薄封装。
 """
 
@@ -19,27 +19,43 @@ logger = logging.getLogger(__name__)
 
 
 def _load_common_llm_guard():
-    """定位并加载 scripts/common/llm_guard.py（唯一事实来源）。
+    """定位并加载 hermes_common.llm_guard（唯一事实来源）。
 
-    查找顺序：① 自本文件向上递归查找 <某级目录>/common/llm_guard.py；
-    ② 已知生产部署路径 /root/.hermes/scripts/common/llm_guard.py。
+    查找顺序：① 开发态仓库 libs/hermes_common/hermes_common/llm_guard.py；
+              ② 生产部署 /root/.hermes/lib/hermes_common/llm_guard.py。
     """
     here = os.path.dirname(os.path.abspath(__file__))
     candidates: list[str] = []
+    # 开发态：从 __file__ 向上定位仓库根（含 libs/ 的目录）
     d = here
-    for _ in range(8):
-        candidates.append(os.path.join(d, "common", "llm_guard.py"))
-        d = os.path.dirname(d)
-    candidates.append("/root/.hermes/scripts/common/llm_guard.py")
+    root = None
+    for _ in range(12):
+        if os.path.isdir(os.path.join(d, "libs")):
+            root = d
+            break
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    if root is not None:
+        candidates.append(
+            os.path.join(root, "libs", "hermes_common", "hermes_common", "llm_guard.py")
+        )
+    # 生产部署
+    candidates.append("/root/.hermes/lib/hermes_common/llm_guard.py")
     for path in candidates:
         if os.path.isfile(path):
-            spec = importlib.util.spec_from_file_location("hermes_common_llm_guard", path)
+            # 将包父目录注入 sys.path，确保 hermes_common.llm_guard 作为子模块正确加载
+            pkg_parent = os.path.dirname(os.path.dirname(path))
+            if pkg_parent not in sys.path:
+                sys.path.insert(0, pkg_parent)
+            spec = importlib.util.spec_from_file_location("hermes_common.llm_guard", path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             return mod
     raise ImportError(
-        "无法定位 scripts/common/llm_guard.py。请确认公共库已部署："
-        "在仓库根目录执行 `./deploy/deploy.sh deploy common`"
+        "无法定位 hermes_common.llm_guard。请确认统一共享库已部署："
+        "在仓库根目录执行 `./deploy/deploy.sh deploy hermes-common`"
     )
 
 

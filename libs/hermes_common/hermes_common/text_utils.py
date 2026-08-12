@@ -1,11 +1,12 @@
 """文本处理公共工具 — 关键词提取、CJK 处理等。
 
-集中封装原本散落在 hooks.py / recall.py / skill_matcher.py 三处的
-关键词提取逻辑，通过参数差异化配置各调用方需求：
+集中封装原本散落在 hooks.py / recall.py / skill_matcher.py 三处的关键词提取逻辑，
+通过参数差异化配置各调用方需求：
+  - hooks._extract_keywords: 用于 eval query 匹配（英文 + CJK 2-gram，保守）
+  - recall._extract_keywords: 用于知识树科目定位（英文 >=3 字符 + CJK 2-gram）
+  - skill_matcher._extract_keywords: 用于 skill 预筛选（英文 + 中文整段 + 2-gram，激进）
 
-- hooks._extract_keywords: 用于 eval query 匹配（英文 + CJK 2-gram，保守）
-- recall._extract_keywords: 用于知识树科目定位（英文 >=3 字符 + CJK 2-gram）
-- skill_matcher._extract_keywords: 用于 skill 预筛选（英文 + 中文整段 + 2-gram，激进）
+现作为统一共享库 hermes_common 的一部分，被脚本层与插件层共同复用。
 """
 
 from __future__ import annotations

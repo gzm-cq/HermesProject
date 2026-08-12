@@ -1,0 +1,19 @@
+# hermes-common 统一共享库部署清单
+# 源:  libs/hermes_common/
+# 标:  /root/.hermes/lib/hermes_common/
+# 影响: 跨脚本层(scripts/* 各子项目)与插件层(plugins/*)复用的纯 stdlib 工具：
+#       ledger(F-1 统一账本) / llm_guard(LLM 统一护栏) / text_utils(关键词提取)。
+#       消费方在 bootstrap 阶段将 libs/hermes_common(开发态)或 /root/.hermes/lib(生产态)
+#       注入 sys.path 后 `from hermes_common.xxx import ...`。
+#
+# 语法: 每行一个 glob 模式（相对项目根）；以 ! 开头为排除；# 起始为注释。
+
+# === Include ===
+hermes_common/**/*.py
+pyproject.toml
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/*.egg-info/**
+!**/tests/**

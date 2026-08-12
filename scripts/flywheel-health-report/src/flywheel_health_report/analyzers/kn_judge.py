@@ -34,21 +34,39 @@ from typing import Any
 from ..config import KN_JUDGE_CFG
 
 # ── 统一反馈账本（F-1）：跨飞轮事件追加 ──────────────
-def _add_common_to_path() -> bool:
+def _add_hermes_common_to_path() -> bool:
+    """将统一共享库 hermes_common 的父目录注入 sys.path。
+
+    查找顺序：① 开发态仓库 libs/hermes_common；② 生产部署 /root/.hermes/lib。
+    """
+    # 1) 开发态：从 __file__ 向上定位仓库根（含 libs/ 的目录）
     d = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(6):
-        cand = os.path.join(d, "common")
-        if os.path.isdir(cand) and os.path.isfile(os.path.join(cand, "ledger.py")):
-            if cand not in sys.path:
-                sys.path.insert(0, cand)
+    root = None
+    for _ in range(12):
+        if os.path.isdir(os.path.join(d, "libs")):
+            root = d
+            break
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    if root is not None:
+        pkg_parent = os.path.join(root, "libs", "hermes_common")
+        if os.path.isdir(os.path.join(pkg_parent, "hermes_common", "__init__.py")):
+            if pkg_parent not in sys.path:
+                sys.path.insert(0, pkg_parent)
             return True
-        d = os.path.dirname(d)
+    # 2) 生产部署
+    prod = "/root/.hermes/lib"
+    if os.path.isdir(os.path.join(prod, "hermes_common", "__init__.py")) and prod not in sys.path:
+        sys.path.insert(0, prod)
+        return True
     return False
 
 
-_add_common_to_path()
+_add_hermes_common_to_path()
 try:
-    from ledger import append_ledger_event
+    from hermes_common.ledger import append_ledger_event
 except Exception:  # noqa: BLE001
     def append_ledger_event(*_a, **_k):  # type: ignore
         return False

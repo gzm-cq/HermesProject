@@ -1,9 +1,9 @@
 """Hermes LLM 调用公共护栏模块（唯一事实来源 / single source of truth）。
 
-本文件是「所有 LLM 调用统一护栏」的唯一来源，部署到生产机的
-``/root/.hermes/scripts/common/llm_guard.py``。各子项目（self-evolving、
-memory-cleanup、recall-eval、knowledge-tree-builder 等）通过解析器
-``_load_common_llm_guard()`` 从 **scripts/common** 加载本模块，不再内置副本——
+本文件是「所有 LLM 调用统一护栏」的唯一来源，作为统一共享库 ``hermes_common``
+的一部分部署到生产机的 ``/root/.hermes/lib/hermes_common/llm_guard.py``。各子项目
+（self-evolving、memory-cleanup、recall-eval、knowledge-tree-builder 等）通过解析器
+``_load_common_llm_guard()`` 从 **hermes_common** 加载本模块，不再内置副本——
 副本会造成「护栏只在某处更新、其余腐化」的漂移，必须杜绝。
 
 护栏分两层：
@@ -356,7 +356,7 @@ def make_requests_post(
     """构造基于 requests 的传输回调。
 
     requests 为第三方依赖，此处**惰性导入**——只有真正走 requests 的客户端调用本函数时
-    才会 import，从而保证 common/llm_guard.py 自身在任何环境（含仅 stdlib 的 urllib 客户端）
+    才会 import，从而保证 hermes_common/llm_guard.py 自身在任何环境（含仅 stdlib 的 urllib 客户端）
     都可被 import，不强制安装 requests。
     """
     base_url = (api_url or "").rstrip("/")

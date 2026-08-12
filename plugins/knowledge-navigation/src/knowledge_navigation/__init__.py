@@ -24,6 +24,24 @@ if not (_PLUGIN_SRC / "knowledge_tree_plugin" / "__init__.py").exists():
         _PLUGIN_SRC_STR,
     )
 
+# 注入统一共享库 hermes_common 路径（必须在 import hermes_common 前）
+_HPC_ENV = get_env("HERMES_COMMON_SRC")
+if _HPC_ENV:
+    _HPC_SRC = Path(_HPC_ENV)
+else:
+    _HPC_SRC = Path(__file__).resolve().parent.parent.parent.parent.parent \
+        / "libs" / "hermes_common"
+_HPC_SRC_STR = str(_HPC_SRC)
+if _HPC_SRC_STR not in sys.path:
+    sys.path.insert(0, _HPC_SRC_STR)
+if not (_HPC_SRC / "hermes_common" / "__init__.py").exists():
+    import logging
+    logging.getLogger(__name__).warning(
+        "hermes_common 路径未找到: %s（共享工具将不可用，"
+        "设置 HERMES_COMMON_SRC 环境变量指向正确的 libs/hermes_common 目录）",
+        _HPC_SRC_STR,
+    )
+
 from knowledge_navigation.core.hooks import pre_llm_call
 
 # 兼容旧的直接导入

@@ -10,7 +10,7 @@
       * 这是「是否真的进化了 skill」的权威信号（比 output JSON 更可靠）
   - 统一账本（F-1，best-effort）：HERMES_HOME/data/flywheel/ledger.jsonl
       * event=="self_evolving" 的事件，聚合 applied/blocked 计数
-      * 注意：生产机当前 ledger.py 未随 scripts/common 部署，账本可能为空/缺失，
+      * 注意：生产机当前 ledger.py 未随 hermes-common 部署，账本可能为空/缺失，
         此时仅作信息提示，不报错。
 
 返回 (issues, metrics, trend)，与 report.py 其余 analyzer 接口一致。

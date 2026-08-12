@@ -64,7 +64,7 @@ from knowledge_navigation.core.hooks.cache import (
 from knowledge_navigation.core.hooks.db import _batch_embed, _causal_boost
 from knowledge_navigation.core.recall_logger import RecallLogger
 from knowledge_navigation.core.router import route as _router_route
-from knowledge_navigation.core.text_utils import CJK_STOP_CHARS as _CJK_STOP_CHARS
+from hermes_common.text_utils import CJK_STOP_CHARS as _CJK_STOP_CHARS
 from knowledge_navigation.turn_gate import (
     skip_non_user,
     skip_pre_llm_call,
@@ -106,7 +106,7 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 def _extract_keywords(text: str) -> set[str]:
     """提取文本中的有意义关键词（仅用于 eval query 匹配）。"""
-    from knowledge_navigation.core.text_utils import extract_keywords as _tu_extract
+    from hermes_common.text_utils import extract_keywords as _tu_extract
     return _tu_extract(
         text,
         min_en_length=2,

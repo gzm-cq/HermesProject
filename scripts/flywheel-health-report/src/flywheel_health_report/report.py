@@ -550,7 +550,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         if se_m.get("ledger_deployed"):
             L.append(f"- 统一账本(ledger): {se_m.get('ledger_events', 0)} 事件（applied={se_m.get('ledger_applied', 0)}, blocked={se_m.get('ledger_blocked', 0)}）")
         else:
-            L.append("- 📝 统一账本(ledger)未部署：applied/blocked 计数缺失，建议将 scripts/common 纳入部署清单（F-1 待部署）")
+            L.append("- 📝 统一账本(ledger)未部署：applied/blocked 计数缺失，建议将 hermes-common 纳入部署清单（F-1 待部署）")
     L.append("")
 
     # 全局错误

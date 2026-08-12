@@ -15,7 +15,7 @@ from knowledge_navigation.core import circuit_breaker as cb
 from knowledge_navigation.core.hooks import pre_llm_call
 
 # 被测试的模块级符号
-from knowledge_navigation.core.text_utils import CJK_STOP_CHARS as _CJK_STOP_CHARS
+from hermes_common.text_utils import CJK_STOP_CHARS as _CJK_STOP_CHARS
 from knowledge_navigation.core.hooks import _extract_keywords
 
 

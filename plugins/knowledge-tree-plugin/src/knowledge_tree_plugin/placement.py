@@ -20,8 +20,8 @@ from typing import Any
 import numpy as np
 
 from knowledge_tree_builder import batch_embed, cosine_similarity
+from hermes_common.text_utils import CJK_STOP_CHARS as _CJK_STOP_WORDS
 from knowledge_tree_plugin.recall import (
-    _CJK_STOP_CHARS as _CJK_STOP_WORDS,
     locate_best_subject,
 )
 

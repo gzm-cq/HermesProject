@@ -594,7 +594,7 @@ def _extract_keywords(text: str) -> set[str]:
     - CJK 连续段 + 2-gram 子串
     - 额外过滤 skill 场景专用停用词表 _STOPWORDS
     """
-    from knowledge_navigation.core.text_utils import extract_keywords as _tu_extract
+    from hermes_common.text_utils import extract_keywords as _tu_extract
     raw = _tu_extract(
         text,
         min_en_length=2,

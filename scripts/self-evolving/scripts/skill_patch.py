@@ -9,9 +9,9 @@
     - 原子写：先备份，写盘失败回滚备份。
 
 注意：本模块刻意放在 self-evolving 本地（scripts/self-evolving/scripts/）。
-LLM 护栏统一来自部署到生产机的 scripts/common（路径 /root/.hermes/scripts/common，
-经 `deploy.sh deploy common` 部署）；self-evolving 的各 LLM 客户端通过
-_load_common_llm_guard() 加载该唯一来源，common 是稳定且必须部署的依赖。
+LLM 护栏统一来自部署到生产机的 hermes_common（路径 /root/.hermes/lib/hermes_common，
+经 `deploy.sh deploy hermes-common` 部署）；self-evolving 的各 LLM 客户端通过
+_load_common_llm_guard() 加载该唯一来源，hermes_common 是稳定且必须部署的依赖。
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@
   append 事件到 HERMES_HOME/data/flywheel/ledger.jsonl，构成单一健康视图 +
   跨循环因果关联（例如「改写后 neg 是否真的降」「SAG 生产/消费质量是否联动」）。
 
-使用方式（各独立脚本通过向上查找 common 目录导入，见各调用方 bootstrap）：
+使用方式（各独立脚本通过向上查找 hermes_common 包导入，见各调用方 bootstrap）：
     append_ledger_event("kn_judge", {"relevant_rate_sag": 0.82, ...})
 
 事件类型约定：

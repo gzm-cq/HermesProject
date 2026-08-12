@@ -23,11 +23,6 @@ from knowledge_tree_builder import local_q
 logger = logging.getLogger(__name__)
 
 
-# ========== 关键词提取 ==========
-
-_CJK_STOP_CHARS = frozenset(
-    "的了在是有和就不人都也到说要去会着这他那她它那些吗吧呢啊哦嗯嘛"
-)
 
 # ========== domain centroid 缓存 ==========
 # domain 节点的 k_vector 通常为 NULL，需从子节点均值实时计算，
@@ -78,11 +73,12 @@ def _reset_domain_centroid_cache() -> None:
 
 
 def _extract_keywords(text: str) -> list[str]:
-    """从文本中提取候选关键词。
+    """从文本中提取候选关键词（委托 hermes_common.text_utils）。
 
-    策略：
-    - 英文词/标识符（>= 3 字符，转小写）
-    - CJK 二字组（如果首字不是停用字）
+    保留知识树召回语义：
+    - 英文 token 最小长度 3（对应原 r"[a-zA-Z][a-zA-Z0-9_\\-\\.]{2,}"）
+    - CJK 二字组（首字非停用字）
+    - 返回 list 以兼容下游 search_subjects_by_keywords 的调用约定
 
     Args:
         text: 输入文本
@@ -90,17 +86,13 @@ def _extract_keywords(text: str) -> list[str]:
     Returns:
         关键词列表
     """
-    keywords: set[str] = set()
-
-    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_\-\.]{2,}", text):
-        keywords.add(token.lower())
-
-    cjk_chars = re.findall(r"[\u4e00-\u9fff]", text)
-    for i in range(len(cjk_chars) - 1):
-        if cjk_chars[i] not in _CJK_STOP_CHARS:
-            keywords.add(cjk_chars[i] + cjk_chars[i + 1])
-
-    return list(keywords)
+    from hermes_common.text_utils import extract_keywords
+    return list(extract_keywords(
+        text,
+        min_en_length=3,
+        include_cjk_bigrams=True,
+        include_cjk_full=False,
+    ))
 
 
 # ========== 科目定位 ==========

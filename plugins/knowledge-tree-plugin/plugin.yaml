@@ -17,3 +17,5 @@ dependencies:
   - PyYAML>=6.0
 optional_dependencies:
   - knowledge-navigation>=1.1.0   # turn_gate 门控函数；不可用时降级为全放行
+  # 注：关键词提取等共享工具现统一来自 hermes-common 库（部署至 /root/.hermes/lib/hermes_common），
+  # 由本插件 __init__ 显式注入 libs/hermes_common；它不是 Hermes 插件，故不在 plugin 依赖列表内。

@@ -153,7 +153,7 @@
 
 | 编号 | 标题 | 状态 | 关键改动 |
 |------|------|------|----------|
-| F-1 | 统一反馈账本 | ✅ 已落地 | 新建 `scripts/common/ledger.py`（零依赖 JSONL，写 `HERMES_HOME/data/flywheel/ledger.jsonl`）；kn_judge / skillopt_runner / dream-daily / kt-builder cli / self_evolving_driver **五处**关键节点 append 事件。各消费方启动时以 bootstrap 向上最多 6 层查找 `common/ledger.py`，命中即启用；**2026-08-12 新建 `common` 部署项目（`deploy/manifests/common.manifest` + `deploy/projects/common.sh`），已将 `ledger.py` 部署至 `/root/.hermes/scripts/common/`，此前端到端失效的 no-op 桩正式生效** |
+| F-1 | 统一反馈账本 | ✅ 已落地 | 新建 `scripts/common/ledger.py`（零依赖 JSONL，写 `HERMES_HOME/data/flywheel/ledger.jsonl`）；kn_judge / skillopt_runner / dream-daily / kt-builder cli / self_evolving_driver **五处**关键节点 append 事件。各消费方启动时以 bootstrap 向上定位仓库 `libs/hermes_common` 注入 sys.path，命中即 `from hermes_common.ledger import append_ledger_event` 启用；**2026-08-12 将 `scripts/common` 与 `hermes-plugin-common` 统一整合为 `hermes-common` 共享库（`libs/hermes_common/hermes_common`，含 ledger/llm_guard/text_utils），新建 `deploy/manifests/hermes-common.manifest` + `deploy/projects/hermes-common.sh`，部署至 `/root/.hermes/lib/hermes_common/`，此前端到端失效的 no-op 桩正式生效** |
 | F-2 | Skill 路控制环 | ✅ 已落地 | `config.py:PARAM_DEFS` 新增 `SKILLOPT_MAX_PER_NIGHT`(1-3) / `SKILLOPT_COOLDOWN_DAYS`(1-5) / `DREAM_PROMOTE_THRESHOLD`(0.3-0.9)；skillopt_runner 新增 `_load_skillopt_env_overrides()` 直读 `.env` 的 `SKILLOPT_*` → `_apply_skillopt_controls()` 截断+冷却过滤。`SKILLOPT_ENABLED` 作手动 bool 总开关（不进 PARAM_DEFS） |
 | F-3 | SAG 生产端闭环 | ✅ 已落地 | dream-daily 新增 `_load_promote_threshold()`（.env > config.yaml > 0.6）+ `_read_latest_relevant_rate_sag()`（读 `daily-summary-history.jsonl`）；`phase_promote` 注入 `promote_ctx` 并加双门控（promote=false 跳 / score<threshold 跳） |
 | F-4 | SkillOpt 重复计数 bug | ✅ 已落地 | `_phase_harvest` 改用单一 `last_harvest_iso`（每次运行后推进），替代 `min(skill_last_run)` 锚定；消除 `skill_neg_feedback` 逐日 +1 膨胀 |
@@ -166,11 +166,13 @@
 ### 5.2 新增 / 修改文件清单
 
 **新增**
-- `scripts/common/ledger.py` — 统一反馈账本模块（零依赖）
-- `deploy/manifests/common.manifest` — `common` 公共库部署清单（仅 `ledger.py`，排除 `__pycache__`）
-- `deploy/projects/common.sh` — `common` 部署项目脚本（目标 `/root/.hermes/scripts/common`，`FIRST_DEPLOY_CLEANUP=false` 避免误删共享目录下的兄弟项目）
+- `libs/hermes_common/hermes_common/ledger.py` — 统一反馈账本模块（零依赖）
+- `libs/hermes_common/hermes_common/llm_guard.py` — LLM 统一护栏（零第三方依赖）
+- `libs/hermes_common/hermes_common/text_utils.py` — 关键词提取/CJK 处理（原 hermes-plugin-common）
+- `deploy/manifests/hermes-common.manifest` — 统一共享库部署清单（hermes_common，含 ledger/llm_guard/text_utils）
+- `deploy/projects/hermes-common.sh` — 统一共享库部署项目（目标 `/root/.hermes/lib`，`FIRST_DEPLOY_CLEANUP=false` 避免误删共享 lib 目录）
 - `scripts/self-evolving/scripts/self_evolving_driver.py` — Self-Evolving 编排 driver（F-5，含 `--auto-apply` 写回开关）
-- `scripts/self-evolving/scripts/skill_patch.py` — 安全写回 SKILL.md 模块（B 自动写回，HARD_BLOCK + 去重 + 备份/回滚，自包含不依赖未部署的 `common`）
+- `scripts/self-evolving/scripts/skill_patch.py` — 安全写回 SKILL.md 模块（B 自动写回，HARD_BLOCK + 去重 + 备份/回滚，自包含不依赖未部署的 `hermes_common`）
 - `scripts/cron-wrappers/self-evolving/self-evolving-nightly.sh` — 夜间编排 wrapper（F-5，调用 driver `--auto-apply`）
 
 **修改**
@@ -188,7 +190,7 @@
 - 7 个 Python 文件 `py_compile` 全部通过（ledger / config / kn_judge / skillopt_runner / dream-daily / kt-builder cli / self_evolving_driver）。
 - F-2 控制环三场景最小验证 PASSED：ENABLED=0 整轮跳过 / MAX_PER_NIGHT=2 截断 5→2 / COOLDOWN_DAYS=4 冷却过滤 skillA、skillC。
 - ledger 功能测试 PASSED（append 落盘 + 异常静默降级）。
-- **F-1 账本已真正部署生效（2026-08-12）**：此前 `scripts/common` 不在任何部署清单，WSL 上 `ledger.py` 缺失，5 处消费方的 bootstrap 均降级为 no-op 桩（即账本形同虚设）。新建 `common` 部署项目并将 `ledger.py` 部署至 `/root/.hermes/scripts/common/ledger.py`；在 WSL 真实消费方路径（health-report analyzers 目录）模拟 bootstrap 验证 `append_ledger_event` 真实 import 成功并写入 `data/flywheel/ledger.jsonl`（测试写入行已清理）。部署备份 `backups/common/20260812-094717`，回滚：`deploy/deploy.sh rollback common 20260812-094717`。自此 5 个消费方自动启用账本，健康巡检 `ledger_deployed` 计数随之生效。
+- **F-1 账本已真正部署生效（2026-08-12）**：此前 `scripts/common` 不在任何部署清单，WSL 上 `ledger.py` 缺失，5 处消费方的 bootstrap 均降级为 no-op 桩（即账本形同虚设）。2026-08-12 将共享工具统一整合为 `hermes-common` 库（含 ledger/llm_guard/text_utils），部署至 `/root/.hermes/lib/hermes_common/`；在 WSL 真实消费方路径（health-report analyzers 目录）模拟 bootstrap 验证 `append_ledger_event` 真实 import 成功并写入 `data/flywheel/ledger.jsonl`（测试写入行已清理）。回滚：`deploy/deploy.sh rollback hermes-common <ts>`。自此 5 个消费方自动启用账本，健康巡检 `ledger_deployed` 计数随之生效。
 - `PARAM_DEFS` 新条目 + 反馈键（`skill_used_count` / `kn_judge_relevant_rate_sag`）存在性校验 PASSED；tuner 导入 + `_parse_feedback` / `_param_judge_trusted` / `_is_param_permanently_skipped` 校验 PASSED。
 - **WSL 部署动作已完成**（原"待 WSL 部署"项已结清）：`~/.hermes/cron/jobs.json` 已注册 `self-evolving-nightly`（id `551be6f57d71`，`schedule.expr="30 17 * * *"`，`script="self-evolving/self-evolving-nightly.sh"`，`workdir="/root/.hermes/scripts"`，`no_agent=true`，`enabled=true`，备份 `jobs.json.bak_pre_se`）；wrapper 已随 `cron-wrappers` 部署至 `/root/.hermes/scripts/self-evolving/self-evolving-nightly.sh`（exec bit 已设）。闭环：cron(30 17 * * *) → wrapper → `self_evolving_driver.py --auto-apply` → 消费 skillopt `failed_tasks` → revise→refine → `skill_patch.patch_skill_md` 安全写回 SKILL.md（受 HARD_BLOCK + 去重 + 备份约束）。
 - **WSL 端到端验证 PASSED**：在 WSL 生产路径下以部署代码运行 (1) 直接写回烟测 —— `find_skill_md` 定位、`patch_skill_md` 写 `SE-APPLIED` 块并保留 frontmatter、同 task_id 去重、危险内容被 HARD_BLOCK 拒绝，全部通过；(2) 全链路烟测 —— 真实 driver `--auto-apply` 跑通 revise→refine→写回，`processed=1, applied=1, blocked=0`，`SE-APPLIED` 块已落盘。
