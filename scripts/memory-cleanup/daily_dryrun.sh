@@ -12,7 +12,7 @@ else
     exit 2
 fi
 
-cron_init "memory-cleanup-daily"
+cron_init "memory-cleanup"
 CRON_SKIP_FINISH_NOTIFY=true
 
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
