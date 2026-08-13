@@ -12,8 +12,10 @@ max_tokens 钳制保留本项目原值 [16384, 16384]（上限防慢模型生成
 """
 
 import importlib.util
+import json
 import logging
 import os
+import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -124,8 +126,14 @@ class LLMClient:
 
     def extract_content(self, response: dict[str, Any]) -> str:
         """从 API 响应中提取文本内容（content 空时兜底 reasoning）。"""
-        return extract_content(response["choices"][0]["message"])
+        try:
+            return extract_content(response["choices"][0]["message"])
+        except (KeyError, IndexError, TypeError):
+            raise ValueError("响应格式异常: 缺少 choices 字段")
 
     def parse_json_response(self, text: str) -> dict[str, Any]:
         """从 LLM 响应文本中解析 JSON，兼容 markdown 包裹 / 思考前缀 / 尾部多余文本。"""
-        return parse_json_response(text)
+        try:
+            return parse_json_response(text)
+        except ValueError as e:
+            raise json.JSONDecodeError(str(e), text, 0)

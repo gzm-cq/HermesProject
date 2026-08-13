@@ -1,6 +1,6 @@
 import sys, tempfile
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from skill_patch import security_scan, patch_skill_md
 
 cases = [

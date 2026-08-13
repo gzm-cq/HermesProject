@@ -67,14 +67,15 @@ from hermes_common.ledger import append_ledger_event
 # --------------------------------------------------------------------
 
 _COLLECT_BASELINE_IMPORTED = False
-_collect_all_recalls = None
-_judge_one_legacy = None
-_bootstrap_ci = None
+_collect_all_recalls: Any = None
+_judge_one_legacy: Any = None
+_bootstrap_ci: Any = None
+_save_baseline: Any = None
 
 
 def _ensure_collect_baseline_imported(home: Path) -> bool:
     """延迟 import，避免脚本路径在测试环境下不存在时 import 崩溃。"""
-    global _COLLECT_BASELINE_IMPORTED, _collect_all_recalls, _judge_one_legacy, _bootstrap_ci
+    global _COLLECT_BASELINE_IMPORTED, _collect_all_recalls, _judge_one_legacy, _bootstrap_ci, _save_baseline
     if _COLLECT_BASELINE_IMPORTED:
         return _collect_all_recalls is not None
 
@@ -95,10 +96,12 @@ def _ensure_collect_baseline_imported(home: Path) -> bool:
             collect_all_recalls,
             _judge_one as judge_one_legacy,
             bootstrap_ci,
+            save_baseline,
         )
         _collect_all_recalls = collect_all_recalls
         _judge_one_legacy = judge_one_legacy
         _bootstrap_ci = bootstrap_ci
+        _save_baseline = save_baseline
     except Exception as e:
         sys.stderr.write(f"[kn_judge] collect_baseline import 失败: {type(e).__name__}: {e}\n")
         return False
@@ -494,13 +497,39 @@ def run_judge_within_window(
             "sample_count_kt": out.get("kn_judge_sample_count_kt"),
             "sample_count_sag": out.get("kn_judge_sample_count_sag"),
         })
+            # 持久化 baseline：将 judge 结果写入 baseline_latest.json，
+        # 替代已删除的 knowledge-navigation-baseline cron job。
+        if _save_baseline is not None and results:
+            try:
+                baseline_data: dict[str, Any] = {
+                    "_meta": {
+                        "generated_by": "run_judge_within_window",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "sample_count": len(results),
+                        "judge_missed": len(sample) - len(results),
+                    },
+                }
+                for i, rec in enumerate(sample):
+                    if i >= len(results):
+                        break
+                    score_dict = results[i]
+                    query = rec.get("query_trunc", f"_rec_{i}")
+                    baseline_data[query] = {
+                        "dimension": "judge",
+                        "avg_score": score_dict.get("overall", 0),
+                        "avg_hs_kept": int(rec.get("hs_kept", 0)),
+                        "avg_kt_kept": int(rec.get("kt_kept", 0)),
+                        "avg_sag_kept": int(rec.get("sag_kept", 0)),
+                        "avg_latency_ms": float(rec.get("latency_ms", 0)),
+                        "eval_counted_true": 1 if score_dict.get("overall", 0) >= 0.5 else 0,
+                        "eval_counted_false": 0 if score_dict.get("overall", 0) >= 0.5 else 1,
+                    }
+                _save_baseline(baseline_data)
+            except Exception as _bl_exc:
+                sys.stderr.write(f"[kn_judge] save_baseline failed: {_bl_exc}\n")
+
+
     return out
-
-
-# --------------------------------------------------------------------
-# 兜底：judge 跑不起来时，用 kn_avg_score + kept 粗估，防止反馈断裂
-# --------------------------------------------------------------------
-
 def _kn_judge_fallback(all_records: list[dict], since: str, until: str) -> dict[str, Any]:
     """用 kept + avg_score 粗估 judge 评分（含 mask 级）。"""
     if not all_records:

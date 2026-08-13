@@ -15,6 +15,7 @@ max_tokens 下限保留本项目原值 32768（sensenova-6.8-flash-lite 推理�
 import importlib.util
 import logging
 import os
+import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)

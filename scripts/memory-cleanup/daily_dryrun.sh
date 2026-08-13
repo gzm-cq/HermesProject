@@ -33,10 +33,35 @@ if bash run.sh --vote 1 --apply; then
         LATEST_REPORT=$(ls -t "$MEMORY_DIR"/cleanup-report-*.json 2>/dev/null | head -1 || echo "")
         if [[ -n "$LATEST_REPORT" ]]; then
             # 提取关键指标
-            MEMORY_CHARS=$(python3 -c "import json; d=json.load(open('$LATEST_REPORT')); print(d.get('sources',{}).get('MEMORY.md',{}).get('after_cleanup',{}).get('keep_chars',0))" 2>/dev/null || echo "0")
-            USER_CHARS=$(python3 -c "import json; d=json.load(open('$LATEST_REPORT')); print(d.get('sources',{}).get('USER.md',{}).get('after_cleanup',{}).get('keep_chars',0))" 2>/dev/null || echo "0")
-            REMOVE=$(python3 -c "import json; d=json.load(open('$LATEST_REPORT')); print(d.get('total_remove',0))" 2>/dev/null || echo "0")
-            COMPRESS=$(python3 -c "import json; d=json.load(open('$LATEST_REPORT')); print(d.get('total_compress',0))" 2>/dev/null || echo "0")
+                    MEMORY_CHARS=$(python3 -c "
+            import json
+            d=json.load(open('$LATEST_REPORT'))
+            s=d.get('sources',{}).get('MEMORY.md',{})
+            print(s.get('after_cleanup',{}).get('keep_chars',0))
+            " 2>/dev/null || echo "0")
+                    USER_CHARS=$(python3 -c "
+            import json
+            d=json.load(open('$LATEST_REPORT'))
+            s=d.get('sources',{}).get('USER.md',{})
+            print(s.get('after_cleanup',{}).get('keep_chars',0))
+            " 2>/dev/null || echo "0")
+                    REMOVE=$(python3 -c "
+            import json
+            d=json.load(open('$LATEST_REPORT'))
+            total=0
+            for s in d.get('sources',{}).values():
+                r=s.get('phase1_remove',0) - s.get('phase2',{}).get('keep',0)
+                total+=r
+            print(total)
+            " 2>/dev/null || echo "0")
+                    COMPRESS=$(python3 -c "
+            import json
+            d=json.load(open('$LATEST_REPORT'))
+            total=0
+            for s in d.get('sources',{}).values():
+                total+=s.get('phase1_compress',0)
+            print(total)
+            " 2>/dev/null || echo "0")
 
             BODY="🧹 记忆清理完成\nMEMORY.md: ${MEMORY_CHARS} chars | USER.md: ${USER_CHARS} chars\n删除: ${REMOVE} 条 | 压缩: ${COMPRESS} 条"
             cron_notify "记忆清理完成" "$BODY" || true

@@ -121,13 +121,19 @@ def _get_context(task: dict) -> str:
 
 def run(state_file: str, trace_file: str | None, output_dir: str,
         config_path: str | None, dry_run: bool,
-        auto_apply: bool = False, home: str | None = None) -> int:
+        auto_apply: bool = False, home: str | None = None,
+        max_items: int = 10) -> int:
     home = home or os.environ.get("HERMES_HOME") or "/root/.hermes"
     items = _load_trace_file(trace_file) if trace_file else _extract_failed_tasks(state_file)
     if not items:
         print("Self-Evolving: 无失败轨迹可处理，跳过")
         append_ledger_event("self_evolving", {"status": "no_input", "count": 0})
         return 0
+
+    # 限制单次处理数量，防 OOM（exit=137）
+    if len(items) > max_items:
+        print(f"Self-Evolving: 截断 {len(items)} → {max_items} 项（--max-items={max_items}）")
+        items = items[:max_items]
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -212,9 +218,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--home", default=None,
                     help="显式 HERMES_HOME（默认取环境变量或 /root/.hermes）")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--max-items", type=int, default=10,
+                    help="单次运行最多处理的任务数（默认 10，防 OOM）")
     args = ap.parse_args(argv)
     return run(args.state_file, args.trace_file, args.output_dir, args.config,
-               args.dry_run, args.auto_apply, args.home)
+               args.dry_run, args.auto_apply, args.home, args.max_items)
 
 
 if __name__ == "__main__":
