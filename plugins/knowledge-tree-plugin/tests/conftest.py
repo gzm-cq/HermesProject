@@ -9,13 +9,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# 确保 knowledge-tree-builder 源码可导入
-_KT_SRC = (
-    Path(__file__).resolve().parent.parent.parent.parent.parent
-    / "scripts" / "knowledge-tree-builder" / "src"
+# 确保插件自身 src 可导入（测试可独立于 PYTHONPATH 运行）
+_PLUGIN_SRC = Path(__file__).resolve().parent.parent / "src"
+if str(_PLUGIN_SRC) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_SRC))
+
+# 确保 knowledge-tree-builder 源码可导入（统一定位入口，避免硬编码相对层级）
+from knowledge_tree_plugin.kt_builder_path import (  # noqa: E402
+    ensure_kt_builder_on_path,
 )
-if str(_KT_SRC) not in sys.path:
-    sys.path.insert(0, str(_KT_SRC))
+
+ensure_kt_builder_on_path()
 
 
 @pytest.fixture

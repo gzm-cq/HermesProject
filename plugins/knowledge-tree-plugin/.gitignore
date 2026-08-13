@@ -1,0 +1,16 @@
+# Python 构建/缓存产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 测试缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本地配置（含密钥）
+config/*.local.yaml
+.env

@@ -57,8 +57,12 @@ class PluginConfig:
     # K 向量更新
     k_vector_alpha_max: float = 0.1
 
-    # P3-9: 时态感知过滤
-    enable_temporal_filter: bool = False   # 是否启用时态过滤（Feature Flag）
+    # P3-9: 时态感知过滤（Feature Flag）
+    # 默认关闭：时态过滤依赖知识点的 valid_from / valid_until 字段，而当前
+    # get_child_nodes 返回的时态字段恒为 None（尚未在 schema/写入链路落地），
+    # 全量开启会对所有召回结果统一降权而无实际收益。待时态字段回填完成后，
+    # 通过 KT_ENABLE_TEMPORAL_FILTER=1 或 config.yaml 灰度开启。
+    enable_temporal_filter: bool = False   # 是否启用时态过滤
     temporal_filter_demote_factor: float = 0.5  # 过期记忆的降权系数（0-1，越小降权越多）
 
     def __post_init__(self) -> None:

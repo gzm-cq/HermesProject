@@ -302,15 +302,13 @@ def multi_hop_recall(
         return []
 
     try:
-        cursor = adapter.cursor
-
         # 三路策略，每路目标 top_k // 3 + 1（合并去重后再截断）
         per_route = max(3, top_k // 3 + 1)
         all_results: list[dict[str, Any]] = []
 
         # Route A: subject-based
         try:
-            a_results = _strategy_subject(cursor, seed_kp_ids, per_route)
+            a_results = adapter.multi_hop_by_subject(seed_kp_ids, per_route)
             for r in a_results:
                 r["strategy"] = "subject"
             all_results.extend(a_results)
@@ -321,9 +319,8 @@ def multi_hop_recall(
 
         # Route B: entity-based
         try:
-            cursor.execute("SELECT count(*) FROM kt_entity_links")
-            if cursor.fetchone()[0] > 0:
-                b_results = _strategy_entity(cursor, seed_kp_ids, per_route)
+            if adapter.has_entity_links():
+                b_results = adapter.multi_hop_by_entity(seed_kp_ids, per_route)
                 for r in b_results:
                     r["strategy"] = "entity"
                 all_results.extend(b_results)
@@ -334,7 +331,7 @@ def multi_hop_recall(
 
         # Route C: edge-based
         try:
-            c_results = _strategy_edge(cursor, seed_kp_ids, per_route)
+            c_results = adapter.multi_hop_by_edge(seed_kp_ids, per_route)
             for r in c_results:
                 r["strategy"] = "edge"
             all_results.extend(c_results)
@@ -365,117 +362,3 @@ def multi_hop_recall(
         if db_url_used:
             _invalidate_thread_adapter(db_url_used)
         return []
-
-
-def _strategy_subject(
-    cursor,
-    seed_kp_ids: list[int],
-    top_k: int,
-) -> list[dict[str, Any]]:
-    """Route A: subject-based — 种子 KPs 的同 subject 兄弟节点。"""
-    cursor.execute(
-        """
-        SELECT kt.id, kt.name, kpt.text
-        FROM knowledge_tree kt
-        JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
-        WHERE kt.parent_id IN (
-            SELECT DISTINCT parent_id FROM knowledge_tree
-            WHERE id = ANY(%s) AND parent_id IS NOT NULL
-        )
-        AND kt.id != ALL(%s)
-        AND kt.node_type = 'knowledge_point'
-        LIMIT %s
-        """,
-        (seed_kp_ids, seed_kp_ids, top_k),
-    )
-    return [
-        {"id": row[0], "name": row[1], "text": row[2], "score": 0.5}
-        for row in cursor.fetchall()
-    ]
-
-
-def _strategy_entity(
-    cursor,
-    seed_kp_ids: list[int],
-    top_k: int,
-) -> list[dict[str, Any]]:
-    """Route B: entity-based — 通过 kt_entity_links 共享实体展开。"""
-    cursor.execute(
-        "SELECT DISTINCT entity FROM kt_entity_links WHERE kp_id = ANY(%s)",
-        (seed_kp_ids,),
-    )
-    entities = [row[0] for row in cursor.fetchall()]
-    if not entities:
-        return []
-
-    cursor.execute(
-        """
-        SELECT kt.id, kt.name, kpt.text, COUNT(kel.entity) as shared_count
-        FROM kt_entity_links kel
-        JOIN knowledge_tree kt ON kt.id = kel.kp_id
-        JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
-        WHERE kel.entity = ANY(%s)
-          AND kt.id != ALL(%s)
-          AND kt.node_type = 'knowledge_point'
-        GROUP BY kt.id, kt.name, kpt.text
-        ORDER BY shared_count DESC
-        LIMIT %s
-        """,
-        (entities, seed_kp_ids, top_k),
-    )
-    return [
-        {"id": row[0], "name": row[1], "text": row[2],
-         "score": min(1.0, row[3] / 5.0)}
-        for row in cursor.fetchall()
-    ]
-
-
-def _strategy_edge(
-    cursor,
-    seed_kp_ids: list[int],
-    top_k: int,
-) -> list[dict[str, Any]]:
-    """Route C: edge-based — 通过 knowledge_tree_edges 预建边展开。"""
-    cursor.execute(
-        """
-        SELECT kt.id, kt.name, kpt.text, e.cooccurrence_count
-        FROM knowledge_tree_edges e
-        JOIN knowledge_tree kt ON kt.id = e.to_node_id
-        JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
-        WHERE e.from_node_id = ANY(%s)
-          AND kt.id != ALL(%s)
-        ORDER BY e.cooccurrence_count DESC
-        LIMIT %s
-        """,
-        (seed_kp_ids, seed_kp_ids, top_k),
-    )
-    results = [
-        {"id": row[0], "name": row[1], "text": row[2],
-         "score": min(1.0, row[3] / 3.0)}
-        for row in cursor.fetchall()
-    ]
-
-    # 如果没有预建边，退化为向量桥接：同一 subject 下高相似度 KPs
-    if not results:
-        cursor.execute(
-            """
-            SELECT kt.id, kt.name, kpt.text,
-                   1 - (kt.k_vector <=> sq.kv) as sim
-            FROM knowledge_tree kt
-            JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
-            JOIN (SELECT k_vector as kv FROM knowledge_tree WHERE id = ANY(%s) AND k_vector IS NOT NULL LIMIT 1) sq ON true
-            WHERE kt.id != ALL(%s)
-              AND kt.node_type = 'knowledge_point'
-              AND kt.k_vector IS NOT NULL
-              AND 1 - (kt.k_vector <=> sq.kv) > 0.80
-            ORDER BY sim DESC
-            LIMIT %s
-            """,
-            (seed_kp_ids, seed_kp_ids, top_k),
-        )
-        results = [
-            {"id": row[0], "name": row[1], "text": row[2], "score": float(row[3])}
-            for row in cursor.fetchall()
-        ]
-
-    return results

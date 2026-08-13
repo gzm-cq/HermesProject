@@ -11,23 +11,10 @@ import os
 import sys
 from pathlib import Path
 
-# 注入 knowledge-tree-builder 包路径（优先使用环境变量，硬编码路径作为 fallback）
-_KT_SRC_ENV = os.environ.get("KT_BUILDER_SRC")
-if _KT_SRC_ENV:
-    _KT_SRC = Path(_KT_SRC_ENV)
-else:
-    _KT_SRC = Path(__file__).resolve().parent.parent.parent.parent.parent \
-        / "scripts" / "knowledge-tree-builder" / "src"
-_KT_SRC_STR = str(_KT_SRC)
-if _KT_SRC_STR not in sys.path:
-    sys.path.insert(0, _KT_SRC_STR)
-if not (_KT_SRC / "knowledge_tree_builder" / "__init__.py").exists():
-    import logging
-    logging.getLogger(__name__).warning(
-        "知识树 builder 路径未找到: %s（知识树功能将不可用，"
-        "设置 KT_BUILDER_SRC 环境变量指向正确的 src 目录）",
-        _KT_SRC_STR,
-    )
+from knowledge_tree_plugin.kt_builder_path import ensure_kt_builder_on_path
+
+# 注入 knowledge-tree-builder 包路径（环境变量 → 向上自定位 → 生产态固定路径）
+ensure_kt_builder_on_path()
 
 # 统一共享库 hermes_common bootstrap（唯一入口：双路径自定位 + 缺包哨兵）
 try:

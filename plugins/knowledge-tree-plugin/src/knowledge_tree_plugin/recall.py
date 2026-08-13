@@ -225,9 +225,13 @@ def attention_filter(
     Args:
         query_embedding: query 的原始 bge-m3 embedding（1024 维）
         child_nodes: 科目下子节点列表，每项含 {id, name, k_vector, node_type, text, ...}
-        cold_start: 是否处于冷启动期（True → 回退余弦相似度）
-        min_score: 最低保留分数（softmax 后）
+        cold_start: 是否处于冷启动期（True → 回退余弦相似度，用 min_score 绝对阈值）
+        min_score: 冷启动模式下的最低余弦相似度阈值
         max_results: 最多返回的知识点数
+        local_offset: TaxoGen 局部投影偏移；None 且候选 >= 3 时自动用候选质心
+
+    注意力模式（非冷启动）用 softmax 相对分 + floor 过滤，并额外要求原始投影
+    相似度 > 0，以覆盖「唯一候选 softmax 恒为 1.0」的边界。
 
     Returns:
         按相关性降序排列的知识点列表，每项含 {id, name, text, score}
@@ -285,17 +289,29 @@ def attention_filter(
             kept = [(node, score) for node, score in ranked if score >= min_score]
         else:
             # Softmax for attention mode (relative scores)
+            # 保留 softmax 前的原始投影分（scores_arr 会被原地平移）
+            scores_raw = scores_arr.copy()
             scores_arr -= np.max(scores_arr)
             exp_scores = np.exp(scores_arr)
             softmax_scores = exp_scores / (np.sum(exp_scores) + 1e-10)
 
             ranked = sorted(
-                [(candidates[idx], float(softmax_scores[i])) for i, (idx, _) in enumerate(scores)],
+                [
+                    (candidates[idx], float(softmax_scores[i]), float(scores_raw[i]))
+                    for i, (idx, _) in enumerate(scores)
+                ],
                 key=lambda x: x[1], reverse=True,
             )
-            # Softmax scores are relative; use floor instead of absolute threshold
+            # Softmax scores are relative; use floor instead of absolute threshold.
+            # 边界：候选只有 1 个时 softmax 恒为 1.0，任何相对阈值都会失效，
+            # 因此额外用「原始投影相似度 > 0」做绝对相关性守卫，
+            # 避免唯一候选（哪怕完全不相关）被无条件召回。
             floor = 1.0 / max(len(ranked), 1) * 0.1
-            kept = [(node, score) for node, score in ranked if score >= floor]
+            kept = [
+                (node, score)
+                for node, score, raw in ranked
+                if score >= floor and raw > 0.0
+            ]
 
         kept = kept[:max_results]
 

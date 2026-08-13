@@ -450,3 +450,161 @@ class PluginDatabaseAdapter:
         )
         row = cursor.fetchone()
         return row[0] if row else 0
+
+    # ========== 多跳 recall 三路查询（Route A/B/C） ==========
+
+    def has_entity_links(self) -> bool:
+        """kt_entity_links 表是否有数据（Route B 前置检查）。"""
+        cursor = self._inner.cursor
+        cursor.execute("SELECT count(*) FROM kt_entity_links")
+        row = cursor.fetchone()
+        return bool(row and row[0] > 0)
+
+    def multi_hop_by_subject(
+        self,
+        seed_kp_ids: list[int],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Route A: subject-based — 种子 KPs 的同 subject 兄弟知识点。
+
+        Args:
+            seed_kp_ids: 种子知识点 ID 列表
+            limit: 最多返回条数
+
+        Returns:
+            [{id, name, text, score}]，score 为固定基准分 0.5
+        """
+        if not seed_kp_ids:
+            return []
+        cursor = self._inner.cursor
+        cursor.execute(
+            """
+            SELECT kt.id, kt.name, kpt.text
+            FROM knowledge_tree kt
+            JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
+            WHERE kt.parent_id IN (
+                SELECT DISTINCT parent_id FROM knowledge_tree
+                WHERE id = ANY(%s) AND parent_id IS NOT NULL
+            )
+            AND kt.id != ALL(%s)
+            AND kt.node_type = 'knowledge_point'
+            LIMIT %s
+            """,
+            (seed_kp_ids, seed_kp_ids, limit),
+        )
+        return [
+            {"id": r[0], "name": r[1], "text": r[2], "score": 0.5}
+            for r in cursor.fetchall()
+        ]
+
+    def multi_hop_by_entity(
+        self,
+        seed_kp_ids: list[int],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Route B: entity-based — 通过 kt_entity_links 共享实体展开。
+
+        Args:
+            seed_kp_ids: 种子知识点 ID 列表
+            limit: 最多返回条数
+
+        Returns:
+            [{id, name, text, score}]，score = 共享实体数 / 5，上限 1.0
+        """
+        if not seed_kp_ids:
+            return []
+        cursor = self._inner.cursor
+        cursor.execute(
+            "SELECT DISTINCT entity FROM kt_entity_links WHERE kp_id = ANY(%s)",
+            (seed_kp_ids,),
+        )
+        entities = [r[0] for r in cursor.fetchall()]
+        if not entities:
+            return []
+
+        cursor.execute(
+            """
+            SELECT kt.id, kt.name, kpt.text, COUNT(kel.entity) as shared_count
+            FROM kt_entity_links kel
+            JOIN knowledge_tree kt ON kt.id = kel.kp_id
+            JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
+            WHERE kel.entity = ANY(%s)
+              AND kt.id != ALL(%s)
+              AND kt.node_type = 'knowledge_point'
+            GROUP BY kt.id, kt.name, kpt.text
+            ORDER BY shared_count DESC
+            LIMIT %s
+            """,
+            (entities, seed_kp_ids, limit),
+        )
+        return [
+            {"id": r[0], "name": r[1], "text": r[2],
+             "score": min(1.0, r[3] / 5.0)}
+            for r in cursor.fetchall()
+        ]
+
+    def multi_hop_by_edge(
+        self,
+        seed_kp_ids: list[int],
+        limit: int,
+        *,
+        vector_bridge_threshold: float = 0.80,
+    ) -> list[dict[str, Any]]:
+        """Route C: edge-based — 通过 knowledge_tree_edges 预建边展开。
+
+        若无预建边，退化为向量桥接：与种子向量余弦相似度超阈值的知识点。
+
+        Args:
+            seed_kp_ids: 种子知识点 ID 列表
+            limit: 最多返回条数
+            vector_bridge_threshold: 向量桥接的相似度下限
+
+        Returns:
+            [{id, name, text, score}]
+        """
+        if not seed_kp_ids:
+            return []
+        cursor = self._inner.cursor
+        cursor.execute(
+            """
+            SELECT kt.id, kt.name, kpt.text, e.cooccurrence_count
+            FROM knowledge_tree_edges e
+            JOIN knowledge_tree kt ON kt.id = e.to_node_id
+            JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
+            WHERE e.from_node_id = ANY(%s)
+              AND kt.id != ALL(%s)
+            ORDER BY e.cooccurrence_count DESC
+            LIMIT %s
+            """,
+            (seed_kp_ids, seed_kp_ids, limit),
+        )
+        results = [
+            {"id": r[0], "name": r[1], "text": r[2],
+             "score": min(1.0, r[3] / 3.0)}
+            for r in cursor.fetchall()
+        ]
+        if results:
+            return results
+
+        # 退化：向量桥接
+        cursor.execute(
+            """
+            SELECT kt.id, kt.name, kpt.text,
+                   1 - (kt.k_vector <=> sq.kv) as sim
+            FROM knowledge_tree kt
+            JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
+            JOIN (SELECT k_vector as kv FROM knowledge_tree
+                  WHERE id = ANY(%s) AND k_vector IS NOT NULL LIMIT 1) sq ON true
+            WHERE kt.id != ALL(%s)
+              AND kt.node_type = 'knowledge_point'
+              AND kt.k_vector IS NOT NULL
+              AND 1 - (kt.k_vector <=> sq.kv) > %s
+            ORDER BY sim DESC
+            LIMIT %s
+            """,
+            (seed_kp_ids, seed_kp_ids, vector_bridge_threshold, limit),
+        )
+        return [
+            {"id": r[0], "name": r[1], "text": r[2], "score": float(r[3])}
+            for r in cursor.fetchall()
+        ]

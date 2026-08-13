@@ -28,6 +28,9 @@ _LARGE_INPUT_CHARS = 12000
 _MAX_PARALLEL_CHUNKS = 3
 _MAX_XL_CHUNKS = 6
 _JACCARD_DEDUP_THRESHOLD = 0.85
+# user 提问通常较短且主要用于提供上下文，硬上限 800 字符，
+# 把剩余预算全部让给 assistant 回复（知识点的主要来源）
+_USER_BUDGET_CHARS = 800
 
 # 全局并行提取信号量：限制跨请求的 LLM 并发数，避免高频对话瞬间打爆 API 限流
 # 默认允许 6 路并发（覆盖单次 XL 输入 6 chunk），可通过环境变量调整
