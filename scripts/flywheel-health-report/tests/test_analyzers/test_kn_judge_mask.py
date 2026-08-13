@@ -18,9 +18,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-# ---- 路径加载（与 test_p1_p4_fixes.py 同模式）----
-SRC_FHR = r"d:\HermesProject\scripts\flywheel-health-report\src"
-SRC_KN = r"d:\HermesProject\plugins\knowledge-navigation\src"
+# ---- 路径加载（与 test_p1_p4_fixes.py 同模式，跨平台相对路径）----
+_ROOT = Path(__file__).resolve().parents[3]  # scripts/flywheel-health-report/
+SRC_FHR = str(_ROOT / "src")
+SRC_KN = str(_ROOT.parents[1] / "plugins" / "knowledge-navigation" / "src")
 for _p in (SRC_FHR, SRC_KN):
     if _p not in sys.path:
         sys.path.insert(0, _p)

@@ -978,9 +978,9 @@ def update_state(
             p["best_value"] = float(new_value)
         except (TypeError, ValueError):
             pass
-        # 改善时也顺带清 no_change，别因为震荡给的 2 次误锁了真改善
-        if int(p.get("no_change_count", 0)) < NO_CHANGE_LOCK_THRESHOLD:
-            pass  # 清不清都行，保留震荡惩罚是合理的
+        # 指标改善即清零锁定计数器：与恶化时(p["no_change_count"] = 0)对称，
+        # 避免此前震荡/无变化累加的惩罚误锁住一次真实改善后的后续调参。
+        p["no_change_count"] = 0
 
     # ⑥ 记录本次方向（下次震荡判断用）；"none"（到边界跳过）不覆盖 last_direction
     if direction != "none":

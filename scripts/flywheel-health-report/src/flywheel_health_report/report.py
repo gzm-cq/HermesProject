@@ -647,7 +647,11 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "skill_used_count": skill_usage_m.get("used_count", 0),
         "skill_total_uses": skill_usage_m.get("total_uses", 0),
         "kn_unknown_pct": kn_m.get("unknown_dim_pct", 0),
-        "kn_avg_score": sum(s["avg_score"] for s in kn_m.get("dim_summary", {}).values()) / max(len(kn_m.get("dim_summary", {})), 1) if kn_m.get("dim_summary") else 0,
+        # 按各维度查询量加权（与 dim_summary 中 count 口径一致），避免查询数悬殊的维度被等权平均扭曲
+        "kn_avg_score": (
+            sum(s["avg_score"] * s.get("count", 0) for s in kn_m.get("dim_summary", {}).values())
+            / max(sum(s.get("count", 0) for s in kn_m.get("dim_summary", {}).values()), 1)
+        ) if kn_m.get("dim_summary") else 0,
         # KN LLM Judge：调优主反馈（无 judge 时为空，auto-tuner 会用 kn_avg_score 兜底）
         "kn_judge_sample_count": kn_judge_m.get("kn_judge_sample_count", 0),
         "kn_judge_relevant_rate": kn_judge_m.get("kn_judge_relevant_rate"),
