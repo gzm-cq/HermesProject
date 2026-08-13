@@ -151,11 +151,14 @@ _CRON_TO_FLYWHEEL = {
 _FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识路", "系统", "能力飞轮"]
 
 # === Required output files for integrity check ===
+# 注意：Router 的 baseline_latest.json 已从列表移除 —— knowledge-navigation-baseline
+# cron job 已禁用（_disabled_reason：由 flywheel-health-report 阶段 1 内建 KN LLM Judge
+# run_judge_within_window() 替代，避免重复 judge 消耗 2 倍 token），该文件不再有任何生产者，
+# 保留会导致持续误报 P1「产出文件缺失」。Router 质量数据现由 trace.log 实时扫描 + kn_judge 提供。
 REQUIRED_OUTPUTS = {
     "Skill": Path("data") / "flywheel" / "skill_eval_prev.json",
     "知识树": Path("data") / "flywheel" / "kt-baseline-latest.json",
     "聚类": Path("data") / "flywheel" / "clustering_baseline_prev.json",
-    "Router": Path("plugins") / "knowledge-navigation" / "baselines" / "baseline_latest.json",
 }
 
 # === Flywheel dependency chain (downstream -> upstream) ===
