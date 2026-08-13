@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 __version__ = "2.0.0"
 __author__ = "AI报告团队"
 __license__ = "MIT"
@@ -23,13 +25,17 @@ __all__ = [
 
 
 def __getattr__(name):
+    # 收敛到 ai_report.export 的惰性导入，避免两处重复实现 chart 函数导入逻辑
     if name in ("render_chart", "render_all_charts"):
-        from ai_report.export.chart_renderer import render_all_charts, render_chart
-        if name == "render_chart":
-            return render_chart
-        return render_all_charts
+        from ai_report import export as _export
+        return getattr(_export, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def register(ctx) -> None:
-    ctx.logger.info("ai-report plugin registered v%s", __version__)
+def register(_ctx: Any | None = None) -> None:
+    """插件注册入口（hermes.plugins 入口点）。
+
+    _ctx 为插件加载器传入的上下文（可选）；当前仅记录注册日志。
+    """
+    logger = __import__("logging").getLogger(__name__)
+    logger.info("ai-report plugin registered v%s", __version__)

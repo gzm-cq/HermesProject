@@ -1,3 +1,7 @@
 python-docx>=1.1.0
-matplotlib>=3.7.0
 requests>=2.31.0
+
+# 可选：本地 matplotlib 图表渲染（chart_renderer 模块，需 [charts] 额外依赖）
+# 主导出路径（sn-image-base 信息图生成）不依赖 matplotlib，无需安装。
+# 安装完整可选图表能力：pip install -e ".[charts]"
+matplotlib>=3.7.0

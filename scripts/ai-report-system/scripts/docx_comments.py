@@ -40,22 +40,29 @@ NS = {
 }
 
 
+def _parse_comments_xml(z: zipfile.ZipFile) -> list[dict[str, Any]]:
+    """从已打开的 docx zip 中解析 word/comments.xml 的批注列表。"""
+    comments: list[dict[str, Any]] = []
+    if "word/comments.xml" not in z.namelist():
+        return comments
+    tree = ET.parse(z.open("word/comments.xml"))
+    root = tree.getroot()
+    for comment_elem in root.findall(".//w:comment", NS):
+        cid = comment_elem.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id", "")
+        author = comment_elem.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author", "")
+        texts = comment_elem.findall(".//w:t", NS)
+        text = "".join(t.text or "" for t in texts).strip()
+        comments.append({"id": cid, "author": author, "text": text})
+    return comments
+
+
 def extract_comments(docx_path: Path) -> list[dict[str, Any]]:
     """读取 .docx 中的所有批注。"""
     comments: list[dict[str, Any]] = []
     try:
         with zipfile.ZipFile(docx_path, "r") as z:
-            if "word/comments.xml" not in z.namelist():
-                return comments
-            tree = ET.parse(z.open("word/comments.xml"))
-            root = tree.getroot()
-            for comment_elem in root.findall(".//w:comment", NS):
-                cid = comment_elem.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id", "")
-                author = comment_elem.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author", "")
-                texts = comment_elem.findall(".//w:t", NS)
-                text = "".join(t.text or "" for t in texts).strip()
-                comments.append({"id": cid, "author": author, "text": text})
-    except (KeyError, zipfile.BadZipFile, ET.ParseError) as e:
+            comments = _parse_comments_xml(z)
+    except (zipfile.BadZipFile, ET.ParseError) as e:
         logger.warning("读取批注失败: %s", e)
     return comments
 
@@ -84,16 +91,19 @@ def extract_chapter_comments(
     include_content: bool = False,
 ) -> list[dict[str, Any]]:
     """将批注映射到 H1 章节，按章节分组。"""
-    comments = extract_comments(docx_path)
-    if not comments:
+    try:
+        with zipfile.ZipFile(docx_path, "r") as z:
+            comments = _parse_comments_xml(z)
+            if not comments:
+                return []
+            comment_by_id = {c["id"]: c for c in comments}
+            # 与批注解析复用同一 ZipFile，避免重复打开
+            tree = ET.parse(z.open("word/document.xml"))
+    except (zipfile.BadZipFile, ET.ParseError) as e:
+        logger.warning("读取文档失败: %s", e)
         return []
-
-    comment_by_id = {c["id"]: c for c in comments}
-
-    with zipfile.ZipFile(docx_path, "r") as z:
-        tree = ET.parse(z.open("word/document.xml"))
-        body = tree.getroot().find("w:body", NS)
-        paragraphs = body.findall(".//w:p", NS) if body is not None else []
+    body = tree.getroot().find("w:body", NS)
+    paragraphs = body.findall(".//w:p", NS) if body is not None else []
 
     chapter_comments: dict[str, dict[str, Any]] = {}
     chapter_content: dict[str, list[str]] = {}

@@ -24,7 +24,6 @@ classifiers = [
 keywords = ["docx", "markdown", "report", "export", "hermes"]
 dependencies = [
     "python-docx>=1.1.0",
-    "matplotlib>=3.7.0",
     "requests>=2.31.0",
 ]
 
@@ -33,6 +32,9 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "lxml>=5.0",
+]
+charts = [
+    "matplotlib>=3.7.0",
 ]
 
 [project.entry-points."hermes.plugins"]

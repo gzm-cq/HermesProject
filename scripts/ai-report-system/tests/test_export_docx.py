@@ -621,6 +621,39 @@ class TestExportEdgeCases:
         assert "系统架构" in chart_map
         assert chart_map["系统架构"] == "架构图.png"
 
+    def test_local_fallback_when_sn_unavailable(self, tmp_path, monkeypatch):
+        """sn-image-base 缺失时，generate_missing_charts 应走本地 matplotlib 降级渲染产出 PNG。"""
+        import export_docx
+        monkeypatch.setattr(export_docx, "_get_sn_agent_runner", lambda: None)
+
+        md = (
+            "# 第一章 总览\n一些文字\n"
+            "# 实施路线\n"
+            "- 阶段一：奠基\n"
+            "- 阶段二：扩展\n"
+            "- 阶段三：成熟\n"
+            "# 第二章 结论\n收尾\n"
+        )
+        md_path = tmp_path / "report.md"
+        md_path.write_text(md, encoding="utf-8")
+        charts_dir = tmp_path / "charts"
+        charts_dir.mkdir()
+
+        chart_map = {"实施路线": "实施路线.png"}
+        result = export_docx.generate_missing_charts(
+            charts_dir=charts_dir,
+            md_path=md_path,
+            chart_map=chart_map,
+            md_text=md,
+        )
+        # 应产出 1 张本地渲染的图表（"实施路线" 是第 2 个 H1 → idx=2）
+        assert len(result) == 1
+        idx, path = result[0]
+        assert idx == 2
+        assert path.exists()
+        assert path.name == "实施路线.png"
+        assert path.stat().st_size > 100  # 真实 PNG，非占位
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1,13 +1,16 @@
 """
-ChartRenderer — 按 chart_spec 渲染真实图表
-=========================================
+ChartRenderer — 按 chart_spec 渲染真实图表（本地 matplotlib 方案，可选）
+========================================================
 从源文档提取真实数据，生成 PNG 图片文件。
 支持：
 - architecture_diagram: 架构对比图（matplotlib）
 - timeline: 五年路径规划时间线（matplotlib 柱状图）
 - comparison: 对比图（matplotlib 柱状图）
 
-遵循 Hermes Code Rules 规范
+本模块是 sn-image-base 不可用时的**本地降级渲染方案**：依赖 matplotlib（见 pyproject
+的 [charts] 额外依赖）。当 export_docx.py 的 --generate 检测到 sn_agent_runner.py 缺失时，
+会自动改用本模块（chart_renderer）按章节真实文本/列表本地渲染缺失图表，而非直接跳过。
+支持类型：architecture_diagram（架构对比卡）/ timeline（时间线）/ comparison（对比图）。
 """
 from __future__ import annotations
 
@@ -33,12 +36,22 @@ _ZH_FONT: Optional[str] = None
 _ZH_FONT_INITIALIZED: bool = False
 
 _CANDIDATES = [
+    # Linux
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttf",
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
     "/usr/share/fonts/truetype/arphic/uming.ttc",
     "/usr/share/fonts/truetype/arphic/ukai.ttc",
+    # Windows（N-5：原仅 Linux 路径，Windows 全缺失导致 CJK 字形为方框）
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/msyh.ttf",
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/simhei.ttc",
+    "C:/Windows/Fonts/simsun.ttc",
+    "C:/Windows/Fonts/simfang.ttf",
+    "C:/Windows/Fonts/simkai.ttf",
 ]
 
 

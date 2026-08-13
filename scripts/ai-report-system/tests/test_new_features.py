@@ -666,6 +666,35 @@ class TestBuildChartImagesHeadingConsistency:
             "c4.png": 4,
         }, f"章节计数与 _process_markdown_line 不一致: {result_by_name}"
 
+    def test_skip_toc_heading_off_by_one(self, tmp_path):
+        """md 含 '# 目录' 时：
+
+        - 默认（skip_toc_heading=False）：'# 目录' 计为第 1 章，真实章节顺延为 2/3。
+        - 自动生成目录页场景（skip_toc_heading=True）：'# 目录' 被跳过，
+          真实章节回到 1/2，与 docx_exporter._process_markdown_line 一致（Bug18 修复）。
+        """
+        from export_docx import build_chart_images
+        md_text = "# 目录\n# 第一章\n正文\n# 第二章\n正文"
+        chart_dir = tmp_path / "charts"
+        chart_dir.mkdir()
+        for fname in ("c1.png", "c2.png"):
+            (chart_dir / fname).write_bytes(_make_minimal_png(100, 100))
+        chart_map = {"第一章": "c1.png", "第二章": "c2.png"}
+
+        result_default = build_chart_images(
+            md_path=tmp_path / "fake.md", charts_dir=chart_dir,
+            chart_map=chart_map, md_text=md_text,
+        )
+        default_by_name = {p.name: idx for idx, p in result_default}
+        assert default_by_name == {"c1.png": 2, "c2.png": 3}, default_by_name
+
+        result_skip = build_chart_images(
+            md_path=tmp_path / "fake.md", charts_dir=chart_dir,
+            chart_map=chart_map, md_text=md_text, skip_toc_heading=True,
+        )
+        skip_by_name = {p.name: idx for idx, p in result_skip}
+        assert skip_by_name == {"c1.png": 1, "c2.png": 2}, skip_by_name
+
 
 # ── P0 回归：_generate_with_retry 失败时不残留 save_path ──
 

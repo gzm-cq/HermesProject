@@ -1,7 +1,7 @@
 """
 DocxExporter — 报告导出为 Word (.docx) 文件
 =========================================
-将 GeneratedReport 的 markdown 内容 + chart 图片嵌入为 Word 文档。
+将报告内容（Markdown 文本）+ chart 图片嵌入为 Word 文档。
 使用 Word 内置 Heading 样式（支持自动生成目录）。
 
 遵循 Hermes Code Rules 规范
@@ -32,6 +32,18 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.image.exceptions import UnrecognizedImageError
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_unlink(path: Path) -> None:
+    """删除文件；失败时仅记 warning 并忽略。
+
+    在删除受限的场景（网络盘、只读文件、安全软件/回收站拦截）下优雅降级，
+    避免删除失败导致整个生成/清理流程抛异常。
+    """
+    try:
+        path.unlink()
+    except OSError as e:
+        logger.warning("无法删除文件（已忽略）: %s: %s", path, e)
 
 
 # ── 图片尺寸自适应 ────────────────────────────────────────
@@ -140,6 +152,11 @@ def _download_image(url: str, dest_dir: Path) -> Path | None:
     - 重定向上限 5 次（防止重定向环）
     - 响应体上限 20MB（防止恶意大文件）
     """
+    # SSRF 加固：仅允许 http/https 协议
+    if not url.lower().startswith(("http://", "https://")):
+        logger.warning("不支持的图片 URL 协议（仅允许 http/https）: %s", url[:80])
+        return None
+
     # 从 URL 推断扩展名
     url_path = url.split("?")[0].split("/")[-1]
     ext = Path(url_path).suffix or ".png"
@@ -155,10 +172,7 @@ def _download_image(url: str, dest_dir: Path) -> Path | None:
         if dest_path.stat().st_size < 32:
             logger.warning("缓存文件过小 (%d bytes)，可能损坏，重新下载: %s",
                            dest_path.stat().st_size, dest_path.name)
-            try:
-                dest_path.unlink()
-            except OSError:
-                pass
+            _safe_unlink(dest_path)
         else:
             return dest_path
 
@@ -174,6 +188,11 @@ def _download_image(url: str, dest_dir: Path) -> Path | None:
                                len(resp.history), url[:80])
                 return None
             resp.raise_for_status()
+            # SSRF 加固：若服务器明确返回非图片类型，拒绝落盘
+            content_type = getattr(resp, "headers", {}).get("Content-Type", "")
+            if content_type and not content_type.lower().startswith("image/"):
+                logger.warning("响应非图片类型 (%s)，放弃: %s", content_type, url[:80])
+                return None
             # 流式下载，限制最大字节数
             data = b""
             for chunk in resp.iter_content(chunk_size=65536):

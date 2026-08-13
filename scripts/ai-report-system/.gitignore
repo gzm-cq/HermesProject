@@ -178,3 +178,4 @@ models/
 .aws/
 .terraform/
 .pre-commit-config.yaml
+.ar_match_tmp/

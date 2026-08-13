@@ -13,7 +13,7 @@
     # 配置化配图映射（JSON 文件）
     python3 export_docx.py input.md -o output.docx --charts ./charts/ --chart-map chart_map.json
 
-    # 自动生成缺失图表（调用 sn-image-base）
+    # 自动生成缺失图表（优先 sn-image-base；不可用时自动本地 matplotlib 降级）
     python3 export_docx.py input.md -o output.docx --charts ./charts/ --chart-map chart_map.json --generate
 
     # 生成 + VLM 审核
@@ -39,6 +39,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -54,13 +55,13 @@ PROJECT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
 from ai_report import __version__
-from ai_report.export.docx_exporter import export_to_docx
+from ai_report.export.docx_exporter import export_to_docx, _safe_unlink, _has_heading
 
 DEFAULT_CHART_MAP: dict[str, str] = {
     "组织架构": "组织架构.png",
     "数据仓库": "数仓架构.png",
     "路线图": "路线图.png",
-    "实施路线": "路线图.png",
+    "实施路线": "实施路线.png",
     "依赖关系": "依赖关系.png",
     "对比": "对比图.png",
     "架构": "架构图.png",
@@ -122,7 +123,9 @@ def load_chart_map(chart_map_path: Path | None) -> dict[str, str]:
     return DEFAULT_CHART_MAP
 
 
-def _parse_chapter_indices(md_text: str) -> list[tuple[int, str]]:
+def _parse_chapter_indices(
+    md_text: str, *, skip_toc_heading: bool = False,
+) -> list[tuple[int, str]]:
     """解析 md 文本中所有 H1/H2 标题，返回 [(chapter_idx, title), ...]。
 
     章节计数逻辑必须与 docx_exporter._process_markdown_line 一致：
@@ -130,6 +133,10 @@ def _parse_chapter_indices(md_text: str) -> list[tuple[int, str]]:
     - level = len(stripped) - len(stripped.lstrip('#'))
     - 仅 level <= 2 时计数
     - 去除首尾 #（Bug12 修复同步）
+
+    skip_toc_heading: 与 docx_exporter._process_markdown_line 的 skip_toc_heading
+    语义一致——当自动生成目录页时，跳过正文中的 "# 目录" 标题，使其不被计入
+    chapter_idx（否则配图会被插到错误的章节之后，Bug18 类 off-by-one）。
 
     注意：docx_exporter._process_markdown_line 在流式渲染时同样维护章节计数，
     本函数用于一次性预扫描（build_chart_images / _build_title_index_map）。
@@ -147,8 +154,12 @@ def _parse_chapter_indices(md_text: str) -> list[tuple[int, str]]:
         level = min(len(stripped) - len(stripped.lstrip("#")), 9)
         if level > 2:
             continue
-        chapter_idx += 1
         title = stripped.lstrip("#").rstrip("#").strip()
+        # 与 docx_exporter._process_markdown_line 一致：
+        # 自动生成目录页时跳过正文中的 "# 目录" 标题
+        if skip_toc_heading and level == 1 and title == "目录":
+            continue
+        chapter_idx += 1
         chapters.append((chapter_idx, title))
     return chapters
 
@@ -159,13 +170,14 @@ def build_chart_images(
     chart_map: dict[str, str],
     *,
     md_text: str | None = None,
+    skip_toc_heading: bool = False,
 ) -> list[tuple[int, Path]]:
     if md_text is None:
         md_text = md_path.read_text(encoding="utf-8")
     result: list[tuple[int, Path]] = []
     matched_keys: set[str] = set()
 
-    for chapter_idx, title in _parse_chapter_indices(md_text):
+    for chapter_idx, title in _parse_chapter_indices(md_text, skip_toc_heading=skip_toc_heading):
         for key, fname in chart_map.items():
             if key in matched_keys:
                 continue
@@ -378,7 +390,7 @@ def _generate_with_retry(
                 review_result["reasoning"][:80] if review_result["reasoning"] else "",
             )
             if save_path.exists():
-                save_path.unlink()
+                _safe_unlink(save_path)
         else:
             # 审核错误（超时/返回非 JSON 等）：删除图片并立即标记失败，不再重试。
             # VLM 自身出错时重试无意义，且残留图片会被 render_mermaid_images
@@ -389,13 +401,13 @@ def _generate_with_retry(
                 review_result["reasoning"][:80] if review_result["reasoning"] else "",
             )
             if save_path.exists():
-                save_path.unlink()
+                _safe_unlink(save_path)
             break
 
     # 兜底清理：所有轮次耗尽仍失败时，确保 save_path 不残留
     # （防止下次 render_mermaid_images 误用未验证图片）
     if save_path.exists():
-        save_path.unlink()
+        _safe_unlink(save_path)
     logger.warning("  ❌ %s failed after %d rounds", label, max_rounds)
     return None
 
@@ -449,10 +461,7 @@ def render_mermaid_images(
         logger.info("  ⚠️  --force 模式：忽略缓存，强制重新生成")
         # 强制模式下清空已有图片
         for old_file in output_dir.glob("mermaid_*.png"):
-            try:
-                old_file.unlink()
-            except OSError:
-                pass
+            _safe_unlink(old_file)
     cache_updated = False
 
     result: list[Path | None] = []
@@ -782,11 +791,209 @@ def review_image(
     }
 
 
-def _build_title_index_map(md_path: Path, *, md_text: str | None = None) -> dict[str, int]:
+def _build_title_index_map(
+    md_path: Path, *, md_text: str | None = None, skip_toc_heading: bool = False,
+) -> dict[str, int]:
     """预扫描 md，构建 (title → chapter_idx) 映射。"""
     if md_text is None:
         md_text = md_path.read_text(encoding="utf-8")
-    return {title: idx for idx, title in _parse_chapter_indices(md_text)}
+    return {title: idx for idx, title in _parse_chapter_indices(md_text, skip_toc_heading=skip_toc_heading)}
+
+
+# ── 本地降级渲染（sn-image-base 不可用时的 matplotlib fallback） ──
+
+def _extract_section_text(md_text: str, heading: str) -> str:
+    """提取某 H1/H2 标题下的章节正文（到下一个标题为止）。"""
+    lines = md_text.split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("#"):
+            title = s.lstrip("#").rstrip("#").strip()
+            if title == heading:
+                start = i
+                break
+    if start is None:
+        return ""
+    body: list[str] = []
+    for line in lines[start + 1:]:
+        if line.strip().startswith("#"):
+            break
+        body.append(line)
+    return "\n".join(body).strip()
+
+
+def _extract_list_items(section_text: str) -> list[str]:
+    """提取章节中的无序/有序列表项文本。"""
+    items: list[str] = []
+    for line in section_text.split("\n"):
+        s = line.strip()
+        m = re.match(r"^([-*+]|\d+[.、)])\s+(.*)$", s)
+        if m:
+            items.append(m.group(2).strip())
+    return items
+
+
+def _infer_local_chart_type(key: str) -> str:
+    """根据 chart_map 的 key 推断本地降级渲染的图表类型。"""
+    if "timeline" in key.lower() or "路线" in key or "时间" in key or "规划" in key:
+        return "timeline"
+    if "对比" in key or "comparison" in key.lower():
+        return "comparison"
+    return "architecture_diagram"
+
+
+def _extract_timeline_phases(section: str, list_items: list[str]) -> list[dict[str, Any]]:
+    """从章节文本提取时间线阶段；不足 2 个时返回空（交由调用方降级）。"""
+    phases: list[dict[str, Any]] = []
+    src = list_items or [l.strip() for l in section.split("\n") if l.strip()]
+    for i, raw in enumerate(src[:6], 1):
+        m = re.match(r"^(?:(\d{4})\s*[年/-]\s*)?(.*)$", raw)
+        year = m.group(1) if m else ""
+        label = (m.group(2) if m else raw).strip()[:20]
+        if not label:
+            continue
+        phases.append({"year": year or f"阶段{i}", "label": label, "value": i})
+    return phases
+
+
+def _extract_comparison_items(list_items: list[str], section: str) -> list[dict[str, Any]]:
+    """从章节文本提取对比项；仅保留含数值的项（无数值则降级为架构卡）。"""
+    items: list[dict[str, Any]] = []
+    src = list_items or [l.strip() for l in section.split("\n") if l.strip()]
+    for raw in src[:6]:
+        m = re.match(r"^(.*?)[\s：:/-]\s*(\d+(?:\.\d+)?)\s*(.*)$", raw)
+        if m:
+            items.append({"label": m.group(1).strip()[:16], "value": float(m.group(2))})
+    return items
+
+
+def _render_chart_locally(
+    charts_dir: Path,
+    key: str,
+    fname: str,
+    matched_title: str,
+    idx: int,
+    md_text: str,
+) -> Path | None:
+    """sn-image-base 不可用时的本地 matplotlib 降级渲染。
+
+    渲染成功后按 chart_map 指定的文件名写入 charts_dir，返回该路径；
+    失败（matplotlib 未安装 / 章节无可用数据 / 渲染异常）返回 None。
+    降级渲染不臆造数字：优先提取章节真实列表/年份/数值，不足时退化为
+    以章节标题为主的结构卡片（architecture_diagram）。
+    """
+    try:
+        from ai_report.export import chart_renderer
+    except ImportError as e:
+        logger.warning(
+            "本地降级渲染需要 matplotlib（可选依赖，执行 "
+            "pip install 'ai-report-system[charts]'）：%s。已跳过图表 '%s'。",
+            e, key,
+        )
+        return None
+
+    chart_type = _infer_local_chart_type(key)
+    section = _extract_section_text(md_text, matched_title)
+    list_items = _extract_list_items(section)
+
+    if chart_type == "timeline":
+        phases = _extract_timeline_phases(section, list_items)
+        if len(phases) >= 2:
+            spec: dict[str, Any] = {"type": "timeline", "data": {"phases": phases}}
+        else:
+            spec = {"type": "architecture_diagram",
+                    "data": {"layers": [{"name": matched_title}]
+                             + [{"name": it[:24]} for it in list_items[:5]]}}
+    elif chart_type == "comparison":
+        comp_items = _extract_comparison_items(list_items, section)
+        if len(comp_items) >= 2:
+            spec = {"type": "comparison", "data": {"items": comp_items}}
+        else:
+            spec = {"type": "architecture_diagram",
+                    "data": {"layers": [{"name": matched_title}]
+                             + [{"name": it[:24]} for it in list_items[:5]]}}
+    else:
+        spec = {"type": "architecture_diagram",
+                "data": {"layers": [{"name": matched_title}]
+                         + [{"name": it[:24]} for it in list_items[:5]]}}
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="ar_fb_"))
+    try:
+        out = chart_renderer.render_chart(spec, tmp_dir, idx, chapter_title=matched_title)
+        if out is None:
+            return None
+        dest = charts_dir / fname
+        shutil.copy2(out, dest)
+        return dest
+    except Exception as e:  # noqa: BLE001 — 降级渲染失败不应中断整个导出
+        logger.warning("本地降级渲染 '%s' 失败: %s", key, e)
+        return None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _generate_missing_charts_local(
+    charts_dir: Path,
+    md_path: Path,
+    chart_map: dict[str, str],
+    *,
+    md_text: str | None = None,
+    skip_toc_heading: bool = False,
+) -> list[tuple[int, Path]]:
+    """sn-image-base 不可用时的本地降级生成入口。
+
+    逻辑与 sn 路径一致：已有文件按标题索引插入；缺失文件用 chart_renderer
+    本地渲染（写入 charts_dir/fname，供后续 build_chart_images 拾取）。
+    """
+    if md_text is None:
+        md_text = md_path.read_text(encoding="utf-8")
+    title_to_idx = _build_title_index_map(md_path, md_text=md_text, skip_toc_heading=skip_toc_heading)
+    existing_files = {p.name for p in charts_dir.glob("*") if p.is_file()}
+    result: list[tuple[int, Path]] = []
+    produced = 0
+
+    for key, fname in chart_map.items():
+        if fname in existing_files:
+            img_path = charts_dir / fname
+            matched_idx = 0
+            for title, idx in title_to_idx.items():
+                if key in title:
+                    matched_idx = idx
+                    break
+            if matched_idx == 0:
+                logger.warning(
+                    "  ⚠️  已存在图表 %s 的 key '%s' 未命中任何章节标题，跳过插入", fname, key
+                )
+                continue
+            result.append((matched_idx, img_path))
+            continue
+
+        matched_title = ""
+        matched_idx = -1
+        for title, idx in title_to_idx.items():
+            if key in title:
+                matched_title = title
+                matched_idx = idx
+                break
+        if not matched_title:
+            logger.info("  ⚠️  No matching title for key '%s', skipping generation", key)
+            continue
+
+        path = _render_chart_locally(charts_dir, key, fname, matched_title, matched_idx, md_text)
+        if path is not None:
+            result.append((matched_idx, path))
+            produced += 1
+            logger.info("  ✅ [本地降级] '%s' → %s", key, path.name)
+        else:
+            logger.warning("  ⚠️  本地降级渲染 '%s' 失败，该图表将缺失", key)
+
+    if produced == 0:
+        logger.warning(
+            "本地降级渲染未产出任何图表（可能 matplotlib 未安装，或章节无可用列表/数据）。"
+            "如需 AI 信息图，请安装 sn-image-base skill。"
+        )
+    return result
 
 
 def generate_missing_charts(
@@ -803,21 +1010,23 @@ def generate_missing_charts(
     model: str | None = None,
     timeout: float = 300.0,
     md_text: str | None = None,
+    skip_toc_heading: bool = False,
 ) -> list[tuple[int, Path]]:
     runner = _get_sn_agent_runner()
     if not runner or not runner.exists():
         logger.warning(
-            "sn_agent_runner.py not found.\n"
-            "  Install sn-image-base skill to enable chart generation.\n"
-            "  Skipping chart generation."
+            "sn_agent_runner.py not found（sn-image-base 不可用）。\n"
+            "  改用本地 matplotlib 降级渲染（chart_renderer）生成缺失图表。"
         )
-        return []
+        return _generate_missing_charts_local(
+            charts_dir, md_path, chart_map, md_text=md_text, skip_toc_heading=skip_toc_heading,
+        )
 
     sn_skill_dir = _find_sn_skill_dir()
     critic_path = sn_skill_dir / "references" / "prompts-critic-system.md" if sn_skill_dir else None
 
     # 预构建标题索引映射，避免累加 bug
-    title_to_idx = _build_title_index_map(md_path, md_text=md_text)
+    title_to_idx = _build_title_index_map(md_path, md_text=md_text, skip_toc_heading=skip_toc_heading)
     existing_files = {p.name for p in charts_dir.glob("*") if p.is_file()}
 
     result: list[tuple[int, Path]] = []
@@ -831,6 +1040,13 @@ def generate_missing_charts(
                 if key in title:
                     matched_idx = idx
                     break
+            if matched_idx == 0:
+                # 未命中任何章节标题：写死 idx=0 会导致永不被插入（chapter_count 从 1 起）。
+                # 明确告警并跳过，而非静默丢弃。
+                logger.warning(
+                    "  ⚠️  已存在图表 %s 的 key '%s' 未命中任何章节标题，跳过插入", fname, key
+                )
+                continue
             result.append((matched_idx, img_path))
             continue
 
@@ -980,8 +1196,18 @@ def main() -> None:
     # 全程只读一次 md 文件
     md_text = md_path.read_text(encoding="utf-8")
 
+    # 自动生成目录页时，跳过正文中的 "# 目录" 标题（与渲染端一致，避免章节序号 off-by-one）
+    skip_toc_heading = bool(args.toc) and _has_heading(md_text)
+
     chart_map = load_chart_map(args.chart_map)
     chart_images: list[tuple[int, Path]] = []
+
+    # S-6：--generate 必须配合 --charts（否则生成分支被整体跳过且无提示）
+    if args.generate and not args.charts:
+        logger.warning(
+            "--generate 需要 --charts 和 --chart-map 才能生成图表；"
+            "当前未提供 --charts，已跳过图表生成。用 -h 查看用法。"
+        )
 
     if args.charts:
         charts_dir = args.charts.resolve()
@@ -991,7 +1217,7 @@ def main() -> None:
 
         if args.generate:
             logger.info("─" * 40)
-            logger.info("生成缺失图表（sn-image-generate）")
+            logger.info("生成缺失图表（sn-image-base 或本地 matplotlib 降级）")
             logger.info("─" * 40)
             generated = generate_missing_charts(
                 charts_dir=charts_dir,
@@ -1005,12 +1231,15 @@ def main() -> None:
                 base_url=args.base_url,
                 model=args.model,
                 md_text=md_text,
+                skip_toc_heading=skip_toc_heading,
             )
             logger.info("─" * 40)
             logger.info("生成完成: %d 张新图表", len(generated))
 
         print("\n匹配图表:")
-        chart_images = build_chart_images(md_path, charts_dir, chart_map, md_text=md_text)
+        chart_images = build_chart_images(
+            md_path, charts_dir, chart_map, md_text=md_text, skip_toc_heading=skip_toc_heading,
+        )
         if not chart_images:
             print("  ⚠️  无匹配图表，将导出纯文字 docx")
     else:
