@@ -169,7 +169,7 @@ Vercel/Linear 风格，高饱和、高对比、现代感强。
 
 ## 关键坑点
 
-- **edge 必须用 `source`+`target` 引用节点 ID**，不能用 x/y 定位
+- **edge 必须用 `from`+`to` 引用节点 ID**，不能用 x/y 定位
 - **edge 的 mxGeometry 必须设 `relative="1"`**，否则报 `d.setId is not a function`
 - **节点/箭头 ID 用纯 ASCII**，不用 Unicode
 - 渲染器支持 drawio 和 svg 两种格式，SVG 可直接插入 Word

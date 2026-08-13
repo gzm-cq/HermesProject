@@ -131,7 +131,7 @@ plan = {
 
 ## 功能
 
-- 支持 academic / business / minimal / tech / warm / paper-wireframe / paper-grayscale 七种配色
+- 支持 academic / business / minimal / tech / warm / paper-wireframe / paper-grayscale / dark / colorblind-safe 九种配色
 - 输出 drawio（可编辑 XML）或 SVG（矢量图）
 - 内置纯 Python 自动布局引擎（dagre 风格，零外部依赖）
 - 支持 emoji 图标、子标题（sub_label）、粗体节点
@@ -199,6 +199,8 @@ render(plan, "ecommerce-architecture.drawio")
 | warm | 咖啡/陶土暖色系 | 非正式/创意 |
 | paper-wireframe | 极简线框，黑白打印 | 论文黑白打印 |
 | paper-grayscale | 全灰度，极致黑白印刷 | 论文黑白印刷 |
+| dark | 深色主题，暗背景高对比度 | 暗色演示 / 终端风格 |
+| colorblind-safe | 基于 Okabe-Ito 色盲友好调色板 | 无障碍演示 / 科研 |
 
 ## 配置
 
@@ -231,3 +233,15 @@ cd /mnt/d/HermesProject/scripts/drawio-generator && pip install -e . && pytest
 对应 skill：`drawio-generator`（software-development 分类），在 Hermes Gateway 中通过 skill_view() 加载后可通过自然语言直接调用。
 
 Skill 调用方式：加载 skill 后在对话中描述架构需求，skill 自动调用核心库生成 .drawio/.svg 文件并返回路径。
+
+## 辅助脚本（scripts/）
+
+`scripts/` 下的独立工具不属 pip 包，但各有专项用途与单测，非死代码：
+
+| 脚本 | 用途 |
+|------|------|
+| `buildup.py` | 批量将多个 .drawio 合并为单一文件（层级堆叠） |
+| `heatmap.py` | 按调用频次/权重生成热度图 |
+| `restyle.py` | 批量替换配色 / 节点样式（重皮肤化） |
+| `svgflow.py` | 将 SVG 边转为带动画的 flow 效果（animateMotion） |
+| `drawiohtml.py` | 导出可在浏览器直接预览的 HTML 包装页 |

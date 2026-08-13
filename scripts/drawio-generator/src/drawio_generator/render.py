@@ -155,8 +155,6 @@ def render(plan_dict, output_path):
     presentation = plan.get("presentation", False)
     if paper_mode:
         fmt = "svg"
-    if presentation:
-        pass
 
     ext = Path(output_path).suffix.lower()
     if ext == ".svg":

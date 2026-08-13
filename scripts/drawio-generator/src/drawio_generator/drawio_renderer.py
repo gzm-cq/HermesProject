@@ -236,8 +236,7 @@ def _render_drawio(width, height, title, nodes, edges, layers, colors, path,
         nc = _resolve_color(colors, node)
         shape = node.get("shape", "rect")
         # 优先从 shape_library 查找，回退到 SHAPES
-        from .shape_library import shape_to_drawio_style as get_shape_style
-        shape_style = get_shape_style(shape)
+        shape_style = shape_to_drawio_style(shape)
         style = _drawio_node_style(shape_style, nc, sw, font_family, font_size,
                                     gradient, shadow, sketch=sketch_mode)
 
@@ -348,20 +347,25 @@ def repair_drawio(path):
 
     root = tree.getroot()
 
-    # 2. 单次遍历完成所有检查（收集id + parent检查 + edge geometry + ASCII检查）
+    # 2. 两遍扫描：先收集全部 cell id，再校验引用，避免父容器 cell
+    #    晚于子节点出现时被误判为未定义 parent 而错误重置为 "1"。
     cells = {}
     seen_ids = set()
+
+    # 2a. 第一遍：收集 id → cell 映射，检测重复
     for cell in root.iter("mxCell"):
         cid = cell.get("id")
-
-        # 2a. 收集 id → cell 映射，检测重复
         if cid:
             if cid in seen_ids:
                 issues.append(("warn", f"发现重复 cell id='{cid}'"))
             seen_ids.add(cid)
             cells[cid] = cell
 
-        # 2b. 检查 parent 引用有效性
+    # 2b. 第二遍：parent 引用 / edge geometry / ASCII 检查
+    for cell in root.iter("mxCell"):
+        cid = cell.get("id")
+
+        # 检查 parent 引用有效性
         parent = cell.get("parent")
         if parent and parent not in cells:
             issues.append(("warn", f"cell id='{cid or '(none)'}' 引用未定义 parent='{parent}'"))
@@ -370,7 +374,7 @@ def repair_drawio(path):
                 fixed += 1
                 issues.append(("fixed", f"cell id='{cid or '(none)'}' parent→'1'"))
 
-        # 2c. 检查 edge 的 mxGeometry 是否含 relative="1"
+        # 检查 edge 的 mxGeometry 是否含 relative="1"
         if cell.get("edge") == "1":
             for geo in cell.iter("mxGeometry"):
                 if geo.get("relative") != "1":
@@ -378,7 +382,7 @@ def repair_drawio(path):
                     fixed += 1
                     issues.append(("fixed", f"edge id='{cid}' 已添加 relative=1"))
 
-        # 2d. 检查 id 是否含非 ASCII 字符
+        # 检查 id 是否含非 ASCII 字符
         if cid and not cid.isdigit() and any(ord(c) > 127 for c in cid):
             issues.append(("warn", f"cell id='{cid}' 含非 ASCII 字符，建议纯英文"))
 

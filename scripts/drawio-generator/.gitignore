@@ -1,0 +1,5 @@
+# 防止 Python 编译缓存被部署脚本（find 不读 .gitignore）误带出去
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

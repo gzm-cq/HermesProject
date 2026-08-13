@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """SVG 渲染 — 将布局数据渲染为 SVG 矢量图"""
 
+import itertools
+import re
+
 from xml.sax.saxutils import escape
 
 from .palettes import ARROW_STYLES, _resolve_color, _lighten, _sanitize_color
 from .shapes import _render_svg_shape
 from .geometry import _compute_bounding_box, compute_edge_path
+
+# 边路径自增 id 计数器：避免使用 id() 作 SVG id（对象 GC 后 id 可复用，
+# 会导致多边的 path id 重复、动画引用错乱）。
+_EDGE_PATH_SEQ = itertools.count(1)
 
 
 # ===== SVG 模板函数 =====
@@ -129,7 +136,7 @@ def _svg_edge_path(points, color, sw, dashed=False, curve="orthogonal", bidirect
 
     # flowAnimation：如果启用，输出带动画的完整边（path + animateMotion circles）
     if flow_animation:  
-        path_id = "edge-path-ref-" + str(id(points))  
+        path_id = "edge-path-ref-" + str(next(_EDGE_PATH_SEQ)) 
         lines_anim = [f'<path id="{path_id}" d="{d}" fill="none" stroke="{color}" stroke-width="{sw}" {dash} {markers}{filter_attr}/>']
         lines_anim.append( 
             '<circle cx="0" cy="0" r="3" fill="#fff" opacity="0.8">' 
@@ -249,7 +256,7 @@ def _render_svg(width, height, title, nodes, edges, layers, colors, path,
         # 主标签
         label = node.get("label", "")
         if label:
-            lines.append(_svg_node_label(nx, nw, ny, nh, label.replace("<br>", "\n").replace("<br/>", "\n").split("\n"),
+            lines.append(_svg_node_label(nx, nw, ny, nh, re.sub(r"<br\s*/?>", "\n", label).split("\n"),
                                           fs_label, text_color))
         # 数据标注
         sub = node.get("sub_label", "")

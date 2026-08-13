@@ -435,6 +435,12 @@ def validate_plan(plan):
         issues.append(("warning", "palette", f"未知配色 '{palette}'，将使用 academic"))
 
     # 节点校验
+    # auto_layout 触发条件与 render.py 对齐：任一节点缺 x/y 即触发布局引擎补全坐标，
+    # 此时坐标缺失是预期行为，降为 warning 而非 error。
+    auto_layout = plan.get("auto_layout", False) or any(
+        isinstance(n, dict) and (n.get("x") is None or n.get("y") is None)
+        for n in nodes
+    ) if isinstance(nodes, list) else False
     node_ids = set()
     valid_colors = {k for k in PALETTES.get("academic", {}) if k.startswith("node_")}
     if isinstance(nodes, list):
@@ -453,7 +459,11 @@ def validate_plan(plan):
             for field in ("x", "y", "w", "h"):
                 val = node.get(field)
                 if val is None or not isinstance(val, (int, float)):
-                    issues.append(("error", f"{prefix}.{field}", "缺失或不是数字"))
+                    if auto_layout:
+                        issues.append(("warning", f"{prefix}.{field}",
+                                       "缺失或不是数字（auto_layout 将自动补全）"))
+                    else:
+                        issues.append(("error", f"{prefix}.{field}", "缺失或不是数字"))
             color = node.get("color")
             if color:
                 if color not in valid_colors:

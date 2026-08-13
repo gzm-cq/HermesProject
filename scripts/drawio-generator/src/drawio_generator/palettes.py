@@ -108,7 +108,7 @@ PALETTES = {
         "title_color": "#000000",
         "text_color": "#222222",
     },
-    # 深色主题 — 暗背景高对比度（值与 style_presets.py 保持同步）
+    # 深色主题 — 暗背景高对比度（单一真源，style_presets 直接复用）
     "dark": {
         "node_blue":   {"fill": "#1E3A5F", "stroke": "#4DA8DA"},
         "node_green":  {"fill": "#22543d", "stroke": "#68d391"},
@@ -123,7 +123,7 @@ PALETTES = {
         "title_color": "#e2e8f0",
         "text_color": "#cbd5e0",
     },
-    # 色盲友好 — 基于 Okabe-Ito 调色板（值与 style_presets.py 保持同步）
+    # 色盲友好 — 基于 Okabe-Ito 调色板（单一真源，style_presets 直接复用）
     "colorblind-safe": {
         "node_blue":   {"fill": "#e69f00", "stroke": "#cc7a00"},   # 橙（色盲安全）
         "node_green":  {"fill": "#56b4e9", "stroke": "#2a8fc7"},   # 天蓝（色盲安全）
