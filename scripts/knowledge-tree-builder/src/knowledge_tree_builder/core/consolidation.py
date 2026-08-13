@@ -79,11 +79,14 @@ class ConsolidationEngine:
         fragment_domains = float(cursor.fetchone()[0] or 0)
 
         # 4. orphan_kps — 没有边关联的知识点（不在 knowledge_tree_edges 中）
+        # 注意：列名为 from_node_id / to_node_id（见 database.py 建表），
+        # 不可写成 from_id / to_id，否则 SQL 报 "column e.from_id does not exist"，
+        # 基线采集被 except 静默跳过，导致 kt-baseline-latest.json 长期过期。
         cursor.execute("""
             SELECT COUNT(*) FROM knowledge_tree kp
-            LEFT JOIN knowledge_tree_edges e ON kp.id = e.from_id OR kp.id = e.to_id
+            LEFT JOIN knowledge_tree_edges e ON kp.id = e.from_node_id OR kp.id = e.to_node_id
             WHERE kp.node_type = 'knowledge_point'
-            AND e.from_id IS NULL
+            AND e.from_node_id IS NULL
         """)
         orphan_kps = float(cursor.fetchone()[0] or 0)
 
