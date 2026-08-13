@@ -124,7 +124,7 @@ cmd_plan() {
   if [[ -n "${SKILLS_SRC:-}" && -n "${SKILLS_TGT:-}" ]]; then
     local skill_src_abs="$PROJECT_ROOT/$SKILLS_SRC"
     if [[ -d "$skill_src_abs" ]]; then
-      local skill_files; skill_files=$(find "$skill_src_abs" -type f | sort)
+      local skill_files; skill_files=$(find "$skill_src_abs" -type f -not -path '*/__pycache__/*' -not -name '*.pyc' | sort)
       local sn=0
       echo
       log "==> 将部署的 Skill 文件 (→ $SKILLS_TGT):"
@@ -313,7 +313,7 @@ cmd_deploy() {
         sudo cp -p "$sf" "$install_path"
         echo "$install_path" | sudo tee -a "$backup_dir/.deployed-files" >/dev/null
         skill_count=$((skill_count+1))
-      done < <(find "$skill_src_abs" -type f -print0)
+      done < <(find "$skill_src_abs" -type f -not -path '*/__pycache__/*' -not -name '*.pyc' -print0)
       sudo chown -R root:root "$SKILLS_TGT"
       ok "Skill 部署完成: $skill_count 个文件"
     else
