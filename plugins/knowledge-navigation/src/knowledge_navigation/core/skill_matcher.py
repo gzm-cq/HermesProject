@@ -1,8 +1,10 @@
-"""LLM skill 检索器：全量 LLM 匹配。
+"""LLM skill 检索器：三级筛选（关键词预筛 + Embedding 预筛 + LLM 精排）。
 
 在 pre_llm_call 中根据用户消息选择相关 skill 并注入完整正文。
 
-直接发送全部 skill 给 LLM 做语义匹配，不使用预筛选。
+匹配流程：先由 keyword_prescreen 从全量 skill 库激进召回候选，再由可选
+embedding_prescreen 独立召回候选，两者取并集后交给 LLM 做语义精排。
+enable_keyword_prescreen=True 时三级筛选全部生效；关闭则退化为仅 LLM 全量匹配。
 """
 
 from __future__ import annotations

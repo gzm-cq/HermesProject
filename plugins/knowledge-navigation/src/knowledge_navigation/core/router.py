@@ -1,4 +1,4 @@
-"""LLM-driven Router for 3-way injection mask."""
+"""LLM-driven Router for injection mask (Hindsight + Knowledge Tree + Skill + SAG)."""
 
 import json
 import logging

@@ -398,7 +398,11 @@ def _do_sag_recall(query: str) -> tuple[list[dict], str | None]:
         logger.info(
             "SAG recall: %d sections, 耗时 %.1fms",
             len(sections), (time.time() - t0) * 1000,
-            extra={"event": "sag_recall", "count": len(sections)},
+            extra={
+                "event": "sag_recall",
+                "count": len(sections),
+                "hit": len(sections) > 0,  # 命中率埋点：False 表示未识别软件/无相关文档，已静默降级
+            },
         )
         return sections, None
     except Exception as e:

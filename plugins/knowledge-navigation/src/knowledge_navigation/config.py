@@ -177,8 +177,7 @@ class KnowledgeNavigationConfig:
     skill_matcher_api_url: str = field(default="http://127.0.0.1:4142/v1")
 
     # Skill Matcher: 三级筛选架构（关键词 + Embedding + LLM）
-    # 注意：kn_skill_keyword_prescreen 已废弃，match_skills 现为纯 LLM 全量匹配
-    # 保留配置项仅为向后兼容，实际不生效
+    # keyword 预筛默认开启；关闭 kn_skill_keyword_prescreen 时退化为仅 LLM 全量匹配
     kn_skill_keyword_prescreen: bool = field(default=True)
 
     # Skill Matcher: Embedding 预筛选（Hybrid 模式，在关键词之后）

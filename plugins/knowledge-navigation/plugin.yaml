@@ -1,13 +1,13 @@
 name: knowledge-navigation
-version: 1.2.0
-description: 知识导航插件 — LLM Router 三路注入，自动召回 Hindsight 经验 + 知识树 + Skill
+version: 1.5.0
+description: 知识导航插件 — LLM Router 四路注入，自动召回 Hindsight 经验 + 知识树 + Skill + SAG 软件感知
 author: Hermes Team
 license: MIT
 homepage: https://github.com/hermes-ai/knowledge-navigation
 hooks:
   pre_llm_call:
     callback: pre_llm_call
-    description: 在每次 LLM 调用前通过 LLM Router 智能决策三路召回并注入上下文
+    description: 在每次 LLM 调用前通过 LLM Router 智能决策四路召回（HS/KT/Skill/SAG）并注入上下文
     enabled: true
 dependencies:
   - requests>=2.25.0
