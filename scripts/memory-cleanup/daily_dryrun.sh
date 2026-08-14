@@ -50,8 +50,7 @@ if bash run.sh --vote 1 --apply; then
             d=json.load(open('$LATEST_REPORT'))
             total=0
             for s in d.get('sources',{}).values():
-                r=s.get('phase1_remove',0) - s.get('phase2',{}).get('keep',0)
-                total+=r
+                total+=s.get('total_entries',0)-s.get('after_cleanup',{}).get('keep',0)
             print(total)
             " 2>/dev/null || echo "0")
                     COMPRESS=$(python3 -c "

@@ -1,0 +1,11 @@
+{
+  "name": "skillopt-runner",
+  "kind": "python-script",
+  "bootstrap": [],
+  "build": [],
+  "test": ["/root/.hermes/scripts/knowledge-tree-builder/venv/bin/python3 -m pytest tests/ -q --no-header"],
+  "start": null,
+  "port": null,
+  "readinessPath": null,
+  "source": "manual"
+}
