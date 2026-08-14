@@ -112,17 +112,24 @@ def load_state() -> dict:
     }
 
 
-def save_state(state: dict):
-    """保存状态到 state.json（线程安全）。
-
+def _save_state_unlocked(state: dict):
+    """保存状态到 state.json（无锁版本——调用方必须已持有 _STATE_LOCK）。
     Note: 当前锁仅保护文件写入，state 字典的修改在单线程上下文中安全。
     若未来引入并行 worker，需将 state 的 read-modify-write 也纳入锁保护。
     """
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    print(f'状态已保存: 累积 {len(state.get("skill_neg_feedback", {}))} 个技能的负反馈数据')
+
+
+def save_state(state: dict):
+    """保存状态到 state.json（线程安全）。
+    若调用方已持有 _STATE_LOCK（如在 _phase_optimize 的 with 块内），
+    应直接调用 _save_state_unlocked 避免死锁（Lock 非重入）。
+    """
     with _STATE_LOCK:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        print(f'状态已保存: 累积 {len(state.get("skill_neg_feedback", {}))} 个技能的负反馈数据')
+        _save_state_unlocked(state)
 
 def load_usage() -> dict[str, dict]:
     """加载使用统计。损坏时备份并返回空 dict。"""
@@ -1170,6 +1177,8 @@ def _phase_optimize(
                 print(f'  ﹣ [{name}] 未优化')
 
             # F-7: 增量合并 delta 到共享 state 并落盘（顺序、无并发写）
+            # ⚠️ 已持有 _STATE_LOCK，必须调用 _save_state_unlocked（Lock 非重入，
+            #    同线程二次获取会死锁）
             with _STATE_LOCK:
                 if res.get('skill_last_run_ts'):
                     skill_last_run[name] = res['skill_last_run_ts']
@@ -1179,7 +1188,7 @@ def _phase_optimize(
                 if ft is not None:
                     state.setdefault('failed_tasks', {})[name] = ft
                 state['skill_last_run'] = skill_last_run
-                save_state(state)
+                _save_state_unlocked(state)
 
     print(f'\n{"="*65}')
     print(f'All done: {optimized}/{len(top_scored)} skills optimized')
