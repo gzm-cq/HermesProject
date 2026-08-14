@@ -155,7 +155,7 @@ class TestPromoteFilenameAndIdempotency:
         reflections = [_make_reflection("s1", "配置优化：Redis 缓存")]
 
         with patch.object(module, "call_llm_json",
-                          return_value={"promote": True, "category": "concepts"}):
+                          return_value={"promote": True, "category": "concepts", "score": 0.9}):
             result = module.phase_promote(reflections, dry_run=False)
 
         assert len(result) == 1
@@ -174,7 +174,7 @@ class TestPromoteFilenameAndIdempotency:
             f.write("原始内容")
 
         with patch.object(module, "call_llm_json",
-                          return_value={"promote": True, "category": "concepts"}):
+                          return_value={"promote": True, "category": "concepts", "score": 0.9}):
             result = module.phase_promote(reflections, dry_run=False)
 
         assert len(result) == 1

@@ -94,7 +94,7 @@ class TestPhasePromote:
 
         with patch.object(module, "call_llm_json",
                           return_value={"promote": True, "category": "concepts",
-                                        "reason": "有价值的知识"}):
+                                        "reason": "有价值的知识", "score": 0.9}):
             result = module.phase_promote(reflections, dry_run=False)
 
         assert len(result) == 1
@@ -135,7 +135,7 @@ class TestPhasePromote:
         reflections = [_make_reflection("s1", "dry-run测试")]
 
         with patch.object(module, "call_llm_json",
-                          return_value={"promote": True, "category": "concepts"}):
+                          return_value={"promote": True, "category": "concepts", "score": 0.9}):
             result = module.phase_promote(reflections, dry_run=True)
 
         assert len(result) == 1

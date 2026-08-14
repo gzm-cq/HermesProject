@@ -109,41 +109,59 @@ class TestLLMClientInitWarning:
         assert len(warn_msgs) == 0
 
 
-class TestLLMClientExponentialBackoff:
-    """测试 LLMClient 指数退避重试。"""
+class TestLLMClientGuardDelegation:
+    """LLMClient 重试/退避委托给 hermes_common.llm_guard.guarded_chat_completion。
 
-    def _make_response(self, content: str) -> MagicMock:
-        resp = MagicMock()
-        resp.json.return_value = {"choices": [{"message": {"content": content}}]}
-        return resp
+    本类仅验证 LLMClient 的委托契约：guard 成功→返回解析结果；
+    guard 失败/耗尽→返回 error 字典。指数退避重试的具体实现由
+    libs/hermes_common/tests/test_llm_guard.py 覆盖。
+    """
 
-    def test_exponential_backoff_uses_time_sleep(self, app_config: AppConfig) -> None:
-        """验证失败重试调用了 time.sleep（表明退避生效）。
+    @staticmethod
+    def _resp(content: str) -> dict:
+        return {"choices": [{"message": {"content": content}}]}
 
-        _call 内层 3 次，前 2 次各触发 1 次 sleep，共 2 次。
-        """
+    def test_success_returns_parsed_result(self, app_config: AppConfig) -> None:
         client = LLMClient(app_config)
         system_prompt = build_system_prompt("MEMORY", 0)
-
-        with patch("requests.post", side_effect=Exception("fail")) as mock_post, \
-             patch("memory_cleanup.adapters.llm_client.time.sleep") as mock_sleep:
+        with patch(
+            "memory_cleanup.adapters.llm_client.guarded_chat_completion",
+            return_value=self._resp('{"merge":[],"remove":[],"compress":[]}'),
+        ):
             result = client.classify_batch(["条目A"], 0, "MEMORY", system_prompt)
+        assert "error" not in result
+        assert result == {"merge": [], "remove": [], "compress": []}
 
-        assert "error" in result
-        # _call 内层 3 次：attempt 0→sleep, attempt 1→sleep, attempt 2→exhausted
-        assert mock_sleep.call_count == 2
-
-    def test_no_sleep_on_success(self, app_config: AppConfig) -> None:
-        """第 1 次成功不应调用 time.sleep。"""
+    def test_guard_failure_returns_error(self, app_config: AppConfig) -> None:
         client = LLMClient(app_config)
         system_prompt = build_system_prompt("MEMORY", 0)
+        with patch(
+            "memory_cleanup.adapters.llm_client.guarded_chat_completion",
+            side_effect=ConnectionError("fail"),
+        ):
+            result = client.classify_batch(["条目A"], 0, "MEMORY", system_prompt)
+        assert "error" in result
 
-        with patch("requests.post") as mock_post, \
-             patch("memory_cleanup.adapters.llm_client.time.sleep") as mock_sleep:
-            mock_post.return_value = self._make_response('{"merge":[],"remove":[],"compress":[]}')
-            client.classify_batch(["条目A"], 0, "MEMORY", system_prompt)
+    def test_guard_returns_error_field_returns_error(self, app_config: AppConfig) -> None:
+        """guard 返回含 error 字段的响应时，classify_batch 透传 error 字典。"""
+        client = LLMClient(app_config)
+        system_prompt = build_system_prompt("MEMORY", 0)
+        with patch(
+            "memory_cleanup.adapters.llm_client.guarded_chat_completion",
+            return_value={"error": "上游护栏返回错误"},
+        ):
+            result = client.classify_batch(["条目A"], 0, "MEMORY", system_prompt)
+        assert "error" in result
 
-        assert mock_sleep.call_count == 0
+    def test_all_retries_exhausted_returns_error(self, app_config: AppConfig) -> None:
+        client = LLMClient(app_config)
+        system_prompt = build_system_prompt("MEMORY", 0)
+        with patch(
+            "memory_cleanup.adapters.llm_client.guarded_chat_completion",
+            side_effect=ConnectionError("网络错误"),
+        ):
+            result = client.classify_batch(["条目A"], 0, "MEMORY", system_prompt)
+        assert "error" in result
 
 
 class TestLLMClientParseJson:
@@ -199,28 +217,27 @@ class TestLLMClientClassifyBatch:
         assert "error" not in result
 
     def test_retry_on_failure(self, app_config: AppConfig) -> None:
-        """HTTP 失败后应重试，第3次成功则返回正确结果。"""
+        """guard 返回含 error 字段的响应时 classify_batch 透传 error 字典。"""
         client = LLMClient(app_config)
-        success_resp = self._make_response('{"merge":[],"remove":[],"compress":[]}')
         system_prompt = build_system_prompt("MEMORY", 0)
 
-        with patch("requests.post") as mock_post:
-            mock_post.side_effect = [
-                Exception("连接失败"),
-                Exception("超时"),
-                success_resp,
-            ]
+        with patch(
+            "memory_cleanup.adapters.llm_client.guarded_chat_completion",
+            return_value={"error": "LLM call / JSON parse failed after 3 attempts"},
+        ):
             result = client.classify_batch(["条目A"], 0, "MEMORY", system_prompt)
 
-        assert "error" not in result
-        assert mock_post.call_count == 3
+        assert "error" in result
 
     def test_all_retries_exhausted(self, app_config: AppConfig) -> None:
-        """3次全部失败应返回 error 字典。"""
+        """guard 全部失败后 classify_batch 返回 error 字典。"""
         client = LLMClient(app_config)
         system_prompt = build_system_prompt("MEMORY", 0)
 
-        with patch("requests.post", side_effect=Exception("网络错误")):
+        with patch(
+            "memory_cleanup.adapters.llm_client.guarded_chat_completion",
+            side_effect=ConnectionError("网络错误"),
+        ):
             result = client.classify_batch(["条目A"], 0, "MEMORY", system_prompt)
 
         assert "error" in result
