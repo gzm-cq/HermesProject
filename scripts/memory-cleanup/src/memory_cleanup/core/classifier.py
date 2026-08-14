@@ -95,6 +95,28 @@ def _classify_single_round(
     all_hindsight: list[dict] = []
     all_flagged: list[dict] = []
 
+    # 归一化 LLM 返回的 merge/remove/compress/hindsight 字段，
+    # 防止 LLM 返回 [1,2,3] 裸索引而非 [{"indices":[...]}] 格式导致崩溃。
+    # 定义在函数级以便单条重试与批量路径共用。
+    def _normalize_merge(items: list) -> list[dict]:
+        result: list[dict] = []
+        for item in items:
+            if isinstance(item, dict):
+                result.append(item)
+            elif isinstance(item, (int, list)):
+                indices = [item] if isinstance(item, int) else list(item)
+                result.append({"indices": indices, "reason": "auto-normalized"})
+        return result
+
+    def _normalize_index(items: list) -> list[dict]:
+        result: list[dict] = []
+        for item in items:
+            if isinstance(item, dict):
+                result.append(item)
+            elif isinstance(item, int):
+                result.append({"index": item})
+        return result
+
     def _classify_one(batch: list[str], offset: int) -> dict[str, Any]:
         system_prompt = build_system_prompt(source_type, offset)
         return llm_client.classify_batch(batch, offset, source_type, system_prompt)
@@ -119,10 +141,10 @@ def _classify_single_round(
                     single_prompt = build_system_prompt(source_type, idx)
                     single_result = llm_client.classify_batch([entry], idx, source_type, single_prompt)
                     if "error" not in single_result:
-                        all_merge.extend(single_result.get("merge", []))
-                        all_remove.extend(single_result.get("remove", []))
-                        all_compress.extend(single_result.get("compress", []))
-                        all_hindsight.extend(single_result.get("hindsight", []))
+                        all_merge.extend(_normalize_merge(single_result.get("merge", [])))
+                        all_remove.extend(_normalize_index(single_result.get("remove", [])))
+                        all_compress.extend(_normalize_index(single_result.get("compress", [])))
+                        all_hindsight.extend(_normalize_index(single_result.get("hindsight", [])))
                         retry_ok += 1
                     else:
                         retry_fail += 1
@@ -136,27 +158,6 @@ def _classify_single_round(
                     offset, offset + len(batch) - 1, retry_ok, retry_fail,
                 )
                 continue
-            # 归一化 LLM 返回的 merge/remove/compress/hindsight 字段，
-            # 防止 LLM 返回 [1,2,3] 裸索引而非 [{"indices":[...]}] 格式导致崩溃
-            def _normalize_merge(items: list) -> list[dict]:
-                result: list[dict] = []
-                for item in items:
-                    if isinstance(item, dict):
-                        result.append(item)
-                    elif isinstance(item, (int, list)):
-                        indices = [item] if isinstance(item, int) else list(item)
-                        result.append({"indices": indices, "reason": "auto-normalized"})
-                return result
-
-            def _normalize_index(items: list) -> list[dict]:
-                result: list[dict] = []
-                for item in items:
-                    if isinstance(item, dict):
-                        result.append(item)
-                    elif isinstance(item, int):
-                        result.append({"index": item})
-                return result
-
             all_merge.extend(_normalize_merge(result.get("merge", [])))
             all_remove.extend(_normalize_index(result.get("remove", [])))
             all_compress.extend(_normalize_index(result.get("compress", [])))

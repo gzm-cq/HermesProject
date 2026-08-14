@@ -73,7 +73,7 @@ else
 
     # 发送失败通知
     if command -v lark-cli &>/dev/null; then
-        cron_notify "⚠️ 记忆清理失败" "memory-cleanup-daily 执行失败 (exit=$RC)" || true
+        cron_notify "⚠️ 记忆清理失败" "memory-cleanup 执行失败 (exit=$RC)" || true
     fi
 fi
 
