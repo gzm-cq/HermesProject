@@ -56,6 +56,7 @@ desktop.ini
 .qoder/repowiki/
 .qoder/settings.local.json
 
+<<<<<<< Updated upstream
 # === Agent 工具缓存 ===
 .opencode/
 
@@ -63,6 +64,10 @@ desktop.ini
 state/
 # 熔断器运行时状态文件（自动更新，不应纳入版本控制）
 circuit_breaker.json
+=======
+# === 项目运行时产物 ===
+state/
+>>>>>>> Stashed changes
 search_cache/
 memory/
 test_output.txt
@@ -70,6 +75,7 @@ test_outputs/
 *.db
 *.sqlite
 *.log
+<<<<<<< Updated upstream
 data/
 logs/
 
@@ -82,6 +88,8 @@ tmp_*.md
 # === 知识树调试探针（kt_probe* 一次性排查用，不纳入版本控制）===
 kt_probe*.py
 kt_probe*.sh
+=======
+>>>>>>> Stashed changes
 
 # === 临时文件 ===
 *.tmp

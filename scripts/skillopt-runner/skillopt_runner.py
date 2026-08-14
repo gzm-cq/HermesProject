@@ -357,35 +357,44 @@ def harvest_hermes_sessions(since_iso: str | None, max_sessions: int = 0) -> lis
         )
 
     # ── 格式1: *.jsonl（旧格式，每行一条 JSON） ──
-    # 增量模式：跳过 .jsonl 文件扫描，state.db 已提供完整数据
-    if not since_iso:
-        for p in session_dir.glob('*.jsonl'):
-            session_id = p.stem
-            messages: list[dict] = []
+    for p in session_dir.glob('*.jsonl'):
+        # 增量模式：跳过 mtime 早于 since_iso 的文件（未修改的旧 session）
+        if since_iso:
             try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            messages.append(json.loads(line))
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-            except Exception as e:
-                print(f'Warning: failed to parse {p}: {e}, skipping')
-                continue
+                stat = p.stat()
+                if stat.st_mtime > 0:
+                    from datetime import datetime as _dt, timezone as _tz
+                    file_ended_at = _dt.fromtimestamp(stat.st_mtime, tz=_tz.utc).isoformat()
+                    if file_ended_at < since_iso:
+                        continue
+            except OSError:
+                pass
+        session_id = p.stem
+        messages: list[dict] = []
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        messages.append(json.loads(line))
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+        except Exception as e:
+            print(f'Warning: failed to parse {p}: {e}, skipping')
+            continue
 
-            if len(messages) == 0:
-                continue
+        if len(messages) == 0:
+            continue
 
-            first = messages[0]
-            started_at = first.get('timestamp', '')
-            last_msg = messages[-1]
-            ended_at = last_msg.get('timestamp', started_at)
+        first = messages[0]
+        started_at = first.get('timestamp', '')
+        last_msg = messages[-1]
+        ended_at = last_msg.get('timestamp', started_at)
 
-            if since_iso and ended_at and ended_at < since_iso:
-                continue
+        if since_iso and ended_at and ended_at < since_iso:
+            continue
 
         project = first.get('platform') or 'hermes-cli'
         user_prompts: list[str] = []
