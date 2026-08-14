@@ -804,3 +804,134 @@ class TestPatchSkillHermes:
         backups = list((tmp_hermes / "skillopt" / "backups").glob("test-skill_*.md.bak"))
         assert len(backups) == 1
         assert backups[0].read_text(encoding="utf-8") == self.SKILL_WITH_FM_BODY
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P2-3 写回后自动验证：validate_patched_skill + 集成
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestValidatePatchedSkill:
+
+    VALID = "---\nname: ok-skill\ndescription: valid test\n---\n\n# Body\n"
+
+    def test_accepts_valid_skill(self):
+        ok, reason = sr.validate_patched_skill(self.VALID)
+        assert ok is True
+        assert reason == "OK"
+
+    def test_rejects_missing_name(self):
+        ok, reason = sr.validate_patched_skill(
+            "---\ndescription: only desc\n---\n\n# Body\n"
+        )
+        assert ok is False
+        assert "name" in reason
+
+    def test_rejects_missing_description(self):
+        ok, reason = sr.validate_patched_skill("---\nname: x\n---\n\n# Body\n")
+        assert ok is False
+        assert "description" in reason
+
+    def test_rejects_unclosed_frontmatter(self):
+        ok, reason = sr.validate_patched_skill("---\nname: x\ndescription: y\n\n# Body\n")
+        assert ok is False
+        assert "未闭合" in reason
+
+    def test_rejects_non_mapping_frontmatter(self):
+        # YAML list 而非 mapping —— 结构注入防护
+        ok, reason = sr.validate_patched_skill("---\n- a\n- b\n---\n\n# Body\n")
+        assert ok is False
+        assert "mapping" in reason
+
+    def test_rejects_empty_body(self):
+        ok, reason = sr.validate_patched_skill("---\nname: x\ndescription: y\n---\n\n  \n")
+        assert ok is False
+        assert "body" in reason
+
+    def test_accepts_body_with_yaml_fence(self):
+        # body 内嵌 ```yaml 代码块不破坏 frontmatter —— append-only 设计应放行
+        content = (
+            "---\nname: x\ndescription: y\n---\n\n# Body\n\n"
+            "```yaml\nname: not-frontmatter\n```\n"
+        )
+        ok, _ = sr.validate_patched_skill(content)
+        assert ok is True
+
+
+class TestPatchWriteBackVerify:
+
+    def test_missing_description_in_original_rejected(self, tmp_hermes):
+        """原文件 frontmatter 缺 description → 写回前验证拦截，文件不变且无审计产物。"""
+        skill_dir = tmp_hermes / "skills" / "no-desc"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        original = "---\nname: no-desc\n---\n\n# Body\n"
+        skill_md.write_text(original, encoding="utf-8")
+
+        state = {"skill_neg_feedback": {}, "skill_total_mentions": {}}
+        result = sr.patch_skill_hermes("no-desc", "# Update", state)
+
+        assert result is False
+        assert skill_md.read_text(encoding="utf-8") == original
+        # 写回前拦截：不产生 backup / diff 审计产物
+        assert not (tmp_hermes / "skillopt" / "backups").exists()
+
+    def test_patch_roundtrip_and_diff_audit(self, tmp_hermes):
+        """成功 patch 后: 磁盘内容==merged（写回后验证）、diff 审计文件含 before/after。"""
+        skill_dir = tmp_hermes / "skills" / "audit-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\nname: audit-skill\ndescription: audit test\n---\n\n# Original\n",
+            encoding="utf-8",
+        )
+
+        state = {"skill_neg_feedback": {"audit-skill": 2}, "skill_total_mentions": {}}
+        assert sr.patch_skill_hermes("audit-skill", "# New Rule", state) is True
+
+        # 写回后验证: 内容 == expected merged
+        expected = (
+            "---\nname: audit-skill\ndescription: audit test\n---\n\n"
+            "# Original\n\n# New Rule\n"
+        )
+        assert skill_md.read_text(encoding="utf-8") == expected
+
+        # diff 审计文件存在且同时含 before 文件名与新增行
+        diffs = list((tmp_hermes / "skillopt" / "backups").glob("audit-skill_*.diff"))
+        assert len(diffs) == 1
+        diff_text = diffs[0].read_text(encoding="utf-8")
+        assert "SKILL.md (before)" in diff_text
+        assert "SKILL.md (after)" in diff_text
+        assert "+# New Rule" in diff_text
+        # # Original 是 context 行（前导空格），diff 完整包含原始内容
+        assert "# Original" in diff_text
+
+    def test_negative_feedback_cleared_only_after_verify(self, tmp_hermes, monkeypatch):
+        """写回验证失败 → revert 且负反馈不清零（验证通过才走清零路径）。"""
+        skill_dir = tmp_hermes / "skills" / "rv-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        original = "---\nname: rv-skill\ndescription: rv test\n---\n\n# Body\n"
+        skill_md.write_text(original, encoding="utf-8")
+
+        state = {"skill_neg_feedback": {"rv-skill": 3}, "skill_total_mentions": {}}
+
+        real_read_text = pathlib.Path.read_text
+        real_write_text = pathlib.Path.write_text
+
+        def corrupted_write(self, data, *a, **kw):
+            real_write_text(self, data, *a, **kw)
+            # 写盘后立刻用损坏内容覆盖 —— 模拟写回验证失败（磁盘内容 != merged）
+            real_write_text(self, self.read_text(encoding="utf-8") + "CORRUPT", *a, **kw)
+
+        def read_text_returns_merged(self, *a, **kw):
+            return real_read_text(self, *a, **kw)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", read_text_returns_merged)
+        monkeypatch.setattr(pathlib.Path, "write_text", corrupted_write)
+
+        result = sr.patch_skill_hermes("rv-skill", "# Update", state)
+        assert result is False
+        # 负反馈保留（未走清零路径）
+        assert state["skill_neg_feedback"]["rv-skill"] == 3
+        # 文件被 revert（替换回 backup，不再含 CORRUPT）
+        assert "CORRUPT" not in skill_md.read_text(encoding="utf-8")

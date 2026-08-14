@@ -753,6 +753,44 @@ def _security_scan(content: str) -> tuple[bool, str]:
     return True, 'OK'
 
 
+def validate_patched_skill(content: str) -> tuple[bool, str]:
+    """写回后自动验证（P2-3）：SKILL.md 结构完整性检查。
+
+    在写入磁盘前对 merged 内容做防御性校验，防止 LLM edit 内容
+    破坏 frontmatter / YAML 结构，导致 Hermes 技能加载失败。
+
+    验证点：
+      1. frontmatter 存在且恰好一对 --- 分隔符
+      2. frontmatter YAML 可解析且为 mapping（防 YAML 语法错误/列表注入）
+      3. 必含 name + description（Hermes skill 加载的最低要求）
+      4. body 非空
+
+    Returns:
+        (is_valid, reason) — is_valid=True 表示结构完整；reason 为失败原因
+    """
+    stripped = content.lstrip()
+    if not stripped.startswith('---'):
+        return False, '缺少 frontmatter 起始分隔符'
+    first_end = stripped.find('---', 3)
+    if first_end <= 0:
+        return False, 'frontmatter 未闭合（缺少第二个 ---）'
+    fm_text = stripped[3:first_end]
+    body = stripped[first_end + 3:]
+    try:
+        fm = yaml.safe_load(fm_text)
+    except Exception as e:  # noqa: BLE001 — 任何 YAML 错误都拦截
+        return False, f'frontmatter YAML 解析失败: {e}'
+    if not isinstance(fm, dict):
+        return False, f'frontmatter 必须是 mapping，实际是 {type(fm).__name__}'
+    if not fm.get('name'):
+        return False, 'frontmatter 缺少 name 字段'
+    if not fm.get('description'):
+        return False, 'frontmatter 缺少 description 字段'
+    if not body.strip():
+        return False, 'body 为空'
+    return True, 'OK'
+
+
 def patch_skill_hermes(skill_name: str, new_content: str, state: dict | None = None) -> bool:
     """Patch skill via Hermes skill_manage tool — merge edit into existing SKILL.md.
     安全特性：保留 frontmatter + append 到正文 + atomic write + security scan + 回滚。
@@ -790,7 +828,13 @@ def patch_skill_hermes(skill_name: str, new_content: str, state: dict | None = N
     body_clean = body.lstrip('\n').rstrip('\n')
     merged = frontmatter + '\n\n' + body_clean + '\n\n' + new_content.strip() + '\n'
 
-    # backup
+    # ── P2-3 写回前自动验证：结构完整性检查，失败不写、不产生审计产物 ──
+    is_valid, v_reason = validate_patched_skill(merged)
+    if not is_valid:
+        print(f'VALIDATE: 拒绝写入 {skill_name}: {v_reason}')
+        return False
+
+    # backup + diff 审计
     ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H-%M-%S')
     safe_name = skill_name.replace('/', '-')
     backup_path = BACKUP_DIR / f'{safe_name}_{ts}.md.bak'
@@ -798,11 +842,42 @@ def patch_skill_hermes(skill_name: str, new_content: str, state: dict | None = N
     shutil.copy2(p, backup_path)
     print(f'BACKUP saved to {backup_path}')
 
+    # 生成 unified diff 供事后审查
+    import difflib
+    diff_lines = list(difflib.unified_diff(
+        existing.splitlines(keepends=True),
+        merged.splitlines(keepends=True),
+        fromfile=f'{skill_name}/SKILL.md (before)',
+        tofile=f'{skill_name}/SKILL.md (after)',
+        n=3,
+    ))
+    diff_text = ''.join(diff_lines) if diff_lines else '(no changes)\n'
+    patch_id = f'{safe_name}_{ts}'
+    diff_path = BACKUP_DIR / f'{patch_id}.diff'
+    try:
+        diff_path.write_text(diff_text, encoding='utf-8')
+        print(f'DIFF saved to {diff_path}')
+    except Exception:
+        pass  # diff 写失败不阻断主流程
+
     # 直接写文件（绕过 skill_manage 工具，no_agent cron 无 review turn）
     try:
         p.write_text(merged, encoding='utf-8')
     except Exception as e:
         print(f'ERROR: write SKILL.md failed: {e}')
+        shutil.copy2(backup_path, p)  # revert
+        return False
+
+    # ── P2-3 写回后验证：磁盘内容与 merged 必须一致，不一致回滚 ──
+    try:
+        written = p.read_text(encoding='utf-8')
+    except Exception as e:
+        print(f'ERROR: read-back verify failed: {e}')
+        shutil.copy2(backup_path, p)  # revert
+        return False
+    if written != merged:
+        print(f'ERROR: 写回验证失败 {skill_name}: 磁盘内容与期望不一致 '
+              f'({len(written)} vs {len(merged)} chars)')
         shutil.copy2(backup_path, p)  # revert
         return False
 
