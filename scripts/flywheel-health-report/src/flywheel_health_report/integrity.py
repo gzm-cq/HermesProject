@@ -22,7 +22,7 @@ from .parsers import _load_json
 
 def check_output_integrity(home: Path) -> list[dict]:
     """Check that critical output files exist and are valid JSON or JSONL."""
-    JSONL_FILES = {"clustering_baseline_prev.json"}
+    JSONL_FILES: set[str] = set()
     issues = []
     for fw, subpath in REQUIRED_OUTPUTS.items():
         fpath = home / subpath

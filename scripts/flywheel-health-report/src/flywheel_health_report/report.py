@@ -31,7 +31,6 @@ from .analyzers.token_usage import analyze_token_usage
 from .analyzers.sag import analyze_sag_contribution
 from .analyzers.global_errors import analyze_global_errors
 from .analyzers.kt_baseline import analyze_kt_baseline
-from .analyzers.clustering import analyze_clustering
 from .analyzers.kn_baseline import analyze_kn_baseline, analyze_data_credibility
 from .analyzers.kn_judge import run_judge_within_window, summarize_param_tuning
 from .analyzers.memory_cleanup import analyze_memory_cleanup
@@ -117,7 +116,6 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     sag_contr_issues, sag_contr_m, sag_contr_trend = analyze_sag_contribution(trace)
     error_issues, error_m, error_trend = analyze_global_errors(error_log_path, data_window)
     kt_issues, kt_m, kt_trend = analyze_kt_baseline(data_flywheel_dir)
-    cluster_issues, cluster_m, cluster_trend = analyze_clustering(data_flywheel_dir)
     kn_issues, kn_m, kn_trend = analyze_kn_baseline(kn_baseline_dir)
     memory_issues, memory_m, memory_trend = analyze_memory_cleanup(home / MEMORY_DIR_SUBPATH, data_window)
     se_issues, se_m, se_trend = analyze_self_evolving(home)
@@ -161,7 +159,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
 
     all_issues = (cron_issues + router_issues + skill_issues + skill_usage_issues +
                   token_issues + sag_contr_issues + error_issues + kt_issues +
-                  cluster_issues + kn_issues + memory_issues + se_issues +
+                  kn_issues + memory_issues + se_issues +
                   integrity_issues + dep_issues)
     p0 = [i for i in all_issues if i["severity"] == "P0"]
     p1 = [i for i in all_issues if i["severity"] == "P1"]
@@ -341,6 +339,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     L.append("")
     L.append("**KN LLM Judge 召回质量评估 (LLM 评估, 200 样本):**")
     _jerr = kn_judge_m.get("kn_judge_error")
+    _janom = kn_judge_m.get("kn_judge_anomaly", False)
     _jn = kn_judge_m.get("kn_judge_sample_count", 0)
     if _jerr and not _jn:
         L.append(f"- ⚠️ 本轮未执行 judge: `{_jerr}`（样本不足或配置未启用，反馈链路用 kn_avg_score 兜底）")
@@ -351,6 +350,8 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         _jci_hi = kn_judge_m.get("kn_judge_ci_hi")
         _jfb = "（kn_avg_score 兜底）" if kn_judge_m.get("kn_judge_fallback") else ""
         L.append(f"- 样本量: {_jn} 条 {_jfb}")
+        if _janom:
+            L.append(f"- ⚠️ judge 异常：样本量 {_jn} < 50 且相关率为极端值（全 1.0 或全 0.0），rate/avg 已置空，Auto-Tuner 跳过本轮反馈")
         if isinstance(_jrate, (int, float)):
             L.append(f"- 相关率 (评分 ≥ 0.5): {round(_jrate * 100, 1)}%")
         if isinstance(_javg, (int, float)):
@@ -506,20 +507,6 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         L.append(f"- 采集时间: {kt_m['collected_at']}")
     L.append("")
 
-    # 聚类
-    L.append("### 聚类飞轮")
-    L.append("")
-    if cluster_m.get("status") == "no_data":
-        L.append("- 无 clustering 数据")
-    else:
-        L.append(f"- 噪声率: {cluster_m['noise_rate']}%{' ⚠️' if cluster_m['noise_rate'] > TH['cluster_noise_rate_high'] else ''}")
-        L.append(f"- 聚类数: {cluster_m['cluster_count']} | Memory Links: {cluster_m['memory_links']}")
-        L.append(f"- 总单元: {cluster_m['total_units']}")
-        if "noise_rate_delta" in cluster_m:
-            L.append(f"- 噪声率变化: {cluster_m['noise_rate_delta']:+.1f}%")
-        L.append(f"- 时间: {cluster_m['timestamp']}")
-    L.append("")
-
     # 记忆清理
     L.append("### 记忆清理")
     L.append("")
@@ -588,7 +575,6 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     all_trends.update(router_trend)
     all_trends.update(skill_trend)
     all_trends.update(kt_trend)
-    all_trends.update(cluster_trend)
     all_trends.update(kn_trend)
     all_trends.update(memory_trend)
 
@@ -670,7 +656,6 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         # 参数优化状态（摘要，给趋势图/后续报告读）
         "param_tune_active_count": param_tuning_m.get("active_count", 0) if isinstance(param_tuning_m, dict) else 0,
         "param_tune_any_pending": bool(param_tuning_m.get("any_pending_restart", False)) if isinstance(param_tuning_m, dict) else False,
-        "cluster_noise_rate": cluster_m.get("noise_rate", 0),
         "kt_orphan_pct": kt_m.get("orphan_pct", 0),
         "memory_usage_pct": memory_m.get("memory_usage_pct", 0),
         "memory_user_usage_pct": memory_m.get("user_usage_pct", 0),
@@ -689,7 +674,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     L.append("## 💡 优化方向")
     L.append("")
     recs = generate_recommendations(
-        router_m, skill_m, kn_m, kt_m, cluster_m,
+        router_m, skill_m, kn_m, kt_m,
         all_issues, all_trends, credibility_warnings, zombie_files,
         token_m, sag_contr_m, skill_usage_m, error_m, memory_m
     )

@@ -12,7 +12,7 @@ from .config import TH, REC_TH
 
 def generate_recommendations(
     router_m: dict, skill_m: dict, kn_m: dict,
-    kt_m: dict, cluster_m: dict,
+    kt_m: dict,
     issues: list[dict], trends: dict[str, str],
     credibility_warnings: list[str], zombie_files: list[str],
     token_m: dict | None = None,
@@ -125,18 +125,6 @@ def generate_recommendations(
         conf = kt_m.get("avg_confidence", 0)
         if 0 < conf < REC_TH["kt_confidence_low"]:
             recs.append({"flywheel": "知识树", "desc": f"平均置信度 {conf} 偏低，建议检查知识点提取 prompt 或增加准入校验"})
-
-    # --- 聚类 ---
-    if cluster_m.get("status") != "no_data":
-        noise = cluster_m.get("noise_rate", 0)
-        if noise > REC_TH["cluster_noise_high_pct"]:
-            recs.append({"flywheel": "聚类", "desc": f"噪声率 {noise}% 偏高，建议调整 HDBSCAN min_cluster_size 或增加 min_llm_size"})
-        n_clusters = cluster_m.get("cluster_count", 0)
-        if n_clusters > 0 and n_clusters < REC_TH["cluster_min_count"]:
-            recs.append({"flywheel": "聚类", "desc": f"聚类数仅 {n_clusters}，可能过粗，建议降低 min_cluster_size 或增加样本量"})
-        links = cluster_m.get("memory_links", 0)
-        if 0 < links < REC_TH["cluster_links_min_count"]:
-            recs.append({"flywheel": "聚类", "desc": f"Memory Links 仅 {links}，聚类间关联稀疏，建议检查 memory_links 写入逻辑"})
 
     # --- 记忆清理 ---
     if memory_m and memory_m.get("status") != "no_data":

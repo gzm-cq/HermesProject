@@ -32,16 +32,12 @@ TH = {
     "skill_f1_low": 0.4,           # <0.4 -> P0
     "kn_avg_score_low": 0.5,       # <0.5 per dimension -> P1
     "kt_orphan_pct": 90,           # >90% -> P1
-    "cluster_noise_rate_high": 50, # >50% -> P1
     "unknown_dim_pct": 50,         # >50% -> P1
     # 任务可靠性
     "elapsed_deviation_sigma": 2.0, # >2 sigma from mean -> P1
     "elapsed_significant_pct": 50,  # 变化幅度 >50% 才报告
     # Router 分析
     "eval_window_sec": 5.0,         # 5 秒内的后继 mask 视为 eval 触发
-    # 聚类趋势
-    "trend_window_size": 3,         # 趋势基线滚动窗口大小
-    "noise_outlier_pp": 2.0,        # 噪声率离群阈值（pp）
     # 报告类型检测
     "boot_catchup_window_hours": 12,  # boot 后 12h 内视为 catch-up
     # 数据可信度 (标注不报警)
@@ -83,10 +79,6 @@ REC_TH = {
     "kt_orphan_high_pct": 50,
     "kt_fragment_high_count": 10,
     "kt_confidence_low": 0.8,
-    # 聚类
-    "cluster_noise_high_pct": 30,
-    "cluster_min_count": 3,
-    "cluster_links_min_count": 50,
     # 记忆
     "memory_usage_high_pct": 80,
     "memory_no_output_usage_pct": 50,
@@ -103,16 +95,15 @@ _TEST_QUERY_RE = re.compile(
 )
 
 # === Active cron jobs — all user cronjobs monitored by flywheel health report ===
-# 包括：核心飞轮 9 个 + 新增 3 个（dream-daily、每周深度研究、system-health-check）
+# 包括：核心飞轮 + 新增 3 个（dream-daily、每周深度研究、system-health-check）
+# 注：knowledge-navigation-baseline / run-skill-eval 已合并进 runner（阶段 0/1 内部执行），
+#     不再作为独立 cronjob 监控；clustering-analysis 已取消（测试无实际效果）。
 ACTIVE_CRON_JOBS = frozenset({
     # 核心飞轮
     "memory-cleanup",
-    "knowledge-navigation-baseline",
-    "run-skill-eval",
     "skillopt-nightly-run",
     "kn-router-health-check",
     "daily-learn",
-    "clustering-analysis",
     "knowledge-tree-consolidate",
     "knowledge-tree-kvector",
     # 新增：之前未跟踪的 job
@@ -132,12 +123,11 @@ EXCLUDED_STATE_FILES = frozenset({
 })
 
 # === Flywheel mapping ===
+# 注：knowledge-navigation-baseline / run-skill-eval 已合并进 runner 内部执行，
+#     不再出现在 cron state / jobs.json 中；clustering-analysis 已取消。
 _CRON_TO_FLYWHEEL = {
-    "knowledge-navigation-baseline": "Router",
     "kn-router-health-check": "Router",
-    "run-skill-eval": "Skill",
     "skillopt-nightly-run": "Skill",
-    "clustering-analysis": "聚类",
     "memory-cleanup": "记忆",
     "knowledge-tree-consolidate": "知识树",
     "knowledge-tree-kvector": "知识树",
@@ -148,7 +138,7 @@ _CRON_TO_FLYWHEEL = {
     "self-evolving-nightly": "能力飞轮",
 }
 
-_FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识路", "系统", "能力飞轮"]
+_FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "记忆", "知识路", "系统", "能力飞轮"]
 
 # === Required output files for integrity check ===
 # 注意：Router 的 baseline_latest.json 已从列表移除 —— knowledge-navigation-baseline
@@ -158,13 +148,12 @@ _FLYWHEEL_ORDER = ["Router", "Skill", "知识树", "聚类", "记忆", "知识�
 REQUIRED_OUTPUTS = {
     "Skill": Path("data") / "flywheel" / "skill_eval_prev.json",
     "知识树": Path("data") / "flywheel" / "kt-baseline-latest.json",
-    "聚类": Path("data") / "flywheel" / "clustering_baseline_prev.json",
 }
 
 # === Flywheel dependency chain (downstream -> upstream) ===
-FLYWHEEL_DEPENDENCIES = {
-    "skillopt-nightly-run": ["run-skill-eval"],
-}
+# 注：run-skill-eval 已合并进 runner 阶段 0 内部执行，不再有独立 cron state，
+#     skillopt-nightly-run 无上游 cron 依赖（由 runner-summary 登记时序勾稽）。
+FLYWHEEL_DEPENDENCIES: dict[str, list[str]] = {}
 
 # ============================================================
 # auto-tuner 路径常量（从 auto-tuner.py 搬入，统一管理）
