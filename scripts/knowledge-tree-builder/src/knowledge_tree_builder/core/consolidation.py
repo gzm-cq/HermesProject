@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import random
 from itertools import combinations
 from typing import Any
@@ -37,64 +38,126 @@ class ConsolidationEngine:
         self.db_url = db_url
 
     def collect_baseline_metrics(self, db_adapter) -> dict[str, float] | None:
-        """采集 4 个核心质量指标用于基线反馈。
+        """采集核心质量指标用于基线反馈。
 
-        指标：
-          avg_confidence   — knowledge_point 的平均 retrieval_confidence
-          total_kps        — knowledge_point 总数
-          fragment_domains — 知识点 < 3 的 domain 数
-          orphan_kps       — 无边 knowledge_point 数（不在 knowledge_tree_edges 中）
+        指标（均为 0~1 比例或计数）：
+          avg_confidence        — knowledge_point 的平均 retrieval_confidence
+          total_kps             — knowledge_point 总数
+          total_subjects        — 全部 subject 节点数（含嵌套子域，与 fragment_domains 同口径，供 over_split 率计算）
+          fragment_domains      — 知识点 < 3 的 domain 数
+          orphan_kps            — 无边 knowledge_point 数（不在 knowledge_tree_edges 中）
+          low_conf_kp_rate      — retrieval_confidence < 0.5 的 KP 占比（候选噪声代理）
+          pending_conflict_rate — knowledge_review_queue 待审冲突 / total_kps（矛盾积压代理）
+
+        所有指标均为「安全可计算」：单条 SQL 失败不影响其余指标（各自 try/except 兜底 0）。
+        新指标供飞轮 auto-tuner 的 K4~K9 闭环反馈使用。
 
         Returns:
-          dict with 4 float metrics, or None if no db_adapter
+          dict with float metrics, or None if no db_adapter
         """
         if db_adapter is None:
             return None
         cursor = db_adapter.cursor
 
         # 1. avg_confidence
-        cursor.execute("SELECT COALESCE(AVG(retrieval_confidence), 0.0) FROM knowledge_tree WHERE node_type = 'knowledge_point'")
-        avg_confidence = float(cursor.fetchone()[0] or 0.0)
+        avg_confidence = 0.0
+        try:
+            cursor.execute("SELECT COALESCE(AVG(retrieval_confidence), 0.0) FROM knowledge_tree WHERE node_type = 'knowledge_point'")
+            avg_confidence = float(cursor.fetchone()[0] or 0.0)
+        except Exception:
+            pass
 
         # 2. total_kps
-        cursor.execute("SELECT COUNT(*) FROM knowledge_tree WHERE node_type = 'knowledge_point'")
-        total_kps = float(cursor.fetchone()[0] or 0)
+        total_kps = 0.0
+        try:
+            cursor.execute("SELECT COUNT(*) FROM knowledge_tree WHERE node_type = 'knowledge_point'")
+            total_kps = float(cursor.fetchone()[0] or 0)
+        except Exception:
+            pass
 
-        # 3. fragment_domains: domains with < 3 total knowledge points recursively
-        cursor.execute("""
-            WITH RECURSIVE descendants AS (
-                SELECT id, parent_id, node_type FROM knowledge_tree WHERE parent_id IS NULL AND node_type = 'subject'
-                UNION ALL
-                SELECT child.id, child.parent_id, child.node_type FROM knowledge_tree child
-                JOIN descendants d ON child.parent_id = d.id
-            ),
-            kp_count AS (
-                SELECT d.id, COUNT(*) AS cnt FROM descendants d
-                JOIN knowledge_tree kp ON kp.parent_id = d.id
-                WHERE kp.node_type = 'knowledge_point'
-                GROUP BY d.id
+        # 3. total_subjects（全部 subject 节点数，含嵌套子域，与 fragment_domains 同口径）
+        total_subjects = 0.0
+        try:
+            cursor.execute(
+                "SELECT COUNT(*) FROM knowledge_tree WHERE node_type = 'subject'"
             )
-            SELECT COUNT(*) FROM kp_count WHERE cnt < 3
-        """)
-        fragment_domains = float(cursor.fetchone()[0] or 0)
+            total_subjects = float(cursor.fetchone()[0] or 0)
+        except Exception:
+            pass
 
-        # 4. orphan_kps — 没有边关联的知识点（不在 knowledge_tree_edges 中）
+        # 4. fragment_domains: domains with < 3 total knowledge points recursively
+        fragment_domains = 0.0
+        try:
+            cursor.execute("""
+                WITH RECURSIVE descendants AS (
+                    SELECT id, parent_id, node_type FROM knowledge_tree WHERE parent_id IS NULL AND node_type = 'subject'
+                    UNION ALL
+                    SELECT child.id, child.parent_id, child.node_type FROM knowledge_tree child
+                    JOIN descendants d ON child.parent_id = d.id
+                ),
+                kp_count AS (
+                    SELECT d.id, COUNT(*) AS cnt FROM descendants d
+                    JOIN knowledge_tree kp ON kp.parent_id = d.id
+                    WHERE kp.node_type = 'knowledge_point'
+                    GROUP BY d.id
+                )
+                SELECT COUNT(*) FROM kp_count WHERE cnt < 3
+            """)
+            fragment_domains = float(cursor.fetchone()[0] or 0)
+        except Exception:
+            pass
+
+        # 5. orphan_kps — 没有边关联的知识点（不在 knowledge_tree_edges 中）
         # 注意：列名为 from_node_id / to_node_id（见 database.py 建表），
         # 不可写成 from_id / to_id，否则 SQL 报 "column e.from_id does not exist"，
         # 基线采集被 except 静默跳过，导致 kt-baseline-latest.json 长期过期。
-        cursor.execute("""
-            SELECT COUNT(*) FROM knowledge_tree kp
-            LEFT JOIN knowledge_tree_edges e ON kp.id = e.from_node_id OR kp.id = e.to_node_id
-            WHERE kp.node_type = 'knowledge_point'
-            AND e.from_node_id IS NULL
-        """)
-        orphan_kps = float(cursor.fetchone()[0] or 0)
+        orphan_kps = 0.0
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) FROM knowledge_tree kp
+                LEFT JOIN knowledge_tree_edges e ON kp.id = e.from_node_id OR kp.id = e.to_node_id
+                WHERE kp.node_type = 'knowledge_point'
+                AND e.from_node_id IS NULL
+            """)
+            orphan_kps = float(cursor.fetchone()[0] or 0)
+        except Exception:
+            pass
+
+        # 6. low_conf_kp_rate — retrieval_confidence < 0.5 的 KP 占比（候选噪声代理）
+        #    供 K4/K6/K7/K8 闭环反馈（噪声率越低越好）。
+        low_conf_kp_rate = 0.0
+        try:
+            if total_kps > 0:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM knowledge_tree "
+                    "WHERE node_type = 'knowledge_point' AND retrieval_confidence < 0.5"
+                )
+                low_conf = float(cursor.fetchone()[0] or 0)
+                low_conf_kp_rate = low_conf / total_kps
+        except Exception:
+            pass
+
+        # 7. pending_conflict_rate — 待审冲突 / total_kps（矛盾积压代理）
+        #    供 K9 闭环反馈（积压率越低越好）。
+        pending_conflict_rate = 0.0
+        try:
+            if total_kps > 0:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM knowledge_review_queue WHERE status = 'pending_review'"
+                )
+                pending = float(cursor.fetchone()[0] or 0)
+                pending_conflict_rate = pending / total_kps
+        except Exception:
+            pass
 
         return {
-            "avg_confidence": avg_confidence,
+            "avg_confidence": round(avg_confidence, 4),
             "total_kps": total_kps,
+            "total_subjects": total_subjects,
             "fragment_domains": fragment_domains,
             "orphan_kps": orphan_kps,
+            "low_conf_kp_rate": round(low_conf_kp_rate, 4),
+            "pending_conflict_rate": round(pending_conflict_rate, 6),
         }
 
     def run(
@@ -107,7 +170,7 @@ class ConsolidationEngine:
         top_n: int = 5,
         db_adapter=None,
         min_domain_nodes: int = 0,          # 0 = 不启用 domain 合并
-        domain_merge_threshold: float = 0.6,
+        domain_merge_threshold: float = float(os.environ.get("KT_DOMAIN_MERGE_THRESHOLD", "0.6")),
     ) -> dict[str, Any]:
         """执行一次 consolidation。
 
@@ -684,7 +747,8 @@ class ConsolidationEngine:
         # ── 策略 2: 跨 subject 向量桥接 ──
         cursor.execute(
             "SELECT id, parent_id, k_vector::text FROM knowledge_tree "
-            "WHERE node_type='knowledge_point' AND k_vector IS NOT NULL"
+            "WHERE node_type='knowledge_point' AND k_vector IS NOT NULL "
+            "ORDER BY id"
         )
         kp_data: list[dict] = []
         for row in cursor.fetchall():
@@ -759,12 +823,11 @@ class ConsolidationEngine:
         for pid, kid_list in kp_by_pid.items():
             if len(kid_list) < 2:
                 continue
-            # 性能优化：同科超过 100 个 KPs 时随机采样 100 个，避免 O(n²) 性能问题
+            # 性能优化：同科超过 100 个 KPs 时取前 100 个（按 id 排序），避免 O(n²) 性能问题。
+            # 注意：高相似 KP 在入库时通常 id 相邻（同源/同批次），前缀取样能稳定命中高相似对；
+            # 原先基于 hash(frozenset()) 的随机种子取样会系统性错过这些高相似对，导致建边数为 0。
             if len(kid_list) > 100:
-                # 确定性种子：基于 kid_list 内容，保证同一输入同一输出
-                _seed = hash(frozenset(kid_list)) % (2**32)
-                rng = random.Random(_seed)
-                kid_list = rng.sample(kid_list, 100)
+                kid_list = kid_list[:100]
             for i, ka in enumerate(kid_list[:-1]):
                 va = all_kps.get(ka)
                 if va is None:

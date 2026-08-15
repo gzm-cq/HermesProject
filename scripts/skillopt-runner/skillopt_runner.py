@@ -65,7 +65,7 @@ except ImportError:
         _sys.path.insert(0, _parent)
     from hermes_common import bootstrap  # noqa: F401
 bootstrap()
-from hermes_common.ledger import append_ledger_event
+from hermes_common.ledger import append_ledger_event, recent_skill_patch_trend
 
 
 USAGE_FILE = HERMES_HOME / 'skills' / '.usage.json'
@@ -809,15 +809,26 @@ def validate_patched_skill(content: str) -> tuple[bool, str]:
     return True, 'OK'
 
 
-def patch_skill_hermes(skill_name: str, new_content: str, state: dict | None = None) -> bool:
+def patch_skill_hermes(skill_name: str, new_content: str, neg_before: Any | None = None) -> bool:
     """Patch skill via Hermes skill_manage tool — merge edit into existing SKILL.md.
     安全特性：保留 frontmatter + append 到正文 + atomic write + security scan + 回滚。
-    部署成功 → 自动清零该技能的累积负反馈。"""
+    部署成功 → 负反馈清零由主线程统一完成（F-7），此处仅记录账本事件。"""
     # 0. 安全扫描（先于文件操作，避免先备份后拒绝）
     is_safe, reason = _security_scan(new_content)
     if not is_safe:
         print(f'SECURITY: 拒绝写入 {skill_name}: {reason}')
         return False
+
+    # ── F-1 反向门控：读 ledger 中该 skill 近期修订「仍携带重负反馈才被打补丁」的比例，
+    #    过高说明自动改写反复打补丁仍不根治 → 暂停自动 patch，转人工审阅（best-effort）──
+    try:
+        _cnt, _high, _ratio = recent_skill_patch_trend(skill_name, window=10, neg_threshold=3)
+        if _cnt >= 3 and _ratio >= 0.5:
+            print(f"F-1 GATE: 暂停自动 patch {skill_name}: 近 {_cnt} 次修订中 {_high} 次"
+                  f"仍携带重负反馈(率 {_ratio:.0%}) ≥ 50%，转人工审阅")
+            return False
+    except Exception:
+        pass  # 门控异常不阻断主流程
 
     p = get_skill_path(skill_name)
     if not p:
@@ -901,21 +912,15 @@ def patch_skill_hermes(skill_name: str, new_content: str, state: dict | None = N
 
     print(f'SUCCESS: patch applied to {p}')
     # F-1 统一反馈账本：记录 SkillOpt 改写事件（跨循环关联 SAG 生产/消费质量）
-    _neg_before = None
-    if isinstance(state, dict):
-        _neg_before = state.get('skill_neg_feedback', {}).get(skill_name)
+    # neg_before 由主线程从 state 只读读取后传入（F-7 线程安全：子线程不触摸共享 state），
+    # 修复了此前 neg_before 恒为 None 导致 F-1 反向门控失效的问题。
+    # 部署成功后主线程统一清零负反馈（neg_after=0）。
     append_ledger_event('skillopt_patch', {
         'skill': skill_name,
-        'neg_before': _neg_before,
-        'neg_after': 0 if isinstance(state, dict) else None,
+        'neg_before': neg_before,
+        'neg_after': 0,
         'dry_run': False,
     })
-    # 部署成功 → 清零该技能负反馈（仅当传入 state 时；线程安全路径下由主线程统一合并，见 F-7）
-    if state is not None and skill_name in state.get('skill_neg_feedback', {}):
-        old_val = state['skill_neg_feedback'][skill_name]
-        state['skill_neg_feedback'][skill_name] = 0
-        save_state(state)
-        print(f'  → 负反馈清零: {skill_name} ({old_val} → 0)')
     return True
 
 def filter_digests_by_since(
@@ -1005,6 +1010,7 @@ def _optimize_one_skill(
     sleep_cfg: dict,
     *,
     dry_run: bool,
+    neg_before: Any | None = None,
 ) -> dict:
     """Run one skill through all batches. Thread-safe (F-7): 只操作线程本地数据，
     不修改共享 state / skill_last_run，返回 delta 供主线程合并，消除并发竞态。
@@ -1104,7 +1110,7 @@ def _optimize_one_skill(
         print(f'  [{skill_name}] ✅ Batch {batch_idx} passed!')
         applied = 0
         for edit in result.report.edits:
-            ok = patch_skill_hermes(skill_name, edit.content)
+            ok = patch_skill_hermes(skill_name, edit.content, neg_before=neg_before)
             if ok:
                 print(f'  [{skill_name}] ✅ Applied: {edit.target}/{edit.op}')
                 applied += 1
@@ -1167,10 +1173,14 @@ def _phase_optimize(
             # F-7: 传入线程本地所需的「该 skill 的 since / 重试池副本」，
             #       _optimize_one_skill 不再接触共享 state/skill_last_run。
             failed_in = state.get('failed_tasks', {}).get(skill_name, [])
+            # 只读读取该 skill 的负反馈值传入 worker（F-7：子线程不触摸共享 state，
+            # 修复 F-1 门控 neg_before 恒为 None 的问题）
+            neg_before = state.get('skill_neg_feedback', {}).get(skill_name)
             fut = ex.submit(
                 _optimize_one_skill,
                 skill_name, since, failed_in,
                 batches, sleep_cfg, dry_run=dry_run,
+                neg_before=neg_before,
             )
             futures[fut] = skill_name
 

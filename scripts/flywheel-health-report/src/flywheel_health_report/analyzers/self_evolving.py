@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,20 @@ _SE_BLOCK_RE = re.compile(
 )
 # 仅匹配 ts（用于从块文本里提取时间戳）
 _SE_TS_RE = re.compile(r'ts=([0-9T:+\-\.Z]+)')
+
+
+def _reflection_accept_rate(confidences: list[float]) -> float:
+    """反思置信度达标率：confidence >= 当前 KN_REFLECTION_CONFIDENCE 的占比。
+
+    该比率随阈值升高而下降，与 S1(confidence_threshold) 因果绑定：
+    auto-tuner 以 up_better 优化它时会把阈值推向使达标率合理的区间。
+    无反思数据时返回 0（而非 None），避免 auto-tuner 误判为「改善」伪优化。
+    """
+    if not confidences:
+        return 0.0
+    threshold = float(os.environ.get("KN_REFLECTION_CONFIDENCE", "0.6"))
+    accepted = sum(1 for c in confidences if c >= threshold)
+    return round(accepted / len(confidences), 4)
 
 
 def _parse_iso(ts: str) -> datetime | None:
@@ -61,6 +76,9 @@ def analyze_self_evolving(home: Path) -> tuple[list[dict], dict, dict]:
     applied_from_output = 0
     refined_not_applied = 0
     last_run_dt: datetime | None = None
+    # 闭环反馈采集：反思置信度 + 重组协同得分（供 S1/S2/S3-S6 auto-tuner 反馈）
+    reflection_confidences: list[float] = []
+    recombine_synergies: list[float] = []
     for f in output_files:
         try:
             rec = json.loads(f.read_text(encoding="utf-8"))
@@ -73,6 +91,18 @@ def analyze_self_evolving(home: Path) -> tuple[list[dict], dict, dict]:
             applied_from_output += 1
         elif rec.get("refined_content"):
             refined_not_applied += 1
+        # 反思置信度（RevisionOutput.to_dict() 写 confidence_score，向后兼容旧 confidence）
+        rev = rec.get("revision") or {}
+        if isinstance(rev, dict):
+            conf = rev.get("confidence_score")
+            if conf is None:
+                conf = rev.get("confidence")
+            if isinstance(conf, (int, float)):
+                reflection_confidences.append(float(conf))
+        # 重组协同得分（仅当驱动启用了重组并记录 recombination 时存在）
+        rcb = rec.get("recombination") or {}
+        if isinstance(rcb, dict) and isinstance(rcb.get("synergy_score"), (int, float)):
+            recombine_synergies.append(float(rcb["synergy_score"]))
         try:
             mtime = f.stat().st_mtime
         except OSError:
@@ -169,6 +199,16 @@ def analyze_self_evolving(home: Path) -> tuple[list[dict], dict, dict]:
         "ledger_events": ledger_events,
         "ledger_applied": ledger_applied,
         "ledger_blocked": ledger_blocked,
+        # 闭环反馈键（供 auto-tuner 消费，写入 daily summary；无数据时为 0 而非 None，避免伪优化）
+        "se_reflection_mean_confidence": (
+            round(sum(reflection_confidences) / len(reflection_confidences), 4)
+            if reflection_confidences else 0.0
+        ),
+        "se_reflection_accept_rate": _reflection_accept_rate(reflection_confidences),
+        "se_recombine_synergy_avg": (
+            round(sum(recombine_synergies) / len(recombine_synergies), 4)
+            if recombine_synergies else 0.0
+        ),
     }
 
     trend: dict = {}

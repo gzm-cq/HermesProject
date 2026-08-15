@@ -121,16 +121,32 @@ class RecombinationConfig:
         return cls()
 
     @classmethod
-    def from_env(cls) -> "RecombinationConfig":
+    def from_env(cls, base: "RecombinationConfig" = None) -> "RecombinationConfig":
         # 继承链：KN_REFLECTION_MODEL → SELF_EVOLVING_LLM_MODEL → LLM_MODEL_LIGHT → LLM_MODEL_MAIN
+        base = base or cls()
         llm_model = os.getenv("KN_REFLECTION_MODEL") or \
                     os.getenv("SELF_EVOLVING_LLM_MODEL") or \
                     os.getenv("LLM_MODEL_LIGHT") or \
                     os.getenv("LLM_MODEL_MAIN") or \
-                    cls.llm_model
+                    base.llm_model
+        # 闭环调优：auto-tuner 经 .env 下发 SE_RECOMBINE_* 阈值（S3-S6 候选参数）
+        # 未写入 env 的字段回落到 base（yaml 或默认值），保证 env 只做覆盖、不丢已有配置
+        def _f(env_name, default, caster):
+            v = os.getenv(env_name)
+            if v is None:
+                return default
+            try:
+                return caster(v)
+            except (TypeError, ValueError):
+                return default
         return cls(
-            llm_api_url=os.getenv("KN_REFLECTION_API_URL", cls.llm_api_url),
+            llm_api_url=os.getenv("KN_REFLECTION_API_URL", base.llm_api_url),
             llm_model=llm_model,
+            max_components=_f("SE_RECOMBINE_MAX_COMPONENTS", base.max_components, int),
+            semantic_similarity_threshold=_f("SE_RECOMBINE_SEMANTIC_SIM", base.semantic_similarity_threshold, float),
+            conflict_severity_threshold=_f("SE_RECOMBINE_CONFLICT_SEVERITY", base.conflict_severity_threshold, float),
+            jaccard_threshold_low=_f("SE_RECOMBINE_JACCARD_LOW", base.jaccard_threshold_low, float),
+            jaccard_threshold_high=_f("SE_RECOMBINE_JACCARD_HIGH", base.jaccard_threshold_high, float),
         )
 
 
@@ -507,7 +523,10 @@ class RecombinationOperator:
 
 def recombine(candidate_contents: List[str], task_context: str,
               config_path: str = None, **kwargs) -> RecombinationOutput:
+    # 先载入 yaml（文件级默认），再用 env 覆盖（SE_RECOMBINE_* 由 auto-tuner 经 .env 下发），
+    # 修复此前 from_env 为死代码、环境参数不生效的问题。kwargs 显式传参优先级最高。
     config = RecombinationConfig.from_yaml(config_path)
+    config = RecombinationConfig.from_env(base=config)
     for key, value in kwargs.items():
         if hasattr(config, key):
             setattr(config, key, value)
