@@ -120,6 +120,7 @@ EXCLUDED_STATE_FILES = frozenset({
     "cron-periodic-detect",
     "cron-periodic-dedup",
     "flywheel-health-report",
+    "deploy-cleanup-health-check",
 })
 
 # === Flywheel mapping ===
