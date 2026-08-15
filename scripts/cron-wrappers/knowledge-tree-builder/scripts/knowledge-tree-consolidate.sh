@@ -34,10 +34,11 @@ source venv/bin/activate
 export KT_LLM_MODEL="${KT_LLM_MODEL:-${LLM_MODEL_MAIN:-}}"
 
 # ===== 执行合并 =====
-cron_section "知识树 consolidate run (--merge-domains)"
-if python3 -m knowledge_tree_builder.cli consolidate run --merge-domains; then
+# --build-edges: 同步重建 KP 级关联边（阈值 0.65/0.65），防止孤立知识点率随新知识沉淀而回升
+cron_section "知识树 consolidate run (--merge-domains --build-edges)"
+if python3 -m knowledge_tree_builder.cli consolidate run --merge-domains --build-edges; then
     cron_ok "知识树合并完成"
-    _STEP_RESULTS+=("✅ 知识树 consolidate run --merge-domains")
+    _STEP_RESULTS+=("✅ 知识树 consolidate run --merge-domains --build-edges")
 else
     rc=$?
     cron_err "知识树合并失败 (exit=$rc)"

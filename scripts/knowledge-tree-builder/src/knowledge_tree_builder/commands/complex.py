@@ -162,8 +162,8 @@ def cmd_consolidate(
                     edge_result = _ce_engine.build_kp_edges(
                         adapter,
                         max_source_kps=50,
-                        vector_threshold=0.85,
-                        same_subject_threshold=0.95,
+                        vector_threshold=0.65,
+                        same_subject_threshold=0.65,
                         dry_run=dry_run,
                     )
                     print(f"   同源共现: {edge_result['source_edges']} 边")

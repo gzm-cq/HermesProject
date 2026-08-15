@@ -622,8 +622,8 @@ class ConsolidationEngine:
         db_adapter: Any,
         *,
         max_source_kps: int = 50,
-        vector_threshold: float = 0.85,
-        same_subject_threshold: float = 0.95,
+        vector_threshold: float = 0.65,
+        same_subject_threshold: float = 0.65,
         dry_run: bool = False,
     ) -> dict[str, int]:
         """构建 KP 级关联边（知识树知识点之间的直接关联）。
