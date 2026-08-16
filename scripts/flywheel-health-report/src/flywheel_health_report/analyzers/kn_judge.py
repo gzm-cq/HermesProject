@@ -247,12 +247,16 @@ def _judge_one_masked(rec: dict, config: dict | None) -> tuple[dict | None, Any]
     headers = {"Content-Type": "application/json"}
     if config.get("key"):
         headers["Authorization"] = f"Bearer {config['key']}"
+    # s-deepseek*/agnes 必须启用 thinking（业务硬约束）；max_tokens 已 16384>8192
+    _kj_model = config.get("model", "s-deepseek-v4-flash")
+    _kj_think = _kj_model.startswith(("s-deepseek", "agnes"))
     body = json.dumps({
-        "model": config.get("model", "s-deepseek-v4-flash"),
+        "model": _kj_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,
         "max_tokens": 16384,
         "response_format": {"type": "json_object"},
+        **({"thinking": {"type": "enabled"}} if _kj_think else {}),
     }).encode("utf-8")
     ctx = ssl.create_default_context()
     if os.environ.get("JUDGE_INSECURE", "").lower() in ("1", "true", "yes"):
@@ -497,36 +501,40 @@ def run_judge_within_window(
             "sample_count_kt": out.get("kn_judge_sample_count_kt"),
             "sample_count_sag": out.get("kn_judge_sample_count_sag"),
         })
-            # 持久化 baseline：将 judge 结果写入 baseline_latest.json，
-        # 替代已删除的 knowledge-navigation-baseline cron job。
-        if _save_baseline is not None and results:
-            try:
-                baseline_data: dict[str, Any] = {
-                    "_meta": {
-                        "generated_by": "run_judge_within_window",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "sample_count": len(results),
-                        "judge_missed": len(sample) - len(results),
-                    },
+
+    # 持久化 baseline：将 judge 结果写入 baseline_latest.json，
+    # 替代已删除的 knowledge-navigation-baseline cron job。
+    # 注意：不依赖「任一 mask 率非空」，只要本轮有 judge 结果就写——
+    # 否则低流量日（h/kt/sag 样本均 < mask_min_sample）any() 为 False，
+    # baseline 永不落盘，Router 基线比对随之失效。
+    if _save_baseline is not None and results:
+        try:
+            baseline_data: dict[str, Any] = {
+                "_meta": {
+                    "generated_by": "run_judge_within_window",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "sample_count": len(results),
+                    "judge_missed": len(sample) - len(results),
+                },
+            }
+            for i, rec in enumerate(sample):
+                if i >= len(results):
+                    break
+                score_dict = results[i]
+                query = rec.get("query_trunc", f"_rec_{i}")
+                baseline_data[query] = {
+                    "dimension": "judge",
+                    "avg_score": score_dict.get("overall", 0),
+                    "avg_hs_kept": int(rec.get("hs_kept", 0)),
+                    "avg_kt_kept": int(rec.get("kt_kept", 0)),
+                    "avg_sag_kept": int(rec.get("sag_kept", 0)),
+                    "avg_latency_ms": float(rec.get("latency_ms", 0)),
+                    "eval_counted_true": 1 if score_dict.get("overall", 0) >= 0.5 else 0,
+                    "eval_counted_false": 0 if score_dict.get("overall", 0) >= 0.5 else 1,
                 }
-                for i, rec in enumerate(sample):
-                    if i >= len(results):
-                        break
-                    score_dict = results[i]
-                    query = rec.get("query_trunc", f"_rec_{i}")
-                    baseline_data[query] = {
-                        "dimension": "judge",
-                        "avg_score": score_dict.get("overall", 0),
-                        "avg_hs_kept": int(rec.get("hs_kept", 0)),
-                        "avg_kt_kept": int(rec.get("kt_kept", 0)),
-                        "avg_sag_kept": int(rec.get("sag_kept", 0)),
-                        "avg_latency_ms": float(rec.get("latency_ms", 0)),
-                        "eval_counted_true": 1 if score_dict.get("overall", 0) >= 0.5 else 0,
-                        "eval_counted_false": 0 if score_dict.get("overall", 0) >= 0.5 else 1,
-                    }
-                _save_baseline(baseline_data)
-            except Exception as _bl_exc:
-                sys.stderr.write(f"[kn_judge] save_baseline failed: {_bl_exc}\n")
+            _save_baseline(baseline_data)
+        except Exception as _bl_exc:
+            sys.stderr.write(f"[kn_judge] save_baseline failed: {_bl_exc}\n")
 
 
     return out

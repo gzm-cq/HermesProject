@@ -60,6 +60,17 @@ JSON_ONLY_SYSTEM = (
 # max_tokens 默认下限：推理模型 reasoning 会占用 token 预算，偏小会导致 content 为空。
 _DEFAULT_MAX_TOKENS_FLOOR = 16384
 
+# 必须使用 thinking 且 max_tokens>8192 的推理模型前缀（s-deepseek 系列 / agnes 系列 / deepseek-v4-flash）。
+# 这些模型在网关侧为推理模型：禁用 thinking 会跳过 reasoning、输出质量下降；
+# 且推理模型需要足够 token 预算容纳 reasoning 过程。
+_THINKING_REQUIRED_PREFIXES = ("s-deepseek", "agnes", "deepseek-v4-flash")
+_THINKING_MODEL_MIN_TOKENS = 16384  # > 8192，满足业务硬约束
+
+
+def _is_thinking_required_model(model: str) -> bool:
+    """判断模型是否必须使用 thinking（s-deepseek*/agnes*/deepseek-v4-flash*）。"""
+    return bool(model) and model.startswith(_THINKING_REQUIRED_PREFIXES)
+
 
 def _thinking_disabled() -> bool:
     """是否禁用推理模型思考过程（thinking）。默认开启，可用 env 回退关闭。"""
@@ -105,7 +116,8 @@ def build_chat_body(
         json_mode: 是否 JSON 输出模式（注入 JSON-only 系统约束 + response_format）
         max_tokens_floor: max_tokens 下限（默认 16384）
         max_tokens_cap: max_tokens 上限（可选）
-        disable_thinking: 是否禁用推理模型思考；None 时按环境变量 _thinking_disabled() 决定
+        disable_thinking: 是否禁用推理模型思考；None 时按环境变量 _thinking_disabled() 决定。
+            注意：s-deepseek*/agnes*/deepseek-v4-flash 模型**强制启用 thinking**（业务硬约束），此参数对其无效。
 
     Returns:
         可直接 json.dumps 的请求体 dict
@@ -117,9 +129,14 @@ def build_chat_body(
         "max_tokens": clamp_max_tokens(max_tokens, lo=max_tokens_floor, hi=max_tokens_cap),
     }
 
-    # 禁用推理模型的思考过程(thinking)，避免 reasoning 占满 token 预算导致
-    # content 为空 / 输出 "Thinking Process:..." 而非 JSON。
-    if disable_thinking if disable_thinking is not None else _thinking_disabled():
+    # s-deepseek*/agnes*/deepseek-v4-flash：业务硬约束 —— 必须启用 thinking，且 max_tokens>8192。
+    # 推理模型禁用 thinking 会跳过 reasoning、输出质量下降；且需足够 token 预算容纳 reasoning。
+    if _is_thinking_required_model(model):
+        body["thinking"] = {"type": "enabled"}
+        if body["max_tokens"] <= 8192:
+            body["max_tokens"] = _THINKING_MODEL_MIN_TOKENS
+    elif disable_thinking if disable_thinking is not None else _thinking_disabled():
+        # 其他模型：默认禁用思考，避免 reasoning 占满 token 预算导致 content 为空
         body["thinking"] = {"type": "disabled"}
 
     # JSON 场景：注入强约束 system 消息，抑制推理模型输出思考过程/解释/markdown。

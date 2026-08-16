@@ -29,16 +29,22 @@ def call_llm_for_entity(
     )
     for attempt in range(retries):
         try:
+            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
+            _e_think = (model or "").startswith(("s-deepseek", "agnes"))
+            _e_body = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if _e_think:
+                _e_body["thinking"] = {"type": "enabled"}
+                _e_body["max_tokens"] = 16384
             resp = requests.post(
                 api_url,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
                 },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
+                json=_e_body,
                 timeout=(10, 120),
             )
             resp.raise_for_status()
@@ -133,16 +139,22 @@ def call_llm_for_entity_with_causal(
 
     for attempt in range(retries):
         try:
+            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
+            _e_think = (model or "").startswith(("s-deepseek", "agnes"))
+            _e_body = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if _e_think:
+                _e_body["thinking"] = {"type": "enabled"}
+                _e_body["max_tokens"] = 16384
             resp = requests.post(
                 api_url,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
                 },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
+                json=_e_body,
                 timeout=(10, 120),
             )
             resp.raise_for_status()

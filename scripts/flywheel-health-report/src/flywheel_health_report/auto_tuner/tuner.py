@@ -44,6 +44,9 @@ from ..config import (
     PARAM_DEFS, FEEDBACK_KEYS, KN_JUDGE_CFG,
     NO_CHANGE_LOCK_THRESHOLD, CONSECUTIVE_DEGRADATION_SUSPEND_THRESHOLD,
     COOLDOWN_DAYS_AFTER_APPLY,
+    PARAM_GROUPS, GROUP_BY_ID, PARAM_TO_GROUP,
+    GROUP_TUNING_ENABLED, MAX_GROUPS_PER_RUN,
+    RECALL_GUARDS,
 )
 from .notifier import _send_lark, notify_restart_reminder, notify_gateway_restart
 
@@ -101,6 +104,10 @@ def _is_param_permanently_skipped(name: str) -> bool:
 # KN LLM Judge 评估样本阈值（与 kn_judge.py KN_JUDGE_CFG 对齐，由配置驱动）
 _KN_JUDGE_MIN_SAMPLE = int(KN_JUDGE_CFG.get("min_sample", 20))
 _KN_JUDGE_MASK_MIN_SAMPLE = int(KN_JUDGE_CFG.get("mask_min_sample", 12))
+
+# #5 严重度快车道阈值：mask 路 relevant_rate < 此值视为强负信号，优先调优。
+# relevant_rate = 该路 judged 中评分>=0.5 的占比，<0.5 即多数不相关。
+SEVERITY_FLOOR = 0.5
 # 首次调优用更大步幅快速探明梯度方向（粗→细搜索的第一步）
 COARSE_STEP_FACTOR = 2.0
 
@@ -663,8 +670,14 @@ def _parse_feedback(feedback_csv: str) -> List[Tuple[str, str]]:
             continue
         if name in ("kn_avg_score",):
             out.append((name, "up_better"))
-        elif name in ("router_empty_pct", "sag_merge_zero_pct"):
+        elif name in ("router_empty_pct", "sag_merge_zero_pct", "kt_orphan_pct",
+                    "kt_fragment_domains", "kt_candidate_noise_rate",
+                    "kt_over_split_rate", "kt_low_conf_kp_rate",
+                    "kt_pending_conflict_rate"):
             out.append((name, "down_better"))
+        elif name in ("se_reflection_accept_rate", "se_reflection_mean_confidence",
+                      "se_recombine_synergy_avg"):
+            out.append((name, "up_better"))
         elif name in ("sag_total_kept", "memory_hindsight_count",
                       "sag_on_pct", "sag_recall_count",
                       "skill_f1", "skill_active_count", "skill_used_count",
@@ -707,145 +720,232 @@ def _metrics_unchanged(mb: Dict[str, Any], ma: Dict[str, Any]) -> bool:
     return all(abs(float(mb[k]) - float(ma[k])) < 1e-9 for k in keys)
 
 
+def _get_all_pending_tunes() -> List[Dict[str, Any]]:
+    """返回日志里全部非 dry_run 且 status==pending_restart 的记录。
+
+    分组并行下每轮会写多条 pending 记录（每组一条），必须全部遍历回填
+    metrics_after，否则只有最后一条能被旧逻辑处理（见 _get_last_tune_any 只取最后一条）。"""
+    out: List[Dict[str, Any]] = []
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("dry_run"):
+                    continue
+                if rec.get("status") == "pending_restart":
+                    out.append(rec)
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def _compute_improvement(rec: Dict[str, Any], metrics_after: Dict[str, Any]) -> Optional[bool]:
+    """判定一条调优记录（单参或组）生效后的改善情况。
+
+    返回 True=改善 / False=恶化 / None=未知（反馈缺失或样本不可信）。
+    - group 记录：用 GROUP_BY_ID[gid].feedback_keys() 取反馈键并集；
+    - 单参记录：用 PARAM_DEFS 里该参数 feedback_csv。
+    旧逻辑只用 last.get("parameter") 查 PARAM_DEFS，对 group 记录（parameter=gid
+    不在 PARAM_DEFS）会查不到 → 永远判为「改善」，这是分组并行退化的根因之一。"""
+    mb = rec.get("metrics_before") or {}
+    gid = rec.get("group")
+    feeds: List[Tuple[str, str]] = []
+    if gid and gid in GROUP_BY_ID:
+        g = GROUP_BY_ID[gid]
+        for k in g.feedback_keys():
+            d = _feedback_dir(k)
+            if d:
+                feeds.append((k, d))
+    else:
+        pdef = next((p for p in PARAM_DEFS if p[0] == rec.get("parameter", "")), None)
+        if pdef:
+            feeds = _parse_feedback(pdef[5])
+    # P4（重大修复）：metrics_after 与 metrics_before 完全一致 → 重启后指标无任何变化。
+    # 这通常意味着「gateway 未实际重启」或「日期错配指向同一报告」，
+    # 此时同值会让所有 _is_metric_improved 返回 True（同值=stable 改善），
+    # 使 direction 永远同向、degradation_count 永远不增长。判为「未知」而非「改善」。
+    if _metrics_unchanged(mb, metrics_after):
+        return None
+    has_subjective_any = any(n in _KN_JUDGE_SUBJECTIVE_KEYS for n, _ in feeds)
+    skipped_untrusted = False
+    ic = tc = 0
+    has_any = False
+    for name, d in feeds:
+        tc += 1
+        # 对应路 judge 样本不足 → 跳过该主观反馈键，避免小样本噪声驱动方向
+        if name in _KN_JUDGE_SUBJECTIVE_KEYS and not _feedback_key_trusted(name, mb, metrics_after):
+            skipped_untrusted = True
+            continue
+        om = mb.get(name)
+        nm = metrics_after.get(name)
+        if om is None or nm is None:
+            continue
+        has_any = True
+        try:
+            om_f, nm_f = float(om), float(nm)
+        except (TypeError, ValueError):
+            continue
+        if _is_metric_improved(name, d, om_f, nm_f):
+            ic += 1
+    if not has_any:
+        # 修复：无反馈数据时返回 None（未知）而非 True（改善），
+        # 避免零反馈组被判为改善 → degradation_count 永不增长 → 永不回滚。
+        return None
+    return ic >= max(tc / 2, 1)
+
+
+def _apply_tune_result_to_state(state: Dict[str, Any], rec: Dict[str, Any],
+                               improved: bool) -> Dict[str, Any]:
+    """把一条已确认生效（applied + 改善判定）的调优结果写回 state（含连续恶化回滚）。
+
+    - group 记录：逐成员更新 state[member]（复用 update_state 的收敛/锁/恶化逻辑），
+      并同步组级 gstate（no_change_count / last_values），保证退化能被检测与回滚。
+    - 单参记录：等价于原逻辑，写回 state[parameter]。"""
+    gid = rec.get("group")
+    if gid and gid in GROUP_BY_ID:
+        g = GROUP_BY_ID[gid]
+        old_values = rec.get("old_values") or {}
+        new_values = rec.get("new_values") or {}
+        gstate = _ensure_gstate(state, gid)
+        for m in g.members:
+            if m not in new_values:
+                continue
+            old_v = old_values.get(m)
+            new_v = new_values[m]
+            last_dir = "up" if (new_v > old_v if old_v is not None else False) else "down"
+            prev_suspended = bool((state.get(m) or {}).get("suspended", False))
+            state = update_state(
+                state, m, last_dir, new_v,
+                metrics_improved=improved, no_change=(old_v == new_v),
+                tune_date=rec.get("date", ""), old_value=old_v,
+                last_direction_record=(state.get(m) or {}).get("last_direction"),
+            )
+            now_suspended = bool((state.get(m) or {}).get("suspended", False))
+            if now_suspended and not prev_suspended:
+                pst = state.setdefault(m, {})
+                baseline = pst.get("best_value")
+                if baseline is None:
+                    baseline = pst.get("initial_value")
+                rollback_ok = rollback_param_to_baseline(m, baseline)
+                pst["rolled_back_at"] = _now_iso()
+                pst["rolled_back_to"] = baseline
+                pst["rollback_ok"] = rollback_ok
+        # 组级记账
+        if improved:
+            gstate["no_change_count"] = 0
+        else:
+            gstate["no_change_count"] = int(gstate.get("no_change_count", 0)) + 1
+        gstate["last_direction"] = "up" if improved else "down"
+        gstate["last_tune_date"] = rec.get("date", "")
+        for m in g.members:
+            if m in old_values:
+                gstate["last_values"][m] = old_values[m]
+        return state
+    # 单参
+    param = rec.get("parameter", "")
+    old_v = rec.get("old_value")
+    new_v = rec.get("new_value")
+    last_dir = rec.get("direction", "up")
+    tune_date = rec.get("date", "")
+    last_dir_osc = (state.get(param) or {}).get("last_direction")
+    prev_suspended = bool((state.get(param) or {}).get("suspended", False))
+    new_state = update_state(
+        state, param, last_dir, new_v,
+        metrics_improved=improved, no_change=(old_v == new_v),
+        tune_date=tune_date, old_value=old_v,
+        last_direction_record=last_dir_osc,
+    )
+    # 连续恶化触发 suspend 的「上升沿」→ 把 .env 还原到 initial_value 基线。
+    # 用上升沿（False→True）而非 now_suspended 判定，保证只回滚一次。
+    now_suspended = bool((new_state.get(param) or {}).get("suspended", False))
+    if now_suspended and not prev_suspended:
+        pst = new_state.setdefault(param, {})
+        baseline = pst.get("best_value")
+        if baseline is None:
+            baseline = pst.get("initial_value")
+        rollback_ok = rollback_param_to_baseline(param, baseline)
+        pst["rolled_back_at"] = _now_iso()
+        pst["rolled_back_to"] = baseline
+        pst["rollback_ok"] = rollback_ok
+    return new_state
+
+
 def handle_pending_restart() -> bool:
     """main() 第一步调用。
-    返回 True = 有 pending / 刚处理完生效的，本次 **跳过新调优**。
-    返回 False = 没有未完成的，允许本次做新调优。"""
-    last = _get_last_tune_any()
-    if not last:
-        return False
-    status = last.get("status", "")
-    if status != "pending_restart":
-        # 上次不是 pending_restart；但如果是今天 applied 的，也走冷却
-        if status == "applied" and last.get("date") == _report_date_today() and COOLDOWN_DAYS_AFTER_APPLY >= 0:
+
+    新模型（分组并行）：遍历日志里**全部** status==pending_restart 的记录，
+    逐条验证 gateway 是否已重启 + 报告日期是否已推进到调优日之后，
+    是则回填 metrics_after 并判定改善、写回 state。legacy 单参模型每轮只写一条
+    pending，等价于只处理最后一条，行为不变。
+
+    返回 True = 本轮跳过新调优（仍有未验证的 pending，或本轮已确认生效进入冷却）。
+    返回 False = 没有未完成的 pending，允许本次做新调优。"""
+    pending = _get_all_pending_tunes()
+    if not pending:
+        # 没有 pending：但若点位是今天刚 applied，仍走冷却
+        last = _get_last_tune_any()
+        if last and last.get("status") == "applied" and \
+                last.get("date") == _report_date_today() and COOLDOWN_DAYS_AFTER_APPLY >= 0:
             log_info(f"上次调优({last.get('parameter')})今天刚确认生效，进入冷却期，跳过新调优")
             return True
         return False
 
-    # ------------ pending_restart 处理流程 ------------
-    param = last.get("parameter", "")
-    tune_date = last.get("date", "")
-    old_v = last.get("old_value")
-    new_v = last.get("new_value")
-    last_dir = last.get("direction", "up")
-    ts = last.get("timestamp", "")
+    # 计算「调优后一日」报告（所有 pending 共享同一份最新报告）
+    today_str = _report_date_today()
+    yesterday_str = _report_date_yesterday()
+    data = _extract_metrics_for_tuning(today_str, yesterday_str)
+    today_rec = data.get("today") or {}
+    today_date = str(today_rec.get("date", "")) if isinstance(today_rec, dict) else ""
+    metrics_after = _extract_metrics_before(today_rec) if isinstance(today_rec, dict) else {}
 
-    if verify_restart(ts):
-        log_ok(f"上次调优已生效（gateway 已重启）: {param}")
-        today_str = _report_date_today()
-        yesterday_str = _report_date_yesterday()
-        data = _extract_metrics_for_tuning(today_str, yesterday_str)
-        today_rec = data.get("today") or {}
-        today_date = str(today_rec.get("date", "")) if isinstance(today_rec, dict) else ""
-        # 严格取「调优后一日」的报告作为 metrics_after：只有报告日期推进到 tune_date 之后，
-        # 才可能是参数变更生效后的反馈。否则（报告未生成 → fallback 复用调优日当天报告）
-        # metrics_after 会与 metrics_before 指向同一份报告 → 测不到真实 delta，
-        # 被 P4 误判为 unknown。宁可保持 pending_restart 等下一份报告，也不取同名报告。
+    state = load_state()
+    need_wait = False       # 有 pending 尚未可验证（gateway 未重启 / 报告未推进 / 指标未生成）
+    resolved = False        # 本轮已确认生效（applied）的条数 > 0
+    for rec in pending:
+        param = rec.get("parameter", "")
+        tune_date = rec.get("date", "")
+        ts = rec.get("timestamp", "")
+        if not verify_restart(ts):
+            log_warn(f"上次调优尚未生效（gateway 未重启）: {param}")
+            notify_restart_reminder(rec)
+            need_wait = True
+            continue
+        # 严格取「调优后一日」报告：日期未推进到 tune_date 之后 → 保持 pending
         if not today_date or today_date <= tune_date:
             log_warn(f"metrics_after 需严格取调优后一日：当前报告日期({today_date or '无'})未推进到调优日({tune_date})之后，保持 pending_restart")
-            return True
-        metrics_after = _extract_metrics_before(today_rec) if isinstance(today_rec, dict) else {}
-
+            need_wait = True
+            continue
         if not metrics_after:
-            # 当天报告还没出，保持 pending_restart，等下次再判
             log_warn("当天指标数据尚未生成，保持 pending_restart 状态")
-            return True
-
-        # 填 metrics_after 并更新 applied
-        update_log_entry(param, tune_date, "applied", metrics_after)
-        log_ok("已记录 metrics_after 并更新日志状态")
-
-        # 判断改善 → 调 state
-        mb = last.get("metrics_before") or {}
-        # 找对应 param 的 feedback 定义
-        pdef = next((p for p in PARAM_DEFS if p[0] == param), None)
-        improved = True
-        no_change = (old_v == new_v)
-        # P4（重大修复）：metrics_after 与 metrics_before 完全一致 → 重启后指标无任何变化。
-        # 这通常意味着「gateway 未实际重启」或「日期错配导致指向同一报告」，
-        # 此时同值会让所有 _is_metric_improved 返回 True（同值=stable 改善），
-        # 使 direction 永远同向、degradation_count 永远不增长。
-        # 判为「未知」而非「改善」，避免把假改善当成真改善。
-        if _metrics_unchanged(mb, metrics_after):
-            improved = None
-            log_info("检测到 metrics_after == metrics_before（重启后指标无变化），判定=未知，不否认为改善，保持 pending_restart 观察")
-        elif pdef:
-            feeds = _parse_feedback(pdef[5])
-            # mask 级改造：逐反馈键检查其对应路样本量是否可信（全局键查全局样本，mask 键查该路样本）
-            has_subjective_any = any(n in _KN_JUDGE_SUBJECTIVE_KEYS for n, _ in feeds)
-            skipped_untrusted = False
-            ic = 0
-            tc = 0
-            has_any = False
-            for name, d in feeds:
-                tc += 1
-                # 如果对应路 judge 样本不足，跳过该主观反馈键，避免小样本噪声驱动方向
-                if name in _KN_JUDGE_SUBJECTIVE_KEYS and not _feedback_key_trusted(name, mb, metrics_after):
-                    skipped_untrusted = True
-                    log_info(f"  忽略反馈 {name}: 对应路 KN Judge 样本不足（不纳入改善判定）")
-                    continue
-                om = mb.get(name)
-                nm = metrics_after.get(name)
-                if om is None or nm is None:
-                    continue
-                has_any = True
-                try:
-                    om_f = float(om); nm_f = float(nm)
-                except (TypeError, ValueError):
-                    continue
-                if _is_metric_improved(name, d, om_f, nm_f):
-                    ic += 1
-            if not has_any:
-                # Round 2 P0-B: 若「所有反馈键被 judge 样本不足过滤掉」，不默认改善，走未知避免推到边界
-                if skipped_untrusted and has_subjective_any:
-                    improved = None
-                    log_warn("反馈缺失：所有可用反馈键均因 KN LLM Judge 样本不足被跳过 → 本次改善判定=未知（保持 pending_restart 状态直到样本充足）")
-                else:
-                    improved = True  # 原语义：完全无数据时默认改善
-            else:
-                improved = ic >= max(tc / 2, 1)
-
-        # improved=None 时，handle_pending_restart 仍保留 pending_restart（不进 update_state）
+            need_wait = True
+            continue
+        # 已验证（gateway 已重启 + 报告已推进）→ 判定改善
+        improved = _compute_improvement(rec, metrics_after)
         if improved is None:
-            log_info(f"暂不确认上次调优（改善未知），下次继续观察；不进冷却，允许本次处理其它非 pending 任务（若有）")
-            # 回滚刚刚更新 log status=applied 的动作 → 改回 pending_restart，保持状态机一致
+            # 已验证但改善未知（metrics_unchanged / 样本不足）→ 保持 pending 观察，
+            # 但不阻塞新调优（避免无效应参数永久卡死整轮）
             update_log_entry(param, tune_date, "pending_restart", None)
-            log_info("已回滚日志状态为 pending_restart，等待下一次有足够 judge 样本再确认")
-            return False  # 不再占冷却位，允许后续继续观察或调其它参数
+            continue
+        update_log_entry(param, tune_date, "applied", metrics_after)
+        state = _apply_tune_result_to_state(state, rec, improved)
+        resolved = True
+        log_ok(f"已确认上次调优生效并写回 state: {param} (improved={improved})")
 
-        state = load_state()
-        last_dir_osc = state.get(param, {}).get("last_direction")
-        prev_suspended = bool((state.get(param) or {}).get("suspended", False))
-        new_state = update_state(
-            state, param, last_dir, new_v,
-            metrics_improved=improved, no_change=no_change,
-            tune_date=tune_date,
-            old_value=old_v,
-            last_direction_record=last_dir_osc,
-        )
-        # 连续恶化触发 suspend 的「上升沿」→ 把 .env 还原到 initial_value 基线。
-        # 用上升沿（False→True）而非 now_suspended 判定，保证只回滚一次：
-        # 参数保持 suspended 的后续轮次不会重复写 .env。
-        now_suspended = bool((new_state.get(param) or {}).get("suspended", False))
-        if now_suspended and not prev_suspended:
-            pstate = new_state.setdefault(param, {})
-            # 连续恶化回滚到「历史最佳值」优先，否则回退到首次调优前的基线值
-            baseline = pstate.get("best_value")
-            if baseline is None:
-                baseline = pstate.get("initial_value")
-            rollback_ok = rollback_param_to_baseline(param, baseline)
-            pstate["rolled_back_at"] = _now_iso()
-            pstate["rolled_back_to"] = baseline
-            pstate["rollback_ok"] = rollback_ok
-        save_state(new_state)
-        log_ok(f"状态已更新: improved={improved}, no_change={no_change}")
-        # 冷却：今天刚确认生效，跳过新调优
-        log_info("本次仅处理调优生效，跳过新调优（冷却期）")
+    save_state(state)
+    if need_wait:
+        log_info("仍有 pending_restart 记录未验证（gateway 未重启 / 报告未推进），本轮跳过新调优")
         return True
-    else:
-        log_warn(f"上次调优尚未生效（gateway 未重启）: {param}")
-        notify_restart_reminder(last)
+    if resolved:
+        log_info("本轮已确认部分 pending_restart 生效，进入冷却期，跳过新调优")
         return True
+    # 全部已验证但改善未知，且无待验证项 → 允许本轮新调优
+    return False
 
 
 # ============================================================
@@ -1139,6 +1239,480 @@ def validate_step(old_val: float, new_val: float, step: float) -> bool:
     return change_pct <= 20.0 + 1e-9
 
 
+# ============================================================
+# 6.5 分组并行调优（功能组 · 每组独立策略）
+# ============================================================
+# 取代旧「每次只动一个参数」模型：auto-tuner 按 *组* 并行调优，每轮把全部
+# 「反馈可信且未收敛」的组都调了；组内耦合参数按该组的策略 *一起* 移动。
+# 旧的单参函数（determine_direction / select_param_to_tune）保留，作为 single 策略与回退路径。
+
+def _current_env(pdef: Tuple[str, float, float, float, float, str]) -> float:
+    """读 .env 当前值，取不到回退默认。"""
+    v = read_env_param(pdef[0])
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    return float(pdef[1])
+
+
+def _fmt_env(name: str, val: float) -> str:
+    pdef = next((p for p in PARAM_DEFS if p[0] == name), None)
+    if pdef and float(pdef[4]) >= 1 and float(pdef[4]).is_integer():
+        return f"{int(round(float(val))):d}"
+    return f"{float(val):g}"
+
+
+def _reverse(d: Optional[str]) -> Optional[str]:
+    if d == "up":
+        return "down"
+    if d == "down":
+        return "up"
+    return None
+
+
+def _feedback_dir(name: str) -> Optional[str]:
+    for n, d in _parse_feedback(name):
+        if n == name:
+            return d
+    return None
+
+
+def _member_beneficial_direction(pdef: Tuple[str, float, float, float, float, str]) -> Optional[str]:
+    """成员参数「有利方向」：其反馈键多数投票（忽略 stable_ok）。平票/未知返回 None。"""
+    ups = downs = 0
+    for _n, d in _parse_feedback(pdef[5]):
+        if d == "up_better":
+            ups += 1
+        elif d == "down_better":
+            downs += 1
+    if ups > downs:
+        return "up"
+    if downs > ups:
+        return "down"
+    return None
+
+
+def _position_dir(cur: float, pdef: Tuple[str, float, float, float, float, str]) -> str:
+    """以参数区间中点为基准的位置方向（用于未知/平票时的探索）。"""
+    pmin, pmax = pdef[2], pdef[3]
+    return "down" if cur > (pmin + pmax) / 2 else "up"
+
+
+def _step_param(cur: float, direction: Optional[str],
+               pdef: Tuple[str, float, float, float, float, str],
+               coarse: bool) -> Optional[float]:
+    """按方向步进，受 [pmin,pmax] 夹取；到边界返回 None。整数步长结果取整。"""
+    if direction not in ("up", "down"):
+        return None
+    pmin, pmax, step = pdef[2], pdef[3], pdef[4]
+    eff = step * COARSE_STEP_FACTOR if coarse else step
+    nv = min(cur + eff, pmax) if direction == "up" else max(cur - eff, pmin)
+    if abs(nv - cur) < 1e-9:
+        return None
+    if float(step) >= 1 and float(step).is_integer():
+        nv = int(round(nv))
+    return round(float(nv), 4)
+
+
+def _ensure_gstate(state: Dict[str, Any], gid: str) -> Dict[str, Any]:
+    groups = state.setdefault("groups", {})
+    if gid not in groups or not isinstance(groups[gid], dict):
+        groups[gid] = {
+            "last_direction": None,
+            "no_change_count": 0,
+            "consecutive_degradation_count": 0,
+            "locked": False,
+            "suspended": False,
+            "last_tune_date": "",
+            "initial_values": {},
+            "last_values": {},
+            "best_values": {},
+        }
+    return groups[gid]
+
+
+def _group_enabled(g) -> bool:
+    if g.enabled_when:
+        raw = read_env_param(g.enabled_when)
+        if raw is None:
+            if g.enabled_when == "KN_ENABLE_CAUSAL_CHAIN":
+                return _causal_chain_enabled()
+            return False
+        return str(raw).lower() in ("1", "true", "yes", "on")
+    return True
+
+
+def _group_converged(state: Dict[str, Any], g) -> bool:
+    gs = (state.get("groups") or {}).get(g.gid) or {}
+    if gs.get("locked") or gs.get("suspended"):
+        return True
+    return all(is_param_converged(state, m) for m in g.members)
+
+
+def _group_feedback_trusted(g, today_rec, yesterday_rec) -> bool:
+    fb_csv = ",".join(g.feedback_keys())
+    return _param_judge_trusted(fb_csv, today_rec, yesterday_rec)
+
+
+def _group_severity(g, today_rec, yesterday_rec):
+    keys = [k for k in g.feedback_keys() if k in _KN_JUDGE_SUBJECTIVE_KEYS]
+    rates: List[float] = []
+    for r in (today_rec, yesterday_rec):
+        if not r:
+            continue
+        for k in keys:
+            v = r.get(k)
+            if isinstance(v, (int, float)):
+                rates.append(float(v))
+    if not rates:
+        return (1, 1.0)
+    worst = min(rates)
+    return (0 if worst < SEVERITY_FLOOR else 1, worst)
+
+
+def _group_improved(fb_keys: List[str], last_tune: Optional[Dict[str, Any]],
+                    today_rec: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """组内反馈键多数投票：改善=True / 恶化=False / 未知=None。
+    逻辑对齐 determine_direction，但跨组内全部反馈键聚合。"""
+    if not last_tune:
+        return None
+    status = last_tune.get("status", "")
+    mb = last_tune.get("metrics_before") or {}
+    ma = last_tune.get("metrics_after") or {}
+    ic = tc = 0
+    has_any = False
+    skipped_untrusted = False
+    has_subjective = False
+    for name in fb_keys:
+        d = _feedback_dir(name)
+        if d is None:
+            continue
+        tc += 1
+        if name in _KN_JUDGE_SUBJECTIVE_KEYS:
+            has_subjective = True
+            if not _feedback_key_trusted(name, today_rec, None):
+                skipped_untrusted = True
+                continue
+        om = mb.get(name)
+        nm = ma.get(name)
+        if om is None or nm is None:
+            continue
+        try:
+            om_f, nm_f = float(om), float(nm)
+        except (TypeError, ValueError):
+            continue
+        has_any = True
+        if _is_metric_improved(name, d, om_f, nm_f):
+            ic += 1
+    if status == "pending_restart" and not has_any:
+        return None
+    if not has_any:
+        if skipped_untrusted and has_subjective:
+            return None
+        return None  # 无反馈数据：视为未知而非默认改善，避免无信号时持续单向漂移
+    if _metrics_unchanged(mb, ma):
+        return None
+    return ic >= max(tc / 2, 1)
+
+
+def _get_last_tune_for_group(gid: str) -> Optional[Dict[str, Any]]:
+    last: Optional[Dict[str, Any]] = None
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("dry_run"):
+                    continue
+                if rec.get("group") == gid:
+                    last = rec
+    except FileNotFoundError:
+        pass
+    return last
+
+
+# ---------- 召回护栏（多目标硬约束）----------
+
+def _active_recall_guards(today_rec) -> List[Dict[str, Any]]:
+    """返回当前已触发（越界）的护栏列表。today_rec 为当日 daily summary。"""
+    if not isinstance(today_rec, dict):
+        return []
+    out: List[Dict[str, Any]] = []
+    for g in RECALL_GUARDS:
+        v = today_rec.get(g["metric"])
+        if v is None:
+            continue
+        try:
+            vf = float(v)
+        except (TypeError, ValueError):
+            continue
+        if g["cmp"] == "ge" and vf >= g["bound"]:
+            out.append(g)
+        elif g["cmp"] == "le" and vf <= g["bound"]:
+            out.append(g)
+    return out
+
+
+def _guard_forbid_dir(param: str, triggered: List[Dict[str, Any]]) -> Optional[str]:
+    """若 param 被某条已触发护栏守护，返回其被禁的「收紧方向」；否则 None。"""
+    for g in triggered:
+        for (p, td) in g["guards"]:
+            if p == param:
+                return td
+    return None
+
+
+def _apply_recall_guard(param: str, d: Optional[str], triggered: List[Dict[str, Any]]):
+    """召回护栏：若 param 被触发护栏守护、且拟移动方向恰为其「收紧方向」，
+    强制反向（loosen），给召回恢复空间。返回 (direction, guard_fired: bool)。"""
+    forbid = _guard_forbid_dir(param, triggered)
+    if forbid and d == forbid:
+        return _reverse(d), True
+    return d, False
+
+
+# ---------- 三种策略 ----------
+
+def _strategy_single(g, state, today_rec, yesterday_rec, gstate, last_tune):
+    """单参组：退化为原 determine_direction 逻辑。"""
+    m = g.members[0]
+    pdef = next((p for p in PARAM_DEFS if p[0] == m), None)
+    if pdef is None:
+        return None
+    cur = _current_env(pdef)
+    if is_param_converged(state, m):
+        return None
+    lt = _get_last_tune_for(m)
+    dec = determine_direction(m, cur, pdef[2], pdef[3], pdef[4], pdef[5],
+                              lt, summary_rec=today_rec)
+    if not dec:
+        return None
+    nv = float(dec["new_value"])
+    # —— 召回护栏（single 安全网：当前 guarded 参数均不在 single 组，仅防御性）——
+    triggered = _active_recall_guards(today_rec)
+    forbid = _guard_forbid_dir(m, triggered)
+    if forbid and abs(nv - cur) >= 1e-9:
+        tighten = "up" if nv > cur else "down"
+        if tighten == forbid:
+            nv2 = _step_param(cur, _reverse(forbid), pdef, lt is None)
+            if nv2 is not None and abs(nv2 - cur) >= 1e-9:
+                nv = nv2
+                dec["reason"] = (dec.get("reason", "") + " | GUARD[recall]").strip()
+    if abs(nv - cur) < 1e-9:
+        return None
+    return {"changes": {m: nv}, "improved": None, "reason": dec.get("reason", ""),
+            "eff_steps": {m: dec.get("eff_step", pdef[4])}}
+
+
+def _strategy_joint_majority(g, state, today_rec, yesterday_rec, gstate, last_tune):
+    """多参耦合组：组内反馈键多数投票定「组方向」；
+    改善→各成员沿其有利方向同调，恶化→整体反向（沿各自有利方向的反方向）。
+    叠加召回护栏：被触发护栏守护的「收紧型」参数，禁止继续收紧、强制反向（loosen）。"""
+    fb = g.feedback_keys()
+    improved = _group_improved(fb, last_tune, today_rec)
+    triggered = _active_recall_guards(today_rec)
+    changes: Dict[str, float] = {}
+    eff_steps: Dict[str, float] = {}
+    reasons = []
+    guard_reasons = []
+    for m in g.members:
+        pdef = next((p for p in PARAM_DEFS if p[0] == m), None)
+        if pdef is None:
+            continue
+        cur = _current_env(pdef)
+        if is_param_converged(state, m):
+            continue
+        ben = _member_beneficial_direction(pdef) or _position_dir(cur, pdef)
+        d = _reverse(ben) if improved is False else ben
+        # —— 召回护栏：组策略要求沿收紧方向移动且护栏已触发时，强制反向（loosen）——
+        d, fired = _apply_recall_guard(m, d, triggered)
+        if fired:
+            guard_reasons.append(f"{m}→{d}")
+        coarse = last_tune is None
+        nv = _step_param(cur, d, pdef, coarse)
+        if nv is not None:
+            changes[m] = nv
+            eff_steps[m] = (pdef[4] * COARSE_STEP_FACTOR) if coarse else pdef[4]
+            reasons.append(f"{m}:{d}")
+    if not changes:
+        return None
+    reason = f"joint_majority(improved={improved}) " + ", ".join(reasons)
+    if guard_reasons:
+        reason += " | GUARD[" + "/".join(g["label"] for g in triggered) + "]:" + ",".join(guard_reasons)
+    return {"changes": changes, "improved": improved,
+            "reason": reason, "eff_steps": eff_steps}
+
+
+def _strategy_synergy_search(g, state, today_rec, yesterday_rec, gstate, last_tune):
+    """重组组：以 se_recombine_synergy_avg 单一标量驱动。
+    无 synergy（重组未启用 / synergy=0）→ 无信号，安全跳过，避免空转。
+    改善→沿各成员有利方向微调；恶化→整体回滚到上次联合移动前的值。"""
+    fb = g.feedback_keys()
+    syn = today_rec.get("se_recombine_synergy_avg") if isinstance(today_rec, dict) else None
+    if syn is None:
+        return None
+    try:
+        syn_f = float(syn)
+    except (TypeError, ValueError):
+        return None
+    if syn_f <= 0:
+        return None  # 重组未产生 synergy：不调，避免伪优化（与单参 None 陷阱同理）
+    improved = _group_improved(fb, last_tune, today_rec)
+    changes: Dict[str, float] = {}
+    eff_steps: Dict[str, float] = {}
+    for m in g.members:
+        pdef = next((p for p in PARAM_DEFS if p[0] == m), None)
+        if pdef is None:
+            continue
+        cur = _current_env(pdef)
+        if is_param_converged(state, m):
+            continue
+        if improved is False:
+            prev = (gstate.get("last_values") or {}).get(m)
+            if prev is not None and abs(float(prev) - cur) > 1e-9:
+                changes[m] = float(prev)
+                eff_steps[m] = abs(float(prev) - cur)
+            continue
+        ben = _member_beneficial_direction(pdef) or _position_dir(cur, pdef)
+        coarse = last_tune is None
+        nv = _step_param(cur, ben, pdef, coarse)
+        if nv is not None:
+            changes[m] = nv
+            eff_steps[m] = (pdef[4] * COARSE_STEP_FACTOR) if coarse else pdef[4]
+    if not changes:
+        return None
+    return {"changes": changes, "improved": improved,
+            "reason": f"synergy_search(synergy={syn_f:g}, improved={improved})",
+            "eff_steps": eff_steps}
+
+
+def _run_group_strategy(g, state, today_rec, yesterday_rec):
+    gstate = _ensure_gstate(state, g.gid)
+    last_tune = _get_last_tune_for_group(g.gid)
+    if g.strategy == "single":
+        return _strategy_single(g, state, today_rec, yesterday_rec, gstate, last_tune)
+    if g.strategy == "synergy_search":
+        return _strategy_synergy_search(g, state, today_rec, yesterday_rec, gstate, last_tune)
+    return _strategy_joint_majority(g, state, today_rec, yesterday_rec, gstate, last_tune)
+
+
+def select_groups_to_tune(state: Dict[str, Any], today_rec, yesterday_rec) -> List:
+    """返回本轮应选中的功能组（全部可信且未收敛的组，并行调）。"""
+    out = []
+    for g in PARAM_GROUPS:
+        if not _group_enabled(g):
+            continue
+        if _group_converged(state, g):
+            continue
+        if not _group_feedback_trusted(g, today_rec, yesterday_rec):
+            continue
+        out.append(g)
+    out.sort(key=lambda g: _group_severity(g, today_rec, yesterday_rec))
+    if MAX_GROUPS_PER_RUN and MAX_GROUPS_PER_RUN > 0:
+        out = out[:MAX_GROUPS_PER_RUN]
+    return out
+
+
+def are_all_groups_converged(state: Dict[str, Any]) -> bool:
+    for g in PARAM_GROUPS:
+        if not _group_enabled(g):
+            continue
+        if not _group_converged(state, g):
+            return False
+    return True
+
+
+def _update_state_for_group(state: Dict[str, Any], g, dec, tune_date: str) -> Dict[str, Any]:
+    """双写：组级 gstate（initial/last/best 值 + 方向） + 逐成员 update_state
+    （保持收敛/锁/恶化回滚逻辑不变，平滑兼容旧单参状态）。"""
+    gstate = _ensure_gstate(state, g.gid)
+    changes = dec["changes"]
+    # 首次捕获初始值
+    for m in changes:
+        if m not in gstate["initial_values"]:
+            gstate["initial_values"][m] = _current_env(
+                next(p for p in PARAM_DEFS if p[0] == m))
+    # 捕获移动前的值（供 synergy 回滚）
+    pre_values = {}
+    for m, nv in changes.items():
+        pre_values[m] = _current_env(next(p for p in PARAM_DEFS if p[0] == m))
+        gstate["last_values"][m] = pre_values[m]
+    # 组方向（用于日志/回滚触发；取首个成员移动方向）
+    if changes:
+        first_m = next(iter(changes))
+        gstate["last_direction"] = "up" if changes[first_m] > pre_values[first_m] else "down"
+    gstate["last_tune_date"] = tune_date
+    # metrics_improved：仅当明确恶化时才记恶化（避免未知/位置探索误触发 suspend）
+    metrics_improved = (dec.get("improved") is not False)
+    for m, nv in changes.items():
+        pdef = next(p for p in PARAM_DEFS if p[0] == m)
+        cur = pre_values[m]
+        # best_values 记忆
+        try:
+            gstate["best_values"][m] = float(nv)
+        except (TypeError, ValueError):
+            pass
+        ns = update_state(
+            state, m, gstate["last_direction"] or "up", nv,
+            metrics_improved=metrics_improved, no_change=False,
+            tune_date=tune_date, old_value=cur,
+            last_direction_record=(state.get(m) or {}).get("last_direction"),
+        )
+        state = ns
+    return state
+
+
+def _record_group_no_change(state: Dict[str, Any], g, tune_date: str) -> Dict[str, Any]:
+    """组无实际变化：累加 no_change，使成员最终可锁定（与旧单参行为一致）。"""
+    gstate = _ensure_gstate(state, g.gid)
+    gstate["no_change_count"] = int(gstate.get("no_change_count", 0)) + 1
+    gstate["last_tune_date"] = tune_date
+    for m in g.members:
+        if is_param_converged(state, m):
+            continue
+        ns = update_state(
+            state, m, "none", _current_env(next(p for p in PARAM_DEFS if p[0] == m)),
+            metrics_improved=True, no_change=True, tune_date=tune_date,
+            old_value=None,
+            last_direction_record=(state.get(m) or {}).get("last_direction"),
+        )
+        state = ns
+    return state
+
+
+def _append_group_log(g, dec, pre_values, today: str, today_rec, dry_run: bool) -> None:
+    entry = {
+        "date": today,
+        "group": g.gid,
+        "label": g.label,
+        "strategy": g.strategy,
+        "parameter": g.gid,
+        "parameters": list(dec["changes"].keys()),
+        "old_values": {m: pre_values.get(m) for m in dec["changes"]},
+        "new_values": dec["changes"],
+        "direction": "up",
+        "reason": dec.get("reason", ""),
+        "dry_run": dry_run,
+        "metrics_before": _extract_metrics_before(today_rec),
+        "metrics_after": None,
+        "status": "dry_run" if dry_run else "pending_restart",
+        "timestamp": _now_iso(),
+    }
+    # 方向：用首个成员移动方向
+    if dec["changes"]:
+        first_m = next(iter(dec["changes"]))
+        entry["direction"] = "up" if dec["changes"][first_m] > (pre_values.get(first_m) or 0) else "down"
+    _append_jsonl(LOG_FILE, entry)
+
+
+# select_param_to_tune 保留（single 策略与 legacy 回退使用）
 def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, float, float, float, str]]:
     """Round 3 P1-D：选择调参顺序策略。
 
@@ -1182,13 +1756,44 @@ def select_param_to_tune(state: Dict[str, Any]) -> Optional[Tuple[str, float, fl
         else:
             (remaining_confident if confident else remaining_unconfident).append(pdef)
 
+    # #5 严重度快车道：当参数绑定的 mask 主观键 relevant_rate < SEVERITY_FLOOR 时，
+    # 视为强负信号，在同一 tier 内优先于普通信号调优，避免被前面参数排队饿死
+    # （原逻辑严格按 PARAM_DEFS 顺序取第一个 eligible，SAG/KT 等后位参数要等前面逐项收敛）。
+    # 返回 (urgent_flag, worst_rate)：urgent(0) 排前；worst_rate 越小越紧急排前。
+    def _sev(pdef: Tuple[str, float, float, float, float, str]):
+        fb_csv = pdef[5]
+        keys = [k for k in (s.strip() for s in fb_csv.split(",") if s.strip())
+                if k in _KN_JUDGE_SUBJECTIVE_KEYS]
+        rates: List[float] = []
+        for r in (today_rec, yesterday_rec):
+            if not r:
+                continue
+            for k in keys:
+                v = r.get(k)
+                if isinstance(v, (int, float)):
+                    rates.append(float(v))
+        if not rates:
+            return (1, 1.0)  # 无主观信号：非紧急，排最后
+        worst = min(rates)
+        return (0 if worst < SEVERITY_FLOOR else 1, worst)
+
+    def _sort_bucket(bucket):
+        return sorted(bucket, key=_sev)
+
+    virgin_confident = _sort_bucket(virgin_confident)
+    virgin_unconfident = _sort_bucket(virgin_unconfident)
+    remaining_confident = _sort_bucket(remaining_confident)
+    remaining_unconfident = _sort_bucket(remaining_unconfident)
+
     def _pick(vc, vu, rc, ru):
         order = (("virgin-confident", vc), ("virgin-unconfident", vu),
                  ("remaining-confident", rc), ("remaining-unconfident", ru))
         for label, bucket in order:
             if bucket:
                 first = bucket[0]
-                log_info(f"  选参[{label}] → {first[0]}（今日 KN LLM Judge 样本可信度按各路分别判定）")
+                urgent, worst = _sev(first)
+                tag = f"严重度快车道(worst_rate={worst:.3f})" if urgent == 0 else "常规顺序"
+                log_info(f"  选参[{label}] → {first[0]}（{tag}；今日 KN LLM Judge 样本可信度按各路分别判定）")
                 return first
         return None
 
@@ -1273,7 +1878,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # 2. 闭环 Step 0：处理上次 pending_restart / 冷却
-    if handle_pending_restart():
+    #    dry-run 保持只读：跳过 handle_pending_restart，避免误改真实 .env/state
+    if dry_run:
+        log_info("[DRY-RUN] 跳过 handle_pending_restart（只读模式，不解析/写回 pending 记录）")
+    elif handle_pending_restart():
         return 0
 
     # 3. 历史数据文件存在性
@@ -1286,6 +1894,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     log_info(f"获取指标数据: {today} / {_report_date_yesterday()}")
     mdata = _extract_metrics_for_tuning(today, _report_date_yesterday())
     today_rec = mdata.get("today")
+    yesterday_rec = mdata.get("yesterday")
     if not isinstance(today_rec, dict) or not today_rec:
         log_warn("未找到今天的指标数据，跳过本次调优")
         return 0
@@ -1294,91 +1903,233 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 5. 加载状态 + 收敛总检
     state = load_state()
     log_info("已加载调优状态")
-    if are_all_params_converged(state):
-        log_info("所有参数已收敛，跳过本次调优")
-        log_info("30 天后重新评估（下次可手动清除 state 中 locked 标记提前恢复）")
+
+    if GROUP_TUNING_ENABLED and PARAM_GROUPS:
+        # ======================================================
+        # 新模型：分组并行调优（每组独立策略，每轮调全部可信组）
+        # ======================================================
+        if are_all_groups_converged(state):
+            log_info("所有功能组已收敛，跳过本次调优")
+            return 0
+
+        groups = select_groups_to_tune(state, today_rec, yesterday_rec)
+        if not groups:
+            log_info("没有可调优的功能组（都收敛/暂停/反馈不可信）")
+            return 0
+        log_info(f"选中 {len(groups)} 个功能组并行调优: " + ", ".join(g.gid for g in groups))
+
+        # 跑各组策略，收集有实际变化的决策
+        decisions = []  # (g, dec, pre_values)
+        for g in groups:
+            dec = _run_group_strategy(g, state, today_rec, yesterday_rec)
+            if dec and dec.get("changes"):
+                pre = {m: _current_env(next(p for p in PARAM_DEFS if p[0] == m))
+                       for m in dec["changes"]}
+                decisions.append((g, dec, pre))
+
+        if not decisions:
+            log_info("选中组本次均无实际变化（成员已到边界/收敛），记录 no_change 后跳过")
+            for g in groups:
+                state = _record_group_no_change(state, g, today)
+            save_state(state)
+            return 0
+
+        # 打印决策
+        for g, dec, pre in decisions:
+            print("")
+            log_step(f"组决策 [{g.gid}] ({g.strategy}) — {g.label}:")
+            for m, nv in dec["changes"].items():
+                print(f"  {m}: {pre[m]} → {nv}")
+            print(f"  原因: {dec.get('reason', '')}")
+
+        # 步幅安全校验（逐参数用其 eff_step）；不合规的参数从本次决策中剔除
+        for g, dec, pre in decisions:
+            for m, nv in list(dec["changes"].items()):
+                eff = dec.get("eff_steps", {}).get(
+                    m, next(p for p in PARAM_DEFS if p[0] == m)[4])
+                if not validate_step(pre[m], nv, eff):
+                    log_warn(f"组 {g.gid} 参数 {m} 步幅超安全阈值，跳过该参数")
+                    dec["changes"].pop(m, None)
+        decisions = [(g, dec, pre) for g, dec, pre in decisions if dec.get("changes")]
+
+        metrics_before = _extract_metrics_before(today_rec)
+
+        # DRY-RUN 分支
+        if dry_run:
+            print("")
+            log_info("================================================")
+            log_info("  DRY-RUN 模式 — 以下操作不会实际执行")
+            log_info("================================================")
+            for g, dec, pre in decisions:
+                print(f"  组 {g.gid} ({g.label}):")
+                for m, nv in dec["changes"].items():
+                    print(f"    {m}: {pre[m]} → {nv}")
+            print(f"  日志: {LOG_FILE}")
+            for g, dec, pre in decisions:
+                _append_group_log(g, dec, pre, today, today_rec, True)
+            log_ok("DRY-RUN 完成，决策已写入日志")
+            return 0
+
+        # ===== 实际执行：一次性备份 + 批量写参 + 单次重启通知 =====
+        log_step(f"备份 {ENV_FILE}")
+        backup_file = backup_env()
+        log_ok(f"已备份到: {backup_file}")
+
+        changed_summary = []
+        for g, dec, pre in decisions:
+            for m, nv in dec["changes"].items():
+                ok = write_env_param(m, _fmt_env(m, nv))
+                if not ok:
+                    log_err(f"写入 .env 失败: {m}")
+                    return 2
+                changed_summary.append(f"{m}={nv:g}")
+        log_ok(".env 已更新: " + ", ".join(changed_summary))
+
+        print("")
+        notify_gateway_restart(
+            "GROUP_TUNE", "", "",
+            "分组并行调优: " + "; ".join(
+                f"{g.gid}[" + ", ".join(f"{m}={dec['changes'][m]:g}" for m in dec["changes"]) + "]"
+                for g, dec, pre in decisions),
+            dry_run=False)
+
+        log_step("记录调优日志 + 状态")
+        for g, dec, pre in decisions:
+            _append_group_log(g, dec, pre, today, today_rec, False)
+            state = _update_state_for_group(state, g, dec, today)
+        save_state(state)
+        log_ok("调优状态已写回（pending_restart，等重启生效）")
+
+        print("")
+        print("============================================")
+        print(f"  Auto-Tuner 完成 — {len(decisions)} 个功能组已调优")
+        print("============================================")
         return 0
 
-    # 6. 选参数 + 解析定义
-    pdef = select_param_to_tune(state)
-    if pdef is None:
-        log_info("没有可调优的参数（都收敛/暂停了）")
-        return 0
-    name, default, pmin, pmax, step, fb_csv = pdef
-    log_info(f"选中参数: {name}")
-    log_info(f"  默认值: {default}, 范围: [{pmin}, {pmax}], 步长: {step}")
-    log_info(f"  反馈指标: {fb_csv}")
-
-    # 7. 当前值（优先 .env，默认值兜底）
-    env_val = read_env_param(name)
-    if env_val is not None:
-        try:
-            current = float(env_val)
-        except (TypeError, ValueError):
-            current = float(default)
     else:
-        current = float(default)
-    log_info(f"  当前值: {current}")
+        # ======================================================
+        # 旧模型：单参（兼容回退，GROUP_TUNING_ENABLED=False）
+        # ======================================================
+        if are_all_params_converged(state):
+            log_info("所有参数已收敛，跳过本次调优")
+            log_info("30 天后重新评估（下次可手动清除 state 中 locked 标记提前恢复）")
+            return 0
 
-    # 8. 上次调优记录（同参数）
-    last_tune = _get_last_tune_for(name)
+        # 6. 选参数 + 解析定义
+        pdef = select_param_to_tune(state)
+        if pdef is None:
+            log_info("没有可调优的参数（都收敛/暂停了）")
+            return 0
+        name, default, pmin, pmax, step, fb_csv = pdef
+        log_info(f"选中参数: {name}")
+        log_info(f"  默认值: {default}, 范围: [{pmin}, {pmax}], 步长: {step}")
+        log_info(f"  反馈指标: {fb_csv}")
 
-    # 9. 方向决策（传入当日完整 summary 记录，供 mask 信任门控读取样本计数）
-    decision = determine_direction(name, current, pmin, pmax, step, fb_csv, last_tune, summary_rec=today_rec)
-    if not decision:
-        log_warn("无法确定调优方向（可能已到边界），跳过")
-        # 同步 bash 版约束：到边界也调用 update_state(no_change=True)，
-        # 让 no_change_count 累加，达到 NO_CHANGE_LOCK_THRESHOLD 后能锁定该参数，
-        # 避免每次运行都选中已到边界的参数再跳过。
-        ns = update_state(
-            state, name, "none", current,
-            metrics_improved=True,  # 未恶化，仅无法继续调
-            no_change=True,
-            tune_date=today,
-            old_value=current,
-            last_direction_record=(state.get(name) or {}).get("last_direction"),
-        )
-        save_state(ns)
-        log_ok(f"已记录 no_change（边界跳过），状态已写回")
-        return 0
-    direction = decision["direction"]
-    new_val = float(decision["new_value"])
-    reason = decision["reason"]
-    # 实际生效步幅（首次调优为粗步幅 step*2），validate_step 用同一数值校验，
-    # 避免粗步幅被原始 step 误拦截
-    eff_step = float(decision.get("eff_step", step))
-    print("")
-    log_step("调优决策:")
-    print(f"  参数:     {name}")
-    print(f"  当前值:   {current}")
-    print(f"  新值:     {new_val}")
-    print(f"  方向:     {direction}")
-    print(f"  原因:     {reason}")
-    print("")
+        # 7. 当前值（优先 .env，默认值兜底）
+        env_val = read_env_param(name)
+        if env_val is not None:
+            try:
+                current = float(env_val)
+            except (TypeError, ValueError):
+                current = float(default)
+        else:
+            current = float(default)
+        log_info(f"  当前值: {current}")
 
-    # 10. 步幅安全校验（用实际生效步幅 eff_step，粗步幅按粗步幅校验）
-    if not validate_step(current, new_val, eff_step):
-        log_warn("步幅超过安全阈值，跳过本次调优")
-        return 0
+        # 8. 上次调优记录（同参数）
+        last_tune = _get_last_tune_for(name)
 
-    # 11. metrics_before（今天的报告，用于后续改善判断）
-    metrics_before = _extract_metrics_before(today_rec)
-
-    # 12. DRY-RUN 分支
-    if dry_run:
+        # 9. 方向决策（传入当日完整 summary 记录，供 mask 信任门控读取样本计数）
+        decision = determine_direction(name, current, pmin, pmax, step, fb_csv, last_tune, summary_rec=today_rec)
+        if not decision:
+            log_warn("无法确定调优方向（可能已到边界），跳过")
+            # 同步 bash 版约束：到边界也调用 update_state(no_change=True)，
+            # 让 no_change_count 累加，达到 NO_CHANGE_LOCK_THRESHOLD 后能锁定该参数，
+            # 避免每次运行都选中已到边界的参数再跳过。
+            ns = update_state(
+                state, name, "none", current,
+                metrics_improved=True,  # 未恶化，仅无法继续调
+                no_change=True,
+                tune_date=today,
+                old_value=current,
+                last_direction_record=(state.get(name) or {}).get("last_direction"),
+            )
+            save_state(ns)
+            log_ok(f"已记录 no_change（边界跳过），状态已写回")
+            return 0
+        direction = decision["direction"]
+        new_val = float(decision["new_value"])
+        reason = decision["reason"]
+        # 实际生效步幅（首次调优为粗步幅 step*2），validate_step 用同一数值校验，
+        # 避免粗步幅被原始 step 误拦截
+        eff_step = float(decision.get("eff_step", step))
         print("")
-        log_info("================================================")
-        log_info("  DRY-RUN 模式 — 以下操作不会实际执行")
-        log_info("================================================")
-        print(f"  参数:      {name}")
-        print(f"  当前值:    {current} → 新值: {new_val}")
-        print(f"  方向:      {direction}")
-        print(f"  原因:      {reason}")
-        print(f"  备份:      {BACKUP_DIR}/env-*.bak")
-        print(f"  操作:      修改 {ENV_FILE} → {name}={new_val}")
-        print(f"  操作:      手动重启 hermes-gateway（飞书通知）")
-        print(f"  日志:      {LOG_FILE}")
+        log_step("调优决策:")
+        print(f"  参数:     {name}")
+        print(f"  当前值:   {current}")
+        print(f"  新值:     {new_val}")
+        print(f"  方向:     {direction}")
+        print(f"  原因:     {reason}")
         print("")
+
+        # 10. 步幅安全校验（用实际生效步幅 eff_step，粗步幅按粗步幅校验）
+        if not validate_step(current, new_val, eff_step):
+            log_warn("步幅超过安全阈值，跳过本次调优")
+            return 0
+
+        # 11. metrics_before（今天的报告，用于后续改善判断）
+        metrics_before = _extract_metrics_before(today_rec)
+
+        # 12. DRY-RUN 分支
+        if dry_run:
+            print("")
+            log_info("================================================")
+            log_info("  DRY-RUN 模式 — 以下操作不会实际执行")
+            log_info("================================================")
+            print(f"  参数:      {name}")
+            print(f"  当前值:    {current} → 新值: {new_val}")
+            print(f"  方向:      {direction}")
+            print(f"  原因:      {reason}")
+            print(f"  备份:      {BACKUP_DIR}/env-*.bak")
+            print(f"  操作:      修改 {ENV_FILE} → {name}={new_val}")
+            print(f"  操作:      手动重启 hermes-gateway（飞书通知）")
+            print(f"  日志:      {LOG_FILE}")
+            print("")
+            entry = {
+                "date": today,
+                "parameter": name,
+                "old_value": float(current),
+                "new_value": float(new_val),
+                "direction": direction,
+                "reason": reason,
+                "dry_run": True,
+                "metrics_before": metrics_before,
+                "metrics_after": None,
+                "status": "dry_run",
+                "timestamp": _now_iso(),
+            }
+            _append_jsonl(LOG_FILE, entry)
+            log_ok("DRY-RUN 完成，决策已写入日志")
+            return 0
+
+        # ===== 实际执行 =====
+        log_step(f"备份 {ENV_FILE}")
+        backup_file = backup_env()
+        log_ok(f"已备份到: {backup_file}")
+
+        log_step(f"修改参数 {name}: {current} → {new_val}")
+        ok = write_env_param(name, f"{new_val:g}" if isinstance(new_val, float) else f"{new_val}")
+        if not ok:
+            log_err(f"写入 .env 失败: {ENV_FILE}")
+            return 2
+        log_ok(".env 已更新")
+
+        # 通知重启（不自动重启，避免杀死 cronjob）
+        print("")
+        notify_gateway_restart(name, current, new_val, reason, dry_run=False)
+
+        # 记日志：pending_restart
+        log_step("记录调优日志")
         entry = {
             "date": today,
             "parameter": name,
@@ -1386,66 +2137,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             "new_value": float(new_val),
             "direction": direction,
             "reason": reason,
-            "dry_run": True,
+            "dry_run": False,
             "metrics_before": metrics_before,
             "metrics_after": None,
-            "status": "dry_run",
+            "status": "pending_restart",
+            "backup_file": backup_file,
             "timestamp": _now_iso(),
         }
         _append_jsonl(LOG_FILE, entry)
-        log_ok("DRY-RUN 完成，决策已写入日志")
+
+        # **一定调用 update_state 并写回**（bash 版这里漏了）
+        ns = update_state(
+            state, name, direction, new_val,
+            metrics_improved=True,  # 刚调，还没生效，默认 true（不会触发恶化计数）
+            no_change=False,
+            tune_date=today,
+            old_value=current,
+        )
+        save_state(ns)
+        log_ok("调优状态已写回（pending_restart，等重启生效）")
+
+        print("")
+        print("============================================")
+        print(f"  Auto-Tuner 完成 — {name}: {current} → {new_val}")
+        print("============================================")
         return 0
-
-    # ===== 实际执行 =====
-    log_step(f"备份 {ENV_FILE}")
-    backup_file = backup_env()
-    log_ok(f"已备份到: {backup_file}")
-
-    log_step(f"修改参数 {name}: {current} → {new_val}")
-    ok = write_env_param(name, f"{new_val:g}" if isinstance(new_val, float) else f"{new_val}")
-    if not ok:
-        log_err(f"写入 .env 失败: {ENV_FILE}")
-        return 2
-    log_ok(".env 已更新")
-
-    # 通知重启（不自动重启，避免杀死 cronjob）
-    print("")
-    notify_gateway_restart(name, current, new_val, reason, dry_run=False)
-
-    # 记日志：pending_restart
-    log_step("记录调优日志")
-    entry = {
-        "date": today,
-        "parameter": name,
-        "old_value": float(current),
-        "new_value": float(new_val),
-        "direction": direction,
-        "reason": reason,
-        "dry_run": False,
-        "metrics_before": metrics_before,
-        "metrics_after": None,
-        "status": "pending_restart",
-        "backup_file": backup_file,
-        "timestamp": _now_iso(),
-    }
-    _append_jsonl(LOG_FILE, entry)
-
-    # **一定调用 update_state 并写回**（bash 版这里漏了）
-    ns = update_state(
-        state, name, direction, new_val,
-        metrics_improved=True,  # 刚调，还没生效，默认 true（不会触发恶化计数）
-        no_change=False,
-        tune_date=today,
-        old_value=current,
-    )
-    save_state(ns)
-    log_ok("调优状态已写回（pending_restart，等重启生效）")
-
-    print("")
-    print("============================================")
-    print(f"  Auto-Tuner 完成 — {name}: {current} → {new_val}")
-    print("============================================")
-    return 0
 
 
 if __name__ == "__main__":

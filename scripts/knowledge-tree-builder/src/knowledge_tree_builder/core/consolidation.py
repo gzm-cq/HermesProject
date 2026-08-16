@@ -687,6 +687,7 @@ class ConsolidationEngine:
         max_source_kps: int = 50,
         vector_threshold: float = 0.65,
         same_subject_threshold: float = 0.65,
+        centroid_gate: float = 0.80,
         dry_run: bool = False,
     ) -> dict[str, int]:
         """构建 KP 级关联边（知识树知识点之间的直接关联）。
@@ -701,8 +702,10 @@ class ConsolidationEngine:
         Args:
             db_adapter: 数据库适配器
             max_source_kps: 同源组建边时最多取前 N 个 KPs（防组合爆炸）
-            vector_threshold: 跨 subject 向量桥接阈值
+            vector_threshold: 跨 subject 向量桥接阈值（subject 内逐对 KP 余弦下限）
             same_subject_threshold: 同科高相似度阈值
+            centroid_gate: 跨 subject 桥接前置门控——两 subject centroid 余弦须 ≥ 此值才会尝试桥接；
+                          值越低参与桥接的 subject 对越多（默认 0.80，过严会漏掉弱相关跨域边）
             dry_run: 仅统计不写入
 
         Returns:
@@ -788,7 +791,7 @@ class ConsolidationEngine:
                 dot_c = sum(x * y for x, y in zip(ca, cb))
                 nc_a = math.sqrt(sum(x * x for x in ca)) or 1.0
                 nc_b = math.sqrt(sum(x * x for x in cb)) or 1.0
-                if dot_c / (nc_a * nc_b) < 0.80:
+                if dot_c / (nc_a * nc_b) < centroid_gate:
                     continue
                 sample_a = kp_by_subject.get(pid_a, [])[:10]
                 sample_b = kp_by_subject.get(pid_b, [])[:10]

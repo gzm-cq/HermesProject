@@ -341,7 +341,10 @@ def consolidate(
     dry_run: bool = typer.Option(False, "--dry-run", help="仅预览，传 --dry-run 开启预览模式"),
     merge_domains: bool = typer.Option(True, "--merge-domains", help="启用碎片 domain 合并（默认开启，--no-merge-domains 关闭）"),
     min_domain_nodes: int = typer.Option(5, "--min-domain-nodes", help="domain 合并阈值"),
-    domain_merge_threshold: float = typer.Option(0.6, "--domain-merge-threshold", help="余弦相似度阈值"),
+    domain_merge_threshold: float = typer.Option(
+        float(os.environ.get("KT_DOMAIN_MERGE_THRESHOLD", "0.6")),
+        "--domain-merge-threshold", help="余弦相似度阈值（可由 KT_DOMAIN_MERGE_THRESHOLD 覆盖）",
+    ),
     build_edges: bool = typer.Option(True, "--build-edges", help="构建 KP 级关联边（默认开启）"),
 ) -> None:
     """纠错回路：更新 confidence + 处理超时审查项 + 碎片 domain 合并。

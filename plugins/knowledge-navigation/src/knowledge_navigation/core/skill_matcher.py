@@ -802,15 +802,18 @@ def _llm_match(
             api_key = get_env("LITELLM_MASTER_KEY", "")
             skill_url = get_env("KN_SKILL_MATCHER_API_URL") or CONFIG.skill_matcher_api_url
             skill_model = get_env("KN_SKILL_MATCHER_MODEL") or CONFIG.skill_matcher_model
+            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
+            _sm_think = {"type": "enabled"} if skill_model.startswith(("s-deepseek", "agnes")) else {"type": "disabled"}
+            _sm_mt = 16384 if skill_model.startswith(("s-deepseek", "agnes")) else 8192
             resp = httpx.post(
                 f"{skill_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 json={
                     "model": skill_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 8192,
+                    "max_tokens": _sm_mt,
                     "temperature": 0.1,
-                    "thinking": {"type": "disabled"},
+                    "thinking": _sm_think,
                 },
                 timeout=_get_llm_timeout(),
             )

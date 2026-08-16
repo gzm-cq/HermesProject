@@ -22,23 +22,30 @@ from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
 # ── DeepSeek + Ollama OpenAI-compatible API client (curl-based, no extra deps) ──
 
 
-def _chat(messages: List[Dict[str, str]], *, model: str, temperature: float = 0.2, max_tokens: int = 2048) -> str:  # min 2048 for sensenova-6.8-flash-lite fallback JSON output
-    """Call DeepSeek V4 Pro via curl + jq. No extra Python deps needed."""
+def _chat(messages: List[Dict[str, str]], *, model: str, temperature: float = 0.2, max_tokens: int = 2048, base: str = None, api_key: str = None) -> str:  # min 2048 for sensenova-6.8-flash-lite fallback JSON output
+    """Call a DeepSeek-compatible chat API via urllib (no extra Python deps).
+
+    Defaults to the direct DeepSeek API (DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY).
+    Pass base+api_key to route through the hermes LLM gateway instead — required
+    for s-deepseek-* reasoning models, which the direct DeepSeek endpoint does
+    not expose (would 404 / fall back).
+    """
     import json as _json
     import urllib.request
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        # try loading from .env
-        env_path = os.path.expanduser("~/.openclaw/.env")
-        if os.path.exists(env_path):
-            with open(env_path) as f:
-                for line in f:
-                    if line.startswith("DEEPSEEK_API_KEY="):
-                        api_key = line.split("=", 1)[1].strip()
-                        break
-
-    base = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    if base is None:
+        base = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    if api_key is None:
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if not api_key:
+            # try loading from .env
+            env_path = os.path.expanduser("~/.openclaw/.env")
+            if os.path.exists(env_path):
+                with open(env_path) as f:
+                    for line in f:
+                        if line.startswith("DEEPSEEK_API_KEY="):
+                            api_key = line.split("=", 1)[1].strip()
+                            break
 
     payload = {
         "model": model,
@@ -61,6 +68,13 @@ def _chat(messages: List[Dict[str, str]], *, model: str, temperature: float = 0.
             return data["choices"][0]["message"]["content"]
     except Exception as e:
         return f"[BACKEND_ERROR] {type(e).__name__}: {str(e)[:200]}"
+
+
+def _chat_gw(messages: List[Dict[str, str]], *, model: str, temperature: float = 0.2, max_tokens: int = 2048) -> str:
+    """Route a chat call through the hermes LLM gateway (supports s-deepseek-*)."""
+    base = os.environ.get("HERMES_GATEWAY_URL", "http://127.0.0.1:4142/v1")
+    api_key = os.environ.get("LITELLM_MASTER_KEY", os.environ.get("LLM_API_KEY", ""))
+    return _chat(messages, model=model, temperature=temperature, max_tokens=max_tokens, base=base, api_key=api_key)
 
 
 def _embed(text: str) -> List[float]:
@@ -89,7 +103,7 @@ class OpenClawDeepSeekBackend(Backend):
 
     - "model" passed to constructor = optimizer model (default: deepseek-v4-pro)
     - "judge_model" = judge model (default: deepseek-v4-pro for quality)
-    - "cheap_model" = budget-fallback (deepseek-v4-flash)
+    - "cheap_model" = budget-fallback via hermes gateway (s-deepseek-v4-flash)
     """
 
     name = "openclaw-deepseek"
@@ -98,7 +112,7 @@ class OpenClawDeepSeekBackend(Backend):
         self,
         model: str = "deepseek-v4-pro",
         judge_model: str = "deepseek-v4-pro",
-        cheap_model: str = "deepseek-v4-flash",
+        cheap_model: str = "s-deepseek-v4-flash",
     ):
         self._model = model
         self._judge_model = judge_model
@@ -107,6 +121,15 @@ class OpenClawDeepSeekBackend(Backend):
 
     def tokens_used(self) -> int:
         return self._tokens
+
+    # ── 0. cheap: budget-fallback chat via hermes gateway (s-deepseek-v4-flash) ──
+    def cheap(self, messages: List[Dict[str, str]], *, temperature: float = 0.2, max_tokens: int = 2048) -> str:
+        """Budget-fallback chat, routed through the hermes gateway.
+
+        The direct DeepSeek API does not expose s-deepseek-* reasoning models,
+        so cheap_model MUST go via the gateway (else it would 404 / fall back).
+        """
+        return _chat_gw(messages, model=self._cheap_model, temperature=temperature, max_tokens=max_tokens)
 
     # ── 1. attempt: produce a response given the task + skill + memory ──
     def attempt(self, task: TaskRecord, skill: str, memory: str) -> str:

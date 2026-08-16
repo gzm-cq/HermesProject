@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 # === Default Paths ===
@@ -218,6 +219,96 @@ PARAM_DEFS = [
     # === SAG 生产端闭环（F-3）：dream-daily 读取 DREAM_PROMOTE_THRESHOLD（.env），
     #     auto-tuner 基于 kn_judge_relevant_rate_sag 反馈动态调节晋升阈值（消费侧质量差→收紧晋升）。
     ("DREAM_PROMOTE_THRESHOLD",    0.6, 0.3, 0.9, 0.05, "kn_judge_relevant_rate_sag"),
+    # === 知识树建边（闭环扩展）：auto-tuner 基于 kt_orphan_pct 反馈调节建边相似度阈值，
+    #     孤儿率偏高→降低阈值→更多同科高相似边→孤儿率下降（闭环自愈）。
+    #     下界 0.55：相似度中位数约 0.467，低于 0.55 会连入语义弱相关 KP（噪声边），故设 floor。
+    ("KT_EDGE_SIM_THRESHOLD",      0.65, 0.55, 0.85, 0.05, "kt_orphan_pct"),
+
+    # === 知识树候选参数闭环（Phase A/B/C）===
+    # 接入三要件：① 消费侧有 env 读取（config.py env_mapping / complex.py / cli.py）
+    #            ② 反馈键已注册于 FEEDBACK_KEYS
+    #            ③ 反馈每轮由 analyzer 真实计算并写入 daily summary
+    # 注意：所有阈值范围刻意收紧为安全区间，即便 auto-tuner 推到边界也不会破坏知识树。
+    # --- Phase A ---
+    # K1: 跨 subject 向量桥接建边阈值（complex.py:166）。与 same_subject 同效应：阈值↓→边↑→孤儿率↓。
+    ("KT_VECTOR_EDGE_SIM_THRESHOLD", 0.65, 0.55, 0.85, 0.05, "kt_orphan_pct"),
+    # K3: 域合并余弦阈值（cli.py / consolidation.py）。域划分粒度：阈值↑→更少合并→碎片域↑。
+    ("KT_DOMAIN_MERGE_THRESHOLD",   0.60, 0.40, 0.80, 0.05, "kt_fragment_domains"),
+    # K2 subject_match_threshold（科目匹配阈值）延后接入：经全仓核查该字段无任何消费方
+    #   （仅定义于 config.py 默认值与 default.yaml），auto-tuning 无因果反馈 → 违反「无无效参数」原则，
+    #   故仅保留 env 映射（KT_SUBJECT_MATCH_THRESHOLD）待未来接入 subject 匹配逻辑后再进 PARAM_DEFS。
+    # --- Phase B ---
+    # K4: 阶段1候选数上限（merged.py:220）。上限↑→覆盖度↑但噪声率↑。
+    ("KT_MAX_CANDIDATES_PER_ARTICLE", 15, 5, 40, 5, "kt_candidate_noise_rate"),
+    # K5: 拆解轮数上限（split.py:307）。上限↑→分解更深→过度拆解率↑。
+    ("KT_SPLIT_MAX_ROUNDS", 2, 1, 5, 1, "kt_over_split_rate"),
+    # --- Phase C（K6-K9，已确认被消费方真实读取）---
+    # K6: 文章截断长度（merged.py:142）。↑→信息更全→低置信 KP 占比↓。
+    ("KT_ARTICLE_MAX_CHARS", 12000, 4000, 30000, 2000, "kt_low_conf_kp_rate"),
+    # K7: 直接判重阈值（run.py:440）。↑→更严格判重→保留更多→低置信占比↑（噪声）。
+    ("KT_DEDUP_THRESHOLD_DIRECT", 0.95, 0.85, 0.99, 0.01, "kt_low_conf_kp_rate"),
+    # K8: LLM 确认区间下界（run.py:441）。与 K7 同向。
+    ("KT_DEDUP_THRESHOLD_LLM", 0.90, 0.80, 0.98, 0.01, "kt_low_conf_kp_rate"),
+    # K9: 矛盾检测阈值（run.py:435 已 plumbbed 到 admit）。↑→更少冲突标记→待审积压↓。
+    ("KT_CONFLICT_THRESHOLD", 0.80, 0.60, 0.95, 0.05, "kt_pending_conflict_rate"),
+
+    # === 能力飞轮 / Self-Evolving 候选参数闭环（Phase B/C）===
+    # S1: 反思置信度阈值（kanban_reflection from_env）。↑→仅高置信反思被采纳→采纳率↓但质量↑。
+    ("KN_REFLECTION_CONFIDENCE", 0.6, 0.3, 0.9, 0.05, "se_reflection_accept_rate"),
+    # S2: 反思读取最近 N 轮 trace（kanban_reflection from_env）。↑→上下文更全→平均置信↑。
+    ("KN_REFLECTION_MAX_TRACE_LINES", 5, 1, 15, 1, "se_reflection_mean_confidence"),
+    # S3-S6: 重组算子阈值（recombination.py RecombinationConfig.from_env）。
+    #   当前 SE 夜行 driver 仅运行 revise→refine，未接入重组；反馈键 se_recombine_synergy_avg
+    #   在重组未启用时为 0（非 None）→ auto-tuner 自动锁定，不会伪优化。
+    #   启用方式：在 self-evolving-nightly 调度设 SE_ENABLE_RECOMBINE=1，driver 记录 synergy_score。
+    # S3: 重组组件上限。
+    ("SE_RECOMBINE_MAX_COMPONENTS", 5, 2, 10, 1, "se_recombine_synergy_avg"),
+    # S4: 语义相似合并阈值。
+    ("SE_RECOMBINE_SEMANTIC_SIM", 0.7, 0.5, 0.9, 0.05, "se_recombine_synergy_avg"),
+    # S5: 冲突严重度阈值。
+    ("SE_RECOMBINE_CONFLICT_SEVERITY", 0.5, 0.3, 0.8, 0.05, "se_recombine_synergy_avg"),
+    # S6: Jaccard 快判上下界（两个独立 env 变量，共用同一质量反馈）。
+    ("SE_RECOMBINE_JACCARD_LOW", 0.3, 0.1, 0.5, 0.05, "se_recombine_synergy_avg"),
+    ("SE_RECOMBINE_JACCARD_HIGH", 0.7, 0.5, 0.9, 0.05, "se_recombine_synergy_avg"),
+]
+
+# ============================================================
+# 召回护栏（多目标约束 · B 项落地）
+# ============================================================
+# 背景：auto-tuner 用 joint_majority 软投票定组方向，当精度指标（kn_judge_*）
+# 占多数票时会把所有成员（含收紧型过滤参数）一起上调，把召回（router_empty_pct /
+# sag_on_pct）压塌——即"单目标过拟合"。本护栏作为「硬约束层」叠加在策略之上：
+# 当某召回指标越界（cmp 成立）时，被守护参数的「收紧方向」被禁止；若组策略仍要求
+# 沿该方向移动，则强制反向（loosen），给召回恢复空间。软投票保留，仅加硬顶。
+#
+# 字段：
+#   metric   daily summary 中的反馈键
+#   cmp      "ge" 表示 metric >= bound 触发（上限，down_better，如空结果率）
+#            "le" 表示 metric <= bound 触发（下限，up_better，如 SAG 开启率）
+#   bound    触发阈值（选值介于「健康线 <10」与「告警线 20」之间，取 15 作操作红线）
+#   label    人类可读标签（写进调优 reason 便于审计）
+#   guards   [(param, tighten_dir), ...]
+#            tighten_dir = 该参数「收紧过滤」的方向（"up"/"down"），越界时禁止此方向、
+#            强制反向（loosen）。只列真正收紧召回的参数，'loose 型'参数（如
+#            KN_MAX_RESULTS / KN_SAG_SEARCH_TOP_K ↑=更松）不列入，避免反向误伤。
+RECALL_GUARDS = [
+    {
+        "metric": "router_empty_pct", "cmp": "ge", "bound": 15.0,
+        "label": "空结果率上限",
+        "guards": [
+            ("KN_MIN_SCORE", "up"),
+            ("KN_SCORE_SPAN_TOP3_THRESHOLD", "up"),
+            ("KN_SCORE_SPAN_HALF_THRESHOLD", "up"),
+        ],
+    },
+    {
+        "metric": "sag_on_pct", "cmp": "le", "bound": 10.0,
+        "label": "SAG 开启率下限",
+        "guards": [
+            ("KN_SAG_MIN_SCORE", "up"),
+            ("KN_SAG_POINTER_THRESHOLD", "up"),
+        ],
+    },
 ]
 
 FEEDBACK_KEYS = [
@@ -236,7 +327,118 @@ FEEDBACK_KEYS = [
     "kn_judge_relevant_rate_h", "kn_judge_avg_relevance_h", "kn_judge_sample_count_h",
     "kn_judge_relevant_rate_kt", "kn_judge_avg_relevance_kt", "kn_judge_sample_count_kt",
     "kn_judge_relevant_rate_sag", "kn_judge_avg_relevance_sag", "kn_judge_sample_count_sag",
+    "kt_orphan_pct",
+    # 知识树闭环扩展反馈键（来自 kt-baseline-latest.json 的 metrics，analyzer 每轮计算）
+    "kt_fragment_domains",
+    "kt_candidate_noise_rate",     # 候选噪声率（低置信 KP 占比代理），越低越好
+    "kt_over_split_rate",          # 过度拆解率（碎片域/总域），越低越好
+    "kt_low_conf_kp_rate",         # 低置信 KP 占比，越低越好（K6/K7/K8 共用）
+    "kt_pending_conflict_rate",    # 待审矛盾积压率，越低越好（K9）
+    # 能力飞轮 / Self-Evolving 闭环扩展反馈键（来自 self-evolving output JSON，analyzer 每轮计算）
+    "se_reflection_accept_rate",       # 反思置信度达标率，越高越好（S1）
+    "se_reflection_mean_confidence",  # 反思平均置信度，越高越好（S2）
+    "se_recombine_synergy_avg",       # 重组协同得分均值，越高越好（S3-S6，需启用重组）
 ]
+
+# ============================================================
+# 参数功能组（候选参数闭环 · 分组并行调优）
+# ============================================================
+# 设计动机：候选参数按「功能」天然成组，组内参数相互耦合（共享反馈键或竞争同一指标），
+# 若像旧逻辑那样「每次只动一个参数、隔很多天各调一次」，会打破耦合、收敛慢且可能互相抵消。
+# 新模型：auto-tuner 按 *组* 并行调优——每轮把全部「反馈可信且未收敛」的组都调了，
+# 组内多个耦合参数按该组的策略 *一起* 移动。
+#
+# GroupSpec 字段：
+#   gid          组 id（state/日志主键）
+#   label        人类可读名
+#   members      组内参数名元组（必须都在 PARAM_DEFS 中）
+#   strategy     调优策略：
+#                 "joint_majority"  多参耦合组：组内反馈键多数投票定「组方向」，
+#                                    改善→各成员沿其有利方向同调，恶化→整体反向。
+#                 "single"          单参组：沿用原 determine_direction 单参逻辑（退化为组合适）。
+#                 "synergy_search"  重组组：以 se_recombine_synergy_avg 单一标量驱动，
+#                                    改善→沿上次方向微调，恶化→整体回滚到上次联合移动前的值。
+#   enabled_when 可选：仅当该 env 变量为真时组才参与（如因果链组依赖 KN_ENABLE_CAUSAL_CHAIN）。
+#   feedback     留空→自动取 members 在 PARAM_DEFS 中 feedback_csv 的并集（推荐）。
+@dataclass(frozen=True)
+class GroupSpec:
+    gid: str
+    label: str
+    members: tuple
+    strategy: str
+    enabled_when: str | None = None
+    feedback: tuple = ()
+    note: str = ""
+
+    def feedback_keys(self) -> List[str]:
+        if self.feedback:
+            return list(self.feedback)
+        keys: List[str] = []
+        for m in self.members:
+            pdef = next((p for p in PARAM_DEFS if p[0] == m), None)
+            if not pdef:
+                continue
+            for k in (s.strip() for s in pdef[5].split(",") if s.strip()):
+                if k not in keys:
+                    keys.append(k)
+        return keys
+
+
+# 功能组清单（顺序即日志/调试确定性顺序，不决定调优先后——每轮所有可信组并行）
+PARAM_GROUPS: List[GroupSpec] = [
+    # —— 数据飞轮：知识导航 4 路 ——
+    GroupSpec("hindsight", "Hindsight 召回路",
+              ("KN_MIN_SCORE", "KN_MAX_RESULTS", "KN_MAX_TEXT_LENGTH",
+               "KN_TEMPORAL_HALFLIFE", "KN_TEMPORAL_FLOOR_WEIGHT"),
+              "joint_majority"),
+    GroupSpec("sag", "SAG 召回路",
+              ("KN_SAG_MAX_INJECT", "KN_SAG_SEARCH_TOP_K", "KN_SAG_MIN_SCORE",
+               "KN_SAG_POINTER_THRESHOLD"),
+              "joint_majority"),
+    GroupSpec("xdedup", "跨域去重", ("KN_CROSS_DOMAIN_DEDUP_DEMOTE_FACTOR",), "single"),
+    GroupSpec("rerank", "全局打分/重排",
+              ("KN_LAMBDA_MRR", "KN_SCORE_SPAN_TOP3_THRESHOLD", "KN_SCORE_SPAN_HALF_THRESHOLD"),
+              "joint_majority"),
+    GroupSpec("causal", "因果链提权",
+              ("KN_CAUSAL_BOOST_ALPHA", "KN_CAUSAL_BOOST_CAP"),
+              "joint_majority", enabled_when="KN_ENABLE_CAUSAL_CHAIN"),
+    # —— Skill 控制环 F-2 / SAG 生产端 F-3 ——
+    GroupSpec("skillctl", "Skill 控制环 F-2",
+              ("SKILLOPT_MAX_PER_NIGHT", "SKILLOPT_COOLDOWN_DAYS"), "joint_majority"),
+    GroupSpec("sagprod", "SAG 生产端 F-3", ("DREAM_PROMOTE_THRESHOLD",), "single"),
+    # —— 知识树 ——
+    GroupSpec("kt_edge", "知识树建边",
+              ("KT_EDGE_SIM_THRESHOLD", "KT_VECTOR_EDGE_SIM_THRESHOLD"), "joint_majority"),
+    GroupSpec("kt_domain", "知识树域划分", ("KT_DOMAIN_MERGE_THRESHOLD",), "single"),
+    GroupSpec("kt_split", "知识树候选/拆解",
+              ("KT_MAX_CANDIDATES_PER_ARTICLE", "KT_SPLIT_MAX_ROUNDS"), "joint_majority"),
+    GroupSpec("kt_quality", "知识树抽取质量",
+              ("KT_ARTICLE_MAX_CHARS", "KT_DEDUP_THRESHOLD_DIRECT",
+               "KT_DEDUP_THRESHOLD_LLM", "KT_CONFLICT_THRESHOLD"),
+              "joint_majority"),
+    # —— Self-Evolving 能力飞轮 ——
+    GroupSpec("se_reflect", "Self-Evolving 反思",
+              ("KN_REFLECTION_CONFIDENCE", "KN_REFLECTION_MAX_TRACE_LINES"), "joint_majority"),
+    GroupSpec("se_recombine", "Self-Evolving 重组",
+              ("SE_RECOMBINE_MAX_COMPONENTS", "SE_RECOMBINE_SEMANTIC_SIM",
+               "SE_RECOMBINE_CONFLICT_SEVERITY", "SE_RECOMBINE_JACCARD_LOW",
+               "SE_RECOMBINE_JACCARD_HIGH"),
+              "synergy_search"),
+]
+
+# gid → GroupSpec 快速查表
+GROUP_BY_ID = {g.gid: g for g in PARAM_GROUPS}
+# 参数名 → 所属组（一个参数只属于一个组）
+PARAM_TO_GROUP: Dict[str, str] = {}
+for _g in PARAM_GROUPS:
+    for _m in _g.members:
+        PARAM_TO_GROUP[_m] = _g.gid
+
+# 分组并行调优总开关 + 并行度上限
+#   GROUP_TUNING_ENABLED=False → 退回旧的单参 select_param_to_tune 行为（兼容回滚）
+#   MAX_GROUPS_PER_RUN=0       → 0 表示不限，每轮调全部「可信且未收敛」的组（默认）
+GROUP_TUNING_ENABLED = True
+MAX_GROUPS_PER_RUN = 0
 
 # KN Judge 子配置：控制健康巡检报告何时触发、最小样本量、最大耗时保护等
 KN_JUDGE_CFG = {

@@ -56,11 +56,14 @@ def call_llm(prompt: str, config: dict) -> str:
     if config["key"]:
         headers["Authorization"] = f"Bearer {config['key']}"
 
+    # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
+    _ge_think = config["model"].startswith(("s-deepseek", "agnes"))
     body = json.dumps({
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 150,
+        "max_tokens": 16384 if _ge_think else 150,
+        **({"thinking": {"type": "enabled"}} if _ge_think else {}),
     }).encode("utf-8")
 
     ctx = ssl.create_default_context()

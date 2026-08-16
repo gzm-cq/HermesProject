@@ -172,6 +172,18 @@ def run(state_file: str, trace_file: str | None, output_dir: str,
             else:
                 blocked += 1
 
+        # 可选：重组算子（S3-S6 闭环反馈来源）。默认关闭（SE_ENABLE_RECOMBINE!=1），
+        # 开启后记录 synergy_score 到 output JSON 的 recombination 字段，
+        # 供健康报告聚合 se_recombine_synergy_avg。失败则静默跳过，不影响主流程。
+        recombination_info: dict = {}
+        if os.environ.get("SE_ENABLE_RECOMBINE") == "1" and revised and refined:
+            try:
+                from self_evolving.operators.recombination import recombine
+                _rcb = recombine([revised, refined], context or "", config_path=config_path)
+                recombination_info = {"synergy_score": float(getattr(_rcb, "synergy_score", 0.0) or 0.0)}
+            except Exception as _re:  # noqa: BLE001
+                print(f"  [SE][recombine] 跳过（非致命）: {_re}")
+
         rec = {
             "skill": skill,
             "task_id": task_id,
@@ -180,6 +192,7 @@ def run(state_file: str, trace_file: str | None, output_dir: str,
             "auto_applied": bool(auto_apply and refined),
             "revision": getattr(rev_out, "to_dict", lambda: {})(),
             "refinement": getattr(ref_out, "to_dict", lambda: {})(),
+            "recombination": recombination_info,
         }
         out_path = out_dir / f"{skill}_{task_id}.json"
         try:

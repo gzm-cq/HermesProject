@@ -126,30 +126,39 @@ class _PendingCtx:
 
 def _test_metrics_after_guard():
     ctx = _PendingCtx(today_date=ctx_today, tune_date=ctx_tune)
-    # mock 依赖
+    # mock 依赖（P0 修复后 handle_pending_restart 改用 _get_all_pending_tunes 遍历全部 pending）
+    _orig_pending = tuner._get_all_pending_tunes
     _orig_last = tuner._get_last_tune_any
     _orig_verify = tuner.verify_restart
     _orig_extract = tuner._extract_metrics_for_tuning
     _orig_update = tuner.update_log_entry
     _orig_report_today = tuner._report_date_today
-    tuner._get_last_tune_any = lambda: {"parameter": "KN_MAX_RESULTS", "date": ctx.tune_date,
+    _orig_load = tuner.load_state
+    _orig_save = tuner.save_state
+    tuner._get_all_pending_tunes = lambda: [{"parameter": "KN_MAX_RESULTS", "date": ctx.tune_date,
                                         "old_value": 3.0, "new_value": 4.0, "direction": "up",
                                         "timestamp": "2026-08-09T00:00:00+08:00", "status": "pending_restart",
-                                        "metrics_before": {"router_empty_pct": 1.3}}
+                                        "metrics_before": {"router_empty_pct": 1.3}}]
+    tuner._get_last_tune_any = lambda: None
     tuner.verify_restart = lambda ts: True
     tuner._extract_metrics_for_tuning = lambda t, y: {"today": ctx.today_rec, "yesterday": None}
     tuner._report_date_today = lambda: ctx.today_date
+    tuner.load_state = lambda: {}
+    tuner.save_state = lambda s: None
     def _fake_update(param, date, status, metrics_after=None):
         ctx.applied_called = True
     tuner.update_log_entry = _fake_update
     try:
         ret = tuner.handle_pending_restart()
     finally:
+        tuner._get_all_pending_tunes = _orig_pending
         tuner._get_last_tune_any = _orig_last
         tuner.verify_restart = _orig_verify
         tuner._extract_metrics_for_tuning = _orig_extract
         tuner.update_log_entry = _orig_update
         tuner._report_date_today = _orig_report_today
+        tuner.load_state = _orig_load
+        tuner.save_state = _orig_save
     return ret, ctx
 
 # 场景A：报告日期 == 调优日（同名报告，fallback 复用）→ 保持 pending（True），不写 applied

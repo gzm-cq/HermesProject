@@ -20,7 +20,7 @@ DB_URL = os.environ.get("HINDSIGHT_DB_URL",
                          "postgresql://postgres:postgres@127.0.0.1:5434/hindsight")
 LLM_API_URL = os.environ.get("LLM_API_URL", "http://127.0.0.1:4142/v1/chat/completions")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", os.environ.get("LITELLM_MASTER_KEY", ""))
-LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+LLM_MODEL = os.environ.get("LLM_MODEL", "s-deepseek-v4-flash")
 BATCH_SIZE = 20
 MAX_RETRIES = 3
 RETRY_INTERVAL_SEC = 3
@@ -133,22 +133,28 @@ def extract_batch(texts: list[str]) -> list[list[str]]:
     for attempt in range(MAX_RETRIES):
         try:
             with httpx.Client(timeout=120) as cli:
+                # thinking-required 模型（s-deepseek*/agnes*/deepseek-v4-flash）必须启用 thinking
+                # 且 max_tokens>8192（业务硬约束）；其余模型保持原行为（无 thinking / 4096）。
+                _is_think_model = LLM_MODEL.startswith(("s-deepseek", "agnes", "deepseek-v4-flash"))
+                _payload = {
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role":"system", "content":_EXTRACT_SYSTEM},
+                        {"role":"user", "content":
+                            "逐条提取以下文本中的具体实体：\n\n"
+                            + "\n---\n".join(f"[{i}] {t[:200]}" for i,t in enumerate(texts))
+                            + "\n\n对每条返回 JSON 数组。"},
+                    ],
+                    "temperature":0.1,
+                    "max_tokens": 16384 if _is_think_model else 4096,
+                }
+                if _is_think_model:
+                    _payload["thinking"] = {"type": "enabled"}
                 resp = cli.post(
                     LLM_API_URL,
                     headers={"Content-Type":"application/json",
                              "Authorization":f"Bearer {LLM_API_KEY}"},
-                    json={
-                        "model": LLM_MODEL,
-                        "messages": [
-                            {"role":"system", "content":_EXTRACT_SYSTEM},
-                            {"role":"user", "content":
-                                "逐条提取以下文本中的具体实体：\n\n"
-                                + "\n---\n".join(f"[{i}] {t[:200]}" for i,t in enumerate(texts))
-                                + "\n\n对每条返回 JSON 数组。"},
-                        ],
-                        "temperature":0.1,
-                        "max_tokens":4096,
-                    }
+                    json=_payload,
                 )
                 resp.raise_for_status()
                 content = resp.json()["choices"][0]["message"].get("content","").strip()

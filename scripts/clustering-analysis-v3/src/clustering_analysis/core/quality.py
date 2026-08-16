@@ -209,17 +209,23 @@ def score_memory_quality(
 
     for attempt in range(retries):
         try:
+            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
+            _q_think = (model or "").startswith(("s-deepseek", "agnes"))
+            _q_body = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+            }
+            if _q_think:
+                _q_body["thinking"] = {"type": "enabled"}
+                _q_body["max_tokens"] = 16384
             resp = requests.post(
                 api_url,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",
                 },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1,
-                },
+                json=_q_body,
                 timeout=(10, 60),
             )
             resp.raise_for_status()

@@ -657,6 +657,13 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "param_tune_active_count": param_tuning_m.get("active_count", 0) if isinstance(param_tuning_m, dict) else 0,
         "param_tune_any_pending": bool(param_tuning_m.get("any_pending_restart", False)) if isinstance(param_tuning_m, dict) else False,
         "kt_orphan_pct": kt_m.get("orphan_pct", 0),
+        "kt_avg_confidence": kt_m.get("avg_confidence", 0),
+        "kt_fragment_domains": kt_m.get("fragment_domains", 0),
+        # 知识树闭环扩展反馈键（Phase A/B/C 候选参数，写入 concrete 值避免 auto-tuner 误判改善）
+        "kt_candidate_noise_rate": kt_m.get("kt_candidate_noise_rate", 0),
+        "kt_over_split_rate": kt_m.get("kt_over_split_rate", 0),
+        "kt_low_conf_kp_rate": kt_m.get("kt_low_conf_kp_rate", 0),
+        "kt_pending_conflict_rate": kt_m.get("kt_pending_conflict_rate", 0),
         "memory_usage_pct": memory_m.get("memory_usage_pct", 0),
         "memory_user_usage_pct": memory_m.get("user_usage_pct", 0),
         "memory_hindsight_count": memory_m.get("total_hindsight", 0),
@@ -668,6 +675,10 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "se_applied_skill_count": se_m.get("se_applied_skill_count", 0),
         "se_last_run": se_m.get("last_run"),
         "se_last_se_applied": se_m.get("last_se_applied"),
+        # 能力飞轮闭环扩展反馈键（Phase B/C 候选参数）
+        "se_reflection_accept_rate": se_m.get("se_reflection_accept_rate", 0),
+        "se_reflection_mean_confidence": se_m.get("se_reflection_mean_confidence", 0),
+        "se_recombine_synergy_avg": se_m.get("se_recombine_synergy_avg", 0),
     })
 
     # === 优化方向 ===

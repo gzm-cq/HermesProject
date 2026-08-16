@@ -987,11 +987,25 @@ def _post_process_recall(
     query_trunc: str,
     t0: float,
     eval_match_param: dict | None,
+    s_active: bool = False,
+    sag_active: bool = False,
 ) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
     """后处理：降级 + 过滤 + boost + 因果链 + 压缩 + 跨域去重 + KT对齐。"""
+    # 空结果归因字段：source=本次启用的召回路由, intent=查询意图类型(eval/general)
+    _routes = []
+    if hs_active:
+        _routes.append("hindsight")
+    if kt_active:
+        _routes.append("kt")
+    if s_active:
+        _routes.append("skill")
+    if sag_active:
+        _routes.append("sag")
+    _source = "+".join(_routes) if _routes else "none"
+    _intent = "eval" if eval_match_param else "general"
     if not result and hs_active:
         if not kt_raw_results:
-            logger.info("recall empty (Hindsight + KT)", extra={"session_id": session_id, "query_trunc": query_trunc, "event": "recall_empty", "latency_ms": int((time.time() - t0) * 1000)})
+            logger.info("recall empty (Hindsight + KT)", extra={"session_id": session_id, "query_trunc": query_trunc, "query": user_message, "source": _source, "intent": _intent, "event": "recall_empty", "latency_ms": int((time.time() - t0) * 1000)})
             return None, {}
         logger.info("Hindsight 无结果，使用 KT-only fallback", extra={"session_id": session_id, "query_trunc": query_trunc, "event": "hindsight_fail_kt_fallback", "kt_count": len(kt_raw_results)})
         result = {"results": [], "trace": {}}
@@ -1005,7 +1019,7 @@ def _post_process_recall(
     if not raw_results and not kt_raw_results and not skill_context:
         if hs_active:
             circuit_record_success()
-        logger.info("recall empty results", extra={"session_id": session_id, "query_trunc": query_trunc, "event": "recall_empty_results", "latency_ms": latency_ms})
+        logger.info("recall empty results", extra={"session_id": session_id, "query_trunc": query_trunc, "query": user_message, "source": _source, "intent": _intent, "event": "recall_empty_results", "latency_ms": latency_ms})
         return None, {}
 
     if raw_results:
@@ -1153,6 +1167,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
     _pp_result, _pp_meta = _post_process_recall(
         result, kt_raw_results, _hs_active, _kt_active, _skill_context,
         session_id, user_message, query_trunc, t0, _eval_match,
+        s_active=_s_active, sag_active=_sag_active,
     )
     if _pp_result is None:
         if sag_raw_results and _sag_active:

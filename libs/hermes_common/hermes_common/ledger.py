@@ -61,3 +61,52 @@ def append_ledger_event(
         return True
     except Exception:
         return False
+
+
+def recent_skill_patch_trend(
+    skill_name: str,
+    *,
+    window: int = 10,
+    neg_threshold: int = 3,
+    home: Optional[str] = None,
+) -> "tuple[int, int, float]":
+    """读取账本中某 skill 近期 ``skillopt_patch`` 事件，返回 ``(次数, 高负向前置次数, 高负向率)``。
+
+    用于 F-1 反向门控：若某 skill 近期多次在「仍携带较重负反馈(``neg_before`` >= ``neg_threshold``)
+    时才被打补丁」，说明自动改写未能根治、陷入反复打补丁的循环，应暂停自动 patch 转人工审阅。
+
+    Returns:
+        ``(count, high_neg_count, ratio)``；任何异常返回 ``(0, 0, 0.0)``（best-effort，不阻断主流程）。
+    """
+    try:
+        p = _ledger_path(home)
+        if not p.exists():
+            return (0, 0, 0.0)
+        events: list[dict] = []
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("event") != "skillopt_patch":
+                    continue
+                if rec.get("skill") != skill_name:
+                    continue
+                events.append(rec)
+        recent = events[-window:]
+        count = len(recent)
+        if count == 0:
+            return (0, 0, 0.0)
+        high_neg = 0
+        for rec in recent:
+            nb = rec.get("neg_before")
+            if isinstance(nb, int) and nb >= neg_threshold:
+                high_neg += 1
+        ratio = high_neg / count
+        return (count, high_neg, ratio)
+    except Exception:
+        return (0, 0, 0.0)

@@ -121,6 +121,14 @@ def load_config(config_path: str) -> dict[str, Any]:
         "max_candidates_per_article": "KT_MAX_CANDIDATES_PER_ARTICLE",
         "split_max_rounds": "KT_SPLIT_MAX_ROUNDS",
         "self_explanatory_rules": "KT_SELF_EXPLANATORY_RULES",
+        # 闭环调优候选参数（飞轮 auto-tuner 可通过 .env 下发，故需在此建 ENV 覆盖映射）
+        #   K2 subject_match_threshold：当前无活跃消费方（占位，待接入 subject 匹配逻辑后再进 PARAM_DEFS）
+        #   K6/K7/K8/K9：已被消费方读取，可直接接入 auto-tuner
+        "article_max_chars": "KT_ARTICLE_MAX_CHARS",
+        "dedup_threshold_direct": "KT_DEDUP_THRESHOLD_DIRECT",
+        "dedup_threshold_llm": "KT_DEDUP_THRESHOLD_LLM",
+        "conflict_threshold": "KT_CONFLICT_THRESHOLD",
+        "subject_match_threshold": "KT_SUBJECT_MATCH_THRESHOLD",
         # P0-2: pgvector 去重
         "kb_dedup_pgvector": "KB_DEDUP_PGVECTOR",
         # P0-3: 合并模式领域判断
@@ -147,7 +155,11 @@ def load_config(config_path: str) -> dict[str, Any]:
             config[key] = os.environ[env_var]
 
     # Phase A: ENV 值类型转换（ENV 值都是字符串）
-    _int_env_fields = {"max_candidates_per_article", "split_max_rounds"}
+    _int_env_fields = {"max_candidates_per_article", "split_max_rounds", "article_max_chars"}
+    _float_env_fields = {
+        "subject_match_threshold", "conflict_threshold",
+        "dedup_threshold_direct", "dedup_threshold_llm",
+    }
     _bool_env_fields = {
         "self_explanatory_rules", "kb_dedup_pgvector", "kb_merged_domain",
         "enhanced_admission", "admission_low_quality_patterns",
@@ -163,6 +175,12 @@ def load_config(config_path: str) -> dict[str, Any]:
         if key in config and isinstance(config[key], str):
             try:
                 config[key] = int(config[key])
+            except ValueError:
+                pass
+    for key in _float_env_fields:
+        if key in config and isinstance(config[key], str):
+            try:
+                config[key] = float(config[key])
             except ValueError:
                 pass
     for key in _bool_env_fields:

@@ -11,6 +11,7 @@ config/**/*.yaml
 pyproject.toml
 README.md
 scripts/**/*.sh
+scripts/**/*.py
 skills/**/SKILL.md
 
 # === Exclude ===

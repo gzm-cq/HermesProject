@@ -203,17 +203,20 @@ def call_llm(prompt: str, model: str, max_tokens: int = 4096, temperature: float
     base_url = CFG["llm"]["base_url"]
     api_key = os.environ.get("LITELLM_MASTER_KEY", "")
     url = f"{base_url}/v1/chat/completions"
+    # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
+    _dd_think = (model or "").startswith(("s-deepseek", "agnes"))
+    _dd_max = max(max_tokens, 16384) if _dd_think else max_tokens
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
+        "max_tokens": _dd_max,
         "temperature": temperature,
     }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
-    payload["extra_body"] = {"thinking": {"type": "disabled"}}
+    payload["extra_body"] = {"thinking": {"type": "enabled"}} if _dd_think else {"thinking": {"type": "disabled"}}
     resp = requests.post(url, json=payload, headers=headers, timeout=120)
     resp.raise_for_status()
     data = resp.json()

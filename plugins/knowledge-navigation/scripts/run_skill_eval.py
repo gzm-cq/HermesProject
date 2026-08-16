@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # ── 路径 ──
@@ -75,36 +76,43 @@ def run_eval() -> dict:
 
     print(f"  加载 {len(queries)} 条 eval queries...\n", file=sys.stderr)
 
-    results_by_id: dict[str, dict] = {}
-    all_precisions: list[float] = []
-    all_recalls: list[float] = []
-    all_f1s: list[float] = []
-    total_latency = 0.0
+    workers = max(1, int(os.environ.get("SKILL_EVAL_WORKERS", "4")))
     n_total = len(queries)
 
-    for item in queries:
+    def _eval_one(item: dict):
         qid = item["query_id"]
         query = item["query"]
         expected = item.get("expected_skills", [])
-
         t0 = time.time()
         matched = match_skills(query, top_k=3)
         latency = (time.time() - t0) * 1000
-        total_latency += latency
-
         matched_names = [m["name"] for m in matched]
         metrics = compute_metrics(matched_names, expected)
-
-        results_by_id[qid] = {
+        return qid, {
             "query": query,
             "expected": expected,
             "matched": matched_names,
             "latency_ms": round(latency, 0),
             **metrics,
-        }
-        all_precisions.append(metrics["precision"])
-        all_recalls.append(metrics["recall"])
-        all_f1s.append(metrics["f1"])
+        }, latency
+
+    results_by_id: dict[str, dict] = {}
+    all_precisions: list[float] = []
+    all_recalls: list[float] = []
+    all_f1s: list[float] = []
+    total_latency = 0.0
+
+    # 并发执行（match_skills 为只读召回，生产 Router 同已并发调用，线程安全），
+    # 避免串行累加倍耗时被 runner 的 300s 子进程超时掐断。
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_eval_one, item) for item in queries]
+        for future in as_completed(futures):
+            qid, res, latency = future.result()
+            results_by_id[qid] = res
+            all_precisions.append(res["precision"])
+            all_recalls.append(res["recall"])
+            all_f1s.append(res["f1"])
+            total_latency += latency
 
     avg_precision = sum(all_precisions) / n_total
     avg_recall = sum(all_recalls) / n_total

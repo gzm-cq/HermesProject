@@ -8,6 +8,8 @@
 - 2026-07-19: max_tokens 512→2048，加 thinking:disabled，
   content 空时从 reasoning_content 兜底提取 JSON，
   防止 LiteLLM 降级到 sensenova 等推理模型时误报。
+- 2026-08-16: 对 s-deepseek*/agnes 模型强制 thinking enabled + max_tokens=16384（业务硬约束），
+  其余模型保持 thinking disabled / 2048。
 """
 import json
 import os
@@ -27,13 +29,17 @@ if not key:
     sys.exit(1)
 
 try:
+    # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）；
+    # 默认 sensenova 等保持原行为（thinking disabled / 2048）
+    _rs_think = {"type": "enabled"} if model.startswith(("s-deepseek", "agnes")) else {"type": "disabled"}
+    _rs_mt = 16384 if model.startswith(("s-deepseek", "agnes")) else 2048
     resp = httpx.post(
         "http://127.0.0.1:4142/v1/chat/completions",
         json={
             "model": model,
             "temperature": 0.1,
-            "max_tokens": 2048,
-            "thinking": {"type": "disabled"},
+            "max_tokens": _rs_mt,
+            "thinking": _rs_think,
             "messages": [
                 {
                     "role": "system",

@@ -439,6 +439,7 @@ def _run_admit_phase(
         cosine_sim_fn=cosine_similarity,
         threshold_direct=config_dict.get("dedup_threshold_direct", 0.95),
         threshold_llm=config_dict.get("dedup_threshold_llm", 0.90),
+        conflict_threshold=config_dict.get("conflict_threshold", 0.80),
         cold_start_text_dedup=cold_start,
         db_adapter=db if config_dict.get("kb_dedup_pgvector", True) else None,
         enable_pgvector_dedup=config_dict.get("kb_dedup_pgvector", True),
