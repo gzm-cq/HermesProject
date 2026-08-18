@@ -855,8 +855,8 @@ class TestSagRecall:
     def test_do_sag_recall_success(self) -> None:
         """_do_sag_recall 成功返回 sections。"""
         sections = [
-            {"chunkId": "c1", "content": "内容1", "score": 0.9, "documentId": "doc1"},
-            {"chunkId": "c2", "content": "内容2", "score": 0.8, "documentId": "doc2"},
+            {"chunk_id": "c1", "content": "内容1", "score": 0.9, "document_id": "doc1"},
+            {"chunk_id": "c2", "content": "内容2", "score": 0.8, "document_id": "doc2"},
         ]
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -868,13 +868,13 @@ class TestSagRecall:
 
         assert error is None
         assert len(result) == 2
-        assert result[0]["chunkId"] == "c1"
+        assert result[0]["chunk_id"] == "c1"
         assert result[1]["content"] == "内容2"
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert "/search" in call_args[0][0]
         assert call_args[1]["json"]["query"] == "测试查询"
-        assert call_args[1]["json"]["searchMode"] == "fast"
+        assert call_args[1]["json"]["strategy"] == "vector"
 
     def test_do_sag_recall_non_200_returns_empty(self) -> None:
         """SAG 返回非 200 → 返回空列表 + error。"""
@@ -910,8 +910,8 @@ class TestSagRecall:
     def test_sag_results_merged_into_kept(self) -> None:
         """SAG 结果被合并到 kept 候选列表。"""
         sag_sections = [
-            {"chunkId": "c1", "content": "SAG 知识内容1", "score": 0.9, "documentId": "doc-1", "heading": "简介"},
-            {"chunkId": "c2", "content": "SAG 知识内容2", "score": 0.85, "documentId": "doc-2", "heading": "用法"},
+            {"chunk_id": "c1", "content": "SAG 知识内容1", "score": 0.9, "document_id": "doc-1", "heading": "简介"},
+            {"chunk_id": "c2", "content": "SAG 知识内容2", "score": 0.85, "document_id": "doc-2", "heading": "用法"},
         ]
 
         with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
@@ -934,8 +934,8 @@ class TestSagRecall:
     def test_sag_low_score_filtered_out(self) -> None:
         """SAG 低分结果被 min_score 过滤。"""
         sag_sections = [
-            {"chunkId": "c1", "content": "高分内容", "score": 0.9, "documentId": "doc-1"},
-            {"chunkId": "c2", "content": "低分内容", "score": 0.01, "documentId": "doc-2"},
+            {"chunk_id": "c1", "content": "高分内容", "score": 0.9, "document_id": "doc-1"},
+            {"chunk_id": "c2", "content": "低分内容", "score": 0.01, "document_id": "doc-2"},
         ]
 
         with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
@@ -961,8 +961,8 @@ class TestSagRecall:
         assert result is None
         mock_post.assert_not_called()
 
-    def test_router_fallback_sag_closed(self) -> None:
-        """Router 异常 fallback → sag 保守关闭，不调用 SAG。"""
+    def test_router_fallback_sag_open(self) -> None:
+        """Router 异常 fallback → sag 开启（2026-08-17: SAG 本地服务有熔断保护，fallback 不丢知识）。"""
         with patch.object(kn_router, "_router_route", side_effect=RuntimeError("API down")):
             with patch.object(kn_router, "_do_hindsight_recall", return_value={
                 "results": [{"id": "n1", "text": "mem", "score": 0.9}],
@@ -972,7 +972,7 @@ class TestSagRecall:
                     mock_resp = MagicMock()
                     mock_resp.status_code = 200
                     mock_resp.json.return_value = {"sections": [
-                        {"chunkId": "s1", "content": "sag内容", "score": 0.8, "documentId": "d1"}
+                        {"chunk_id": "s1", "content": "sag内容", "score": 0.8, "document_id": "d1"}
                     ]}
                     mock_post.return_value = mock_resp
 
@@ -980,13 +980,13 @@ class TestSagRecall:
                         result = pre_llm_call("sess-fb", self.LONG_QUERY, platform="cli")
 
         assert result is not None
-        assert "sag内容" not in result
-        mock_post.assert_not_called()
+        assert "sag内容" in result
+        mock_post.assert_called_once()
 
     def test_sag_with_hindsight_both_in_output(self) -> None:
         """Hindsight + SAG 同时开启 → 两侧结果都出现在输出中。"""
         sag_sections = [
-            {"chunkId": "sag1", "content": "SAG 的知识", "score": 0.85, "documentId": "doc-a"},
+            {"chunk_id": "sag1", "content": "SAG 的知识", "score": 0.85, "document_id": "doc-a"},
         ]
         hs_result = {
             "results": [{"id": "hs1", "text": "Hindsight 记忆"}],
@@ -1025,7 +1025,7 @@ class TestSagRecall:
     def test_sag_result_default_score(self) -> None:
         """SAG 结果无 score 字段时使用默认值 0.5。"""
         sag_sections = [
-            {"chunkId": "c1", "content": "无分数内容", "documentId": "doc-1"},
+            {"chunk_id": "c1", "content": "无分数内容", "document_id": "doc-1"},
         ]
 
         with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
@@ -1041,9 +1041,9 @@ class TestSagRecall:
         assert "无分数内容" in result
 
     def test_sag_chunk_id_fallback(self) -> None:
-        """SAG 结果无 chunkId 时使用 sag_N 作为 ID。"""
+        """SAG 结果无 chunk_id 时使用 sag_N 作为 ID。"""
         sag_sections = [
-            {"content": "无 chunkId 内容", "score": 0.8, "documentId": "doc-1"},
+            {"content": "无 chunk_id 内容", "score": 0.8, "document_id": "doc-1"},
         ]
 
         with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
@@ -1056,7 +1056,7 @@ class TestSagRecall:
                 result = pre_llm_call("sess-fallback", self.LONG_QUERY, platform="cli")
 
         assert result is not None
-        assert "无 chunkId 内容" in result
+        assert "无 chunk_id 内容" in result
 
     def test_sag_request_timeout_config(self) -> None:
         """SAG 请求使用配置的超时时间。"""
@@ -1073,7 +1073,7 @@ class TestSagRecall:
         assert call_kwargs["timeout"] == CONFIG.sag_search_timeout
 
     def test_sag_request_topk_config(self) -> None:
-        """SAG 请求使用配置的 topK。"""
+        """SAG 请求使用配置的 top_k。"""
         from knowledge_navigation.config import CONFIG
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1084,7 +1084,7 @@ class TestSagRecall:
             _do_sag_recall("查询")
 
         call_json = mock_post.call_args[1]["json"]
-        assert call_json["topK"] == CONFIG.sag_search_top_k
+        assert call_json["top_k"] == CONFIG.sag_search_top_k
 
     def test_sag_circuit_breaker_opens_after_failures(self) -> None:
         """SAG 连续失败后熔断器打开，跳过 recall。"""
@@ -1110,7 +1110,7 @@ class TestSagRecall:
                         pre_llm_call("sess-cb2", self.LONG_QUERY, platform="cli")
                     assert cb._sag_cb._failures == 2
 
-        sag_sections = [{"chunkId": "c1", "content": "内容", "score": 0.9, "documentId": "d1"}]
+        sag_sections = [{"chunk_id": "c1", "content": "内容", "score": 0.9, "document_id": "d1"}]
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"sections": sag_sections}
@@ -1123,7 +1123,7 @@ class TestSagRecall:
     def test_sag_turn_to_turn_dedup(self) -> None:
         """SAG 结果参与 turn-to-turn 去重。"""
         sag_sections = [
-            {"chunkId": "c-dedup", "content": "重复内容", "score": 0.9, "documentId": "doc-1"},
+            {"chunk_id": "c-dedup", "content": "重复内容", "score": 0.9, "document_id": "doc-1"},
         ]
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1142,7 +1142,7 @@ class TestSagRecall:
     def test_sag_candidates_have_standard_score_fields(self) -> None:
         """SAG 候选对齐统一结构，包含 final_score/base_score/rerank_score。"""
         sag_sections = [
-            {"chunkId": "c-std", "content": "标准分数字段", "score": 0.85, "documentId": "doc-std"},
+            {"chunk_id": "c-std", "content": "标准分数字段", "score": 0.85, "document_id": "doc-std"},
         ]
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -1236,7 +1236,7 @@ class TestRecallLoggerEvents:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"sections": [
-            {"chunkId": "s1", "content": "sag 内容", "score": 0.75, "documentId": "d1"}
+            {"chunk_id": "s1", "content": "sag 内容", "score": 0.75, "document_id": "d1"}
         ]}
 
         with patch.object(kn_router, "_router_route",

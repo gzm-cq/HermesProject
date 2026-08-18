@@ -364,9 +364,9 @@ def _do_sag_recall(query: str) -> tuple[list[dict], str | None]:
         source_ids = [s.strip() for s in CONFIG.sag_source_ids.split(",") if s.strip()]
         payload = {
             "query": query,
-            "topK": CONFIG.sag_search_top_k,
-            "searchMode": "fast",
-            "sourceIds": source_ids,
+            "top_k": CONFIG.sag_search_top_k,
+            "strategy": "vector",
+            "source_ids": source_ids,
         }
         headers = {}
         if CONFIG.sag_auth_token:
@@ -519,10 +519,10 @@ def _get_router_mask(session_id: str, user_message: str) -> dict[str, bool]:
         mask.setdefault("h", True)
         mask.setdefault("kt", True)
         mask.setdefault("s", True)
-        mask.setdefault("sag", False)
+        mask.setdefault("sag", True)  # 2026-08-17: fallback 时 SAG 改为开启（本地服务，有熔断保护）
     except Exception as e:
-        logger.warning("Router 调用异常 (%s)，fallback 三路全开，SAG 关闭", e)
-        mask = {"h": True, "kt": True, "s": True, "sag": False}
+        logger.warning("Router 调用异常 (%s)，fallback 四路全开", e)
+        mask = {"h": True, "kt": True, "s": True, "sag": True}
         meta = {"confidence": 0.0, "fallback_reason": "exception", "is_fallback": True}
     log_extra: dict = {"session_id": session_id, "event": "router_mask", "mask": mask}
     # 合并决策诊断 meta（过滤 None，避免 trace 噪音）
@@ -1216,7 +1216,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
             else:
                 text = content
             candidate = {
-                "id": sec.get("chunkId", f"sag_{sag_count}"),
+                "id": sec.get("chunk_id", f"sag_{sag_count}"),
                 "text": text,
                 "score": raw_score,
                 "base_score": raw_score,
@@ -1224,7 +1224,7 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
                 "rerank_score": raw_score,
                 "source": "sag",
                 "heading": heading,
-                "document_id": sec.get("documentId", ""),
+                "document_id": sec.get("document_id", ""),
             }
             if candidate["final_score"] >= CONFIG.sag_min_score:
                 sag_candidates.append(candidate)

@@ -80,10 +80,10 @@ def format_summary(data: dict) -> tuple[str, bool]:
             detail = f"进程 {checks.get('process_count', '?')} 个 {alive} | 健康 {healthy} | PG {pg}"
         elif svc == "sag":
             alive = '✅' if checks.get('sag_process_alive') else '❌'
+            api = '✅' if checks.get('sag_api_reachable') else '❌'
             mcp = '✅' if checks.get('sag_mcp_process_alive') else '❌'
-            http = '✅' if checks.get('http_endpoint','') not in ('000','','') else '❌'
             pg = '✅' if checks.get('pg_connection') else '❌'
-            detail = f"SAG 进程 {alive} | MCP {mcp} | HTTP {http} | PG {pg}"
+            detail = f"SAG {alive} | API {api} | MCP {mcp} | PG {pg}"
         elif svc == "postgres":
             detail = f"连接数 {checks.get('active_connections', '?')} | pgvector {'✅' if checks.get('pgvector_enabled') else '❌'} | 磁盘 {checks.get('disk_usage_pct', '?')}%"
         elif svc == "mcp":

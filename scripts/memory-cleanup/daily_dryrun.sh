@@ -23,7 +23,7 @@ MEMORY_DIR="${HERMES_HOME}/memories"
 export MEMORY_CLEANUP_LLM_MODEL="${MEMORY_CLEANUP_LLM_MODEL:-${LLM_MODEL_LIGHT:-}}"
 
 cron_section "执行记忆清理"
-if bash run.sh --vote 1 --apply; then
+if bash run.sh --vote 1 --apply --quiet; then
     cron_ok "记忆清理完成"
     _STEP_RESULTS+=("✅ 记忆清理完成")
 
@@ -32,37 +32,32 @@ if bash run.sh --vote 1 --apply; then
         # 找最新的清理报告
         LATEST_REPORT=$(ls -t "$MEMORY_DIR"/cleanup-report-*.json 2>/dev/null | head -1 || echo "")
         if [[ -n "$LATEST_REPORT" ]]; then
-            # 提取关键指标
-                    MEMORY_CHARS=$(python3 -c "
-            import json
-            d=json.load(open('$LATEST_REPORT'))
-            s=d.get('sources',{}).get('MEMORY.md',{})
-            print(s.get('after_cleanup',{}).get('keep_chars',0))
-            " 2>/dev/null || echo "0")
-                    USER_CHARS=$(python3 -c "
-            import json
-            d=json.load(open('$LATEST_REPORT'))
-            s=d.get('sources',{}).get('USER.md',{})
-            print(s.get('after_cleanup',{}).get('keep_chars',0))
-            " 2>/dev/null || echo "0")
-                    REMOVE=$(python3 -c "
-            import json
-            d=json.load(open('$LATEST_REPORT'))
-            total=0
-            for s in d.get('sources',{}).values():
-                total+=s.get('total_entries',0)-s.get('after_cleanup',{}).get('keep',0)
-            print(total)
-            " 2>/dev/null || echo "0")
-                    COMPRESS=$(python3 -c "
-            import json
-            d=json.load(open('$LATEST_REPORT'))
-            total=0
-            for s in d.get('sources',{}).values():
-                total+=s.get('phase1_compress',0)
-            print(total)
-            " 2>/dev/null || echo "0")
+            # 提取关键指标（直接从报告 JSON 读取 phase1_* 计数，与 --quiet 输出一致）
+            NOTIFY_JSON=$(python3 -c "
+import json
+d=json.load(open('$LATEST_REPORT'))
+sources=d.get('sources',{})
+mem=sources.get('MEMORY.md',{})
+user=sources.get('USER.md',{})
+mem_after=mem.get('after_cleanup',{})
+user_after=user.get('after_cleanup',{})
+mem_chars=mem_after.get('keep_chars',0)
+user_chars=user_after.get('keep_chars',0)
+merge=mem.get('phase1_merge',0)+user.get('phase1_merge',0)
+compress=mem.get('phase1_compress',0)+user.get('phase1_compress',0)
+hindsight=mem.get('phase1_hindsight',0)+user.get('phase1_hindsight',0)
+remove=mem.get('phase1_remove',0)+user.get('phase1_remove',0)
+print(json.dumps({'mc':mem_chars,'uc':user_chars,'merge':merge,'compress':compress,'hindsight':hindsight,'remove':remove}))
+" 2>/dev/null || echo '{"mc":0,"uc":0,"merge":0,"compress":0,"hindsight":0,"remove":0}')
 
-            BODY="🧹 记忆清理完成\nMEMORY.md: ${MEMORY_CHARS} chars | USER.md: ${USER_CHARS} chars\n删除: ${REMOVE} 条 | 压缩: ${COMPRESS} 条"
+            MC=$(echo "$NOTIFY_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('mc',0))")
+            UC=$(echo "$NOTIFY_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('uc',0))")
+            MERGE=$(echo "$NOTIFY_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('merge',0))")
+            COMPRESS=$(echo "$NOTIFY_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('compress',0))")
+            HINDSIGHT=$(echo "$NOTIFY_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('hindsight',0))")
+            REMOVE=$(echo "$NOTIFY_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('remove',0))")
+
+            BODY="🧹 记忆清理完成\nMEMORY.md: ${MC} chars | USER.md: ${UC} chars\n合并: ${MERGE} 组 | 压缩: ${COMPRESS} 条 | 迁出: ${HINDSIGHT} 条 | 删除: ${REMOVE} 条"
             cron_notify "记忆清理完成" "$BODY" || true
         fi
     fi

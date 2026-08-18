@@ -184,11 +184,11 @@ def _parse_mask(text: str) -> tuple[dict[str, bool] | None, float]:
     try:
         confidence = float(data.get("confidence", 0.5))
     except (TypeError, ValueError):
-        logger.debug("Router confidence invalid, applying fallback h/kt/s 全开+sag关")
-        return {"h": True, "kt": True, "s": True, "sag": False}, 0.0
+        logger.debug("Router confidence invalid, applying fallback h/kt/s 全开+sag开")
+        return {"h": True, "kt": True, "s": True, "sag": True}, 0.0
     if confidence < 0.3:
-        logger.debug("Router confidence=%.2f < 0.3, applying fallback h/kt/s 全开+sag关", confidence)
-        return {"h": True, "kt": True, "s": True, "sag": False}, confidence
+        logger.debug("Router confidence=%.2f < 0.3, applying fallback h/kt/s 全开+sag开", confidence)
+        return {"h": True, "kt": True, "s": True, "sag": True}, confidence
 
     return {
         "h": bool(data.get("h", False)),
@@ -296,9 +296,9 @@ def route(
     start_time = time.time()
     fallback_reason = "unknown"
 
-    # 项目硬约束：SAG fallback 策略在正常和异常路径必须统一为 sag: False
-    # SAG 是延迟加载源，仅在 Router 明确开启时才召回，fallback 时关闭避免误触发
-    FALLBACK_MASK = {"h": True, "kt": True, "s": True, "sag": False}
+    # SAG 是本地服务（有独立熔断器+30s超时保护），fallback 时开启不增加外部压力，
+    # 反而能补全知识召回。2026-08-17: 从 sag:False 改为 sag:True，避免超时降级丢 SAG 知识。
+    FALLBACK_MASK = {"h": True, "kt": True, "s": True, "sag": True}
 
     for attempt in range(2):
         try:
@@ -328,7 +328,7 @@ def route(
             choices = data.get("choices", [])
             if not choices:
                 _incr_fallback("empty_choices")
-                logger.warning("Router LLM 返回空 choices, fallback h/kt/s 全开+sag关")
+                logger.warning("Router LLM 返回空 choices, fallback h/kt/s 全开+sag开")
                 fallback_reason = "empty_choices"
                 break
             choice = choices[0].get("message", {})
@@ -345,13 +345,13 @@ def route(
                 fallback_reason = "json_parse"
                 confidence = 0.0
                 _incr_fallback("json_parse")
-                logger.warning("Router JSON 解析失败, fallback h/kt/s 全开+sag关, raw: %s", raw[:200])
+                logger.warning("Router JSON 解析失败, fallback h/kt/s 全开+sag开, raw: %s", raw[:200])
                 mask = dict(FALLBACK_MASK)
             elif not any(mask.values()):
                 # LLM returned all-False — guard against false negatives
                 # by checking for substantive keywords in the original message
                 if _has_substantive_content(safe_msg):
-                    logger.info("Router 全关但 query 含实质内容, fallback h/kt/s 全开+sag关, query=%s", safe_msg[:60])
+                    logger.info("Router 全关但 query 含实质内容, fallback h/kt/s 全开+sag开, query=%s", safe_msg[:60])
                     mask = dict(FALLBACK_MASK)
                     fallback_reason = "all_off_guarded"
                 else:
@@ -373,27 +373,27 @@ def route(
                     logger.warning("Router 401 Unauthorized, 尝试刷新 API key 并重试")
                     continue
                 fallback_reason = "api_401"
-                logger.warning("Router 401 Unauthorized 重试失败, fallback h/kt/s 全开+sag关")
+                logger.warning("Router 401 Unauthorized 重试失败, fallback h/kt/s 全开+sag开")
             else:
                 _incr_fallback("api_other")
                 fallback_reason = f"api_{e.response.status_code}"
-                logger.warning("Router HTTP 错误 (%s), fallback h/kt/s 全开+sag关", e)
+                logger.warning("Router HTTP 错误 (%s), fallback h/kt/s 全开+sag开", e)
             break
 
         except httpx.TimeoutException:
             _incr_fallback("api_timeout")
             fallback_reason = "api_timeout"
-            logger.warning("Router 调用超时, fallback h/kt/s 全开+sag关")
+            logger.warning("Router 调用超时, fallback h/kt/s 全开+sag开")
             break
 
         except Exception as e:
             _incr_fallback("api_error")
             fallback_reason = "api_error"
-            logger.warning("Router 调用失败 (%s), fallback h/kt/s 全开+sag关", e)
+            logger.warning("Router 调用失败 (%s), fallback h/kt/s 全开+sag开", e)
             break
 
     duration = time.time() - start_time
-    logger.info("Router fallback h/kt/s 全开+sag关, reason=%s, duration=%.2fs", fallback_reason, duration)
+    logger.info("Router fallback h/kt/s 全开+sag开, reason=%s, duration=%.2fs", fallback_reason, duration)
 
     mask = dict(FALLBACK_MASK)
     _cache_put(cache_key, mask)

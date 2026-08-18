@@ -297,7 +297,8 @@ class TestCheckMCP:
         ps_output = (
             "12345 node /usr/bin/axiom-wiki-mcp-sse.mjs\n"
             "12346 node /usr/bin/postgres-mcp-sse.mjs\n"
-            "12347 node /usr/bin/codegraph-mcp-sse.mjs\n"
+            "12347 node /root/.codegraph/versions/v1.0.1/node "
+            "/root/.codegraph/versions/v1.0.1/lib/dist/bin/codegraph.js serve --mcp --path /mnt/d/HermesProject\n"
         )
         mock_run.side_effect = [
             ("12345", "", 0),               # systemctl show hermes-gateway MainPID
@@ -351,6 +352,9 @@ class TestCheckHindsight:
     def test_pg_connection_ok(self, mock_write, mock_run, mock_count, mock_psql):
         """_psql SELECT 1 返回 '1' → pg_connection=True"""
         mock_run.side_effect = [
+            ("enabled", "", 0),   # systemctl is-enabled
+            ("active", "", 0),    # systemctl is-active
+            ("Mon 2026-08-17 08:10:07 CST", "", 0),  # systemctl show ActiveEnterTimestamp
             ("http://200", "", 0),  # curl health
         ]
         mock_count.return_value = 1
@@ -372,6 +376,7 @@ class TestCheckSAG:
         """_psql SELECT 1 返回 '1' → pg_connection=True"""
         mock_run.side_effect = [
             ("12345", "", 0),    # systemctl show sag.service
+            ("200", "", 0),      # curl SAG API /api/v1/system/health
             ("12346", "", 0),    # systemctl show sag-mcp.service
             ("200", "", 0),      # curl sag-mcp
         ]

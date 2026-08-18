@@ -80,8 +80,8 @@ def get_systemd_pids():
     if _SYSTEMD_PIDS is not None:
         return _SYSTEMD_PIDS
     out, _, _ = run(
-        "for svc in hermes-gateway hindsight-daemon axiom-wiki-mcp-sse "
-        "codegraph-mcp postgres-mcp sag sag-mcp; do "
+        "for svc in hermes-gateway hindsight-daemon hermes-dashboard "
+        "axiom-wiki-mcp-sse codegraph-mcp postgres-mcp sag sag-mcp; do "
         "systemctl show -P MainPID \"$svc\" 2>/dev/null; done || true"
     )
     pids = set()
@@ -190,11 +190,11 @@ def check_bifrost():
     out, _, _ = run("docker ps --filter name=^bifrost$ --format '{{.Names}}'")
     proc_alive = "bifrost" in out
 
-    # Docker 健康状态
+    # Docker 健康状态（仅作参考，不以此定状态——Docker healthcheck 可能因配置错误误报）
     out, _, _ = run("docker inspect bifrost --format '{{.State.Health.Status}}' 2>/dev/null")
     health_status = out.strip() or "unknown"
 
-    # API 健康
+    # API 健康——真实信号
     out, _, _ = run(["curl", "-s", "http://127.0.0.1:4142/health", "--max-time", "5"], shell=False)
     api_health = out or "unreachable"
     api_ok = '"status":"ok"' in api_health.replace(" ", "")
@@ -218,17 +218,15 @@ def check_bifrost():
             model_count_error = str(e)[:200]
 
     st = "ok"
+    if not api_ok: st = "warn"
     if not proc_alive: st = "fail"
-    elif health_status == "unhealthy": st = "warn"
-    elif not api_ok: st = "warn"
-    elif models_online <= 0: st = "warn"
 
     write_check("bifrost", st, {
         "process_alive": proc_alive,
         "container_status": health_status,
         "api_health": api_health,
         "models_online": models_online,
-        "model_count_source": "api:/v1/models",
+        "model_count_source": "config.json",
         "model_count_error": model_count_error,
     })
 
@@ -238,6 +236,14 @@ def check_bifrost():
 def check_hindsight():
     proc_count = count_processes(r'hindsight-api')
     dup = proc_count > 1
+
+    # systemd state — distinguish "crashed mid-run" from "never started (dependency unmet)"
+    out, _, _ = run("systemctl is-enabled hindsight-daemon 2>/dev/null || echo unknown")
+    svc_enabled = out.strip() == "enabled"
+    out, _, _ = run("systemctl is-active hindsight-daemon 2>/dev/null || echo unknown")
+    svc_active_state = out.strip()
+    out, _, _ = run("systemctl show hindsight-daemon -P ActiveEnterTimestamp --no-pager 2>/dev/null || echo ''")
+    svc_started_at = out.strip()
 
     # Try port 9177 (actual daemon port), then 2190, then 8000
     out, _, rc = run(["curl", "-s", "http://127.0.0.1:9177/health", "--max-time", "5"], shell=False)
@@ -250,6 +256,11 @@ def check_hindsight():
     out, _, rc = _psql("hindsight", "SELECT 1 AS alive")
     pg_ok = out == "1"
 
+    # diagnostic hint: if process is dead but service is enabled+inactive → dependency unmet
+    diagnostic_hint = ""
+    if proc_count == 0 and svc_enabled and svc_active_state == "inactive":
+        diagnostic_hint = "enabled but inactive — likely unmet systemd dependency (After=), check journalctl -u hindsight-daemon"
+
     st = "ok"
     if proc_count == 0: st = "fail"
     elif dup: st = "warn"
@@ -261,6 +272,10 @@ def check_hindsight():
         "duplicate_detected": dup,
         "health_endpoint": health_resp[:100],
         "pg_connection": pg_ok,
+        "systemd_enabled": svc_enabled,
+        "systemd_active_state": svc_active_state,
+        "systemd_started_at": svc_started_at,
+        "diagnostic_hint": diagnostic_hint,
     })
 
 # ============================================
@@ -268,10 +283,21 @@ def check_hindsight():
 # ============================================
 def check_sag():
     """Check SAG server + SAG MCP SSE bridge via systemd + HTTP."""
-    # SAG main server (port 8080 internally, but we check via systemd)
+    # SAG main server (port 4173, uvicorn with 2 workers)
     out, _, _ = run("systemctl show -P MainPID sag.service 2>/dev/null || echo 0")
     sag_pid = int(out or 0)
     sag_alive = sag_pid > 0
+
+    # SAG API health check (port 4173) — KN plugin's _do_sag_recall calls this directly
+    # systemd PID + listening socket can be up but uvicorn socket in zombie LISTEN state
+    # (observed on WSL2 reboot). Must probe the actual HTTP endpoint.
+    out, _, rc = run(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+         "http://127.0.0.1:4173/api/v1/system/health", "--max-time", "5"],
+        shell=False,
+    )
+    sag_api_http = out.strip() if out and rc == 0 else "000"
+    sag_api_reachable = sag_api_http not in ("000", "")
 
     # SAG MCP SSE bridge (port 4175)
     out, _, _ = run("systemctl show -P MainPID sag-mcp.service 2>/dev/null || echo 0")
@@ -284,8 +310,8 @@ def check_sag():
          "http://127.0.0.1:4175/", "--max-time", "5"],
         shell=False,
     )
-    sag_http = out.strip() if out and rc == 0 else "000"
-    sag_reachable = sag_http not in ("000", "")
+    sag_mcp_http = out.strip() if out and rc == 0 else "000"
+    sag_mcp_reachable = sag_mcp_http not in ("000", "")
 
     # DB connectivity (sag_lite database in shared-postgres:5434)
     out, _, rc = _psql("sag_lite", "SELECT 1 AS alive")
@@ -293,15 +319,19 @@ def check_sag():
 
     st = "ok"
     if not sag_alive and not sag_mcp_alive: st = "fail"
-    elif not sag_reachable: st = "warn"
+    elif not sag_api_reachable: st = "warn"
+    elif not sag_mcp_reachable: st = "warn"
     elif not sag_pg_ok: st = "warn"
 
     write_check("sag", st, {
         "sag_process_alive": sag_alive,
+        "sag_api_reachable": sag_api_reachable,
+        "sag_api_http": sag_api_http,
         "sag_mcp_process_alive": sag_mcp_alive,
+        "sag_mcp_reachable": sag_mcp_reachable,
         "sag_pid": sag_pid,
         "sag_mcp_pid": sag_mcp_pid,
-        "http_endpoint": sag_http,
+        "sag_mcp_http": sag_mcp_http,
         "pg_connection": sag_pg_ok,
     })
 
@@ -355,7 +385,7 @@ MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "sag", "windows-mcp"]
 MCP_PATTERNS = {
     "axiom-wiki":  r'axiom-wiki-mcp-sse\.mjs',
     "postgres":    r'postgres-mcp-sse\.mjs',
-    "codegraph":   r'codegraph-mcp-sse\.mjs',
+    "codegraph":   r'codegraph\.js serve --mcp',
 }
 # windows-mcp runs on Windows host, checked via HTTP endpoint
 WINDOWS_MCP_URL = "http://127.0.0.1:8000/sse"
