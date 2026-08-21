@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "C:/Users/1/AppData/Roaming/npm/codegraph.cmd",
+      "args": ["serve", "--mcp", "--no-watch", "--path", "D:/HermesProject"],
+      "env": {
+        "CODEGRAPH_DIR": ".codegraph-trae",
+        "CODEGRAPH_NO_DAEMON": "1"
+      },
+      "disabled": false
+    }
+  }
+}

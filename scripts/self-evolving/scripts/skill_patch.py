@@ -64,6 +64,21 @@ def security_scan(content: str) -> Tuple[bool, str]:
     return True, 'OK'
 
 
+def _skill_dir_exists(skill_name: str, home: Optional[str] = None) -> bool:
+    """判断 skill 目录是否存在（区分「未安装」与「已安装但缺 SKILL.md」）。"""
+    root = Path(home or os.environ.get('HERMES_HOME') or '/root/.hermes')
+    candidate_roots = [root / 'skills']
+    plugins_root = root / 'plugins'
+    if plugins_root.is_dir():
+        for entry in plugins_root.iterdir():
+            if entry.is_dir():
+                candidate_roots.append(entry / 'skills')
+    for base in candidate_roots:
+        if base.is_dir() and (base / skill_name).is_dir():
+            return True
+    return False
+
+
 def find_skill_md(skill_name: str, home: Optional[str] = None) -> Optional[Path]:
     """定位 skill 的 SKILL.md（兼容分类嵌套目录 + plugins/*/skills 结构）。"""
     root = Path(home or os.environ.get('HERMES_HOME') or '/root/.hermes')
@@ -115,7 +130,12 @@ def patch_skill_md(
 
     p = find_skill_md(skill_name, home)
     if not p:
-        print(f'ERROR: 找不到 SKILL.md: {skill_name}')
+        # 目标缺失：降级为 WARN（不计入 ERROR 监控），避免污染健康报告错误统计；
+        # driver 已将该跳过计入 ledger blocked（属预期跳过，非故障吞任务）。
+        if _skill_dir_exists(skill_name, home):
+            print(f'WARN: 跳过写回（目标 SKILL.md 缺失）: {skill_name}')
+        else:
+            print(f'WARN: 跳过写回（目标 skill 未安装）: {skill_name}')
         return False
 
     try:

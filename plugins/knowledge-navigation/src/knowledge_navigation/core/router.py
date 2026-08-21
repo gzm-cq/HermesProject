@@ -11,7 +11,7 @@ from collections import OrderedDict
 import httpx
 
 from knowledge_navigation.core.source_defs import build_router_prompt
-from knowledge_navigation.core.env_loader import get_env, get_env_int
+from knowledge_navigation.core.env_loader import get_env, get_env_int, get_env_float
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,82 @@ _router_cache_timestamps: dict[tuple[str, str], float] = {}
 _ROUTER_SYSTEM_PROMPT = build_router_prompt()
 
 _FALLBACK_COUNTER = {"json_parse": 0, "api_error": 0, "api_401": 0, "api_timeout": 0, "api_other": 0}
+
+# session 历史 mask：超时/异常降级时复用上次有效决策，避免全开 over-injection
+_session_mask_lock = threading.Lock()
+_session_last_mask: dict[str, dict[str, bool]] = {}
+
+
+def _store_session_mask(session_id: str, mask: dict[str, bool]) -> None:
+    """缓存 session 最近一次成功（非降级）路由决策，供超时降级复用。"""
+    with _session_mask_lock:
+        _session_last_mask[session_id] = dict(mask)
+
+
+def _get_session_mask(session_id: str) -> dict[str, bool] | None:
+    """读取 session 历史 mask（无则 None）。"""
+    with _session_mask_lock:
+        return dict(_session_last_mask[session_id]) if session_id in _session_last_mask else None
+
+
+def _call_router_llm(
+    api_url: str,
+    model: str,
+    api_key: str,
+    timeout: int,
+    safe_msg: str,
+) -> dict:
+    """调用 Router LLM，带超时重试（指数退避）与 401 key 刷新重试。
+
+    - 超时 / 5xx：按 KN_ROUTER_MAX_RETRIES（默认 2）指数退避重试，基数 KN_ROUTER_BACKOFF_BASE（默认 0.5s）。
+    - 401：刷新 API key 重试一次（仅限首次）。
+    - 其他 4xx：立即抛出，不重试。
+    超时代尽后抛出 httpx.TimeoutException；调用方据此降级到历史 mask。
+    """
+    max_retries = get_env_int("KN_ROUTER_MAX_RETRIES", 2)
+    backoff_base = get_env_float("KN_ROUTER_BACKOFF_BASE", 0.5)
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            cur_key = _fetch_api_key() if attempt > 0 else api_key
+            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）；
+            # 默认 sensenova 等保持原行为（thinking disabled / 8192）
+            _rt_think = {"type": "enabled"} if (model or "").startswith(("s-deepseek", "agnes")) else {"type": "disabled"}
+            _rt_mt = 16384 if (model or "").startswith(("s-deepseek", "agnes")) else 8192
+            resp = httpx.post(
+                f"{api_url.rstrip('/')}/chat/completions",
+                json={
+                    "model": model,
+                    "temperature": 0.1,
+                    "max_tokens": _rt_mt,
+                    "thinking": _rt_think,
+                    "messages": [
+                        {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
+                    ],
+                },
+                headers={"Authorization": f"Bearer {cur_key}"} if cur_key else {},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.TimeoutException as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                wait = backoff_base * (2 ** attempt)
+                logger.warning("Router 调用超时 (attempt %d/%d), %.1fs 后重试", attempt + 1, max_retries, wait)
+                time.sleep(wait)
+                continue
+            logger.warning("Router 调用超时, 重试 %d 次仍失败", max_retries)
+            raise
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401 and attempt == 0:
+                logger.warning("Router 401 Unauthorized, 刷新 API key 重试")
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Router LLM 调用未产生结果")
 
 
 def _clean_expired_cache() -> None:
@@ -276,7 +352,7 @@ def route(
         return {
             "confidence": round(confidence, 4) if confidence is not None else None,
             "fallback_reason": reason,
-            "is_fallback": reason not in ("success", "success_all_off", "cache_hit"),
+            "is_fallback": reason not in ("success", "success_all_off", "cache_hit", "timeout_historical"),
             "latency_ms": latency_ms,
         }
 
@@ -300,37 +376,14 @@ def route(
     # 反而能补全知识召回。2026-08-17: 从 sag:False 改为 sag:True，避免超时降级丢 SAG 知识。
     FALLBACK_MASK = {"h": True, "kt": True, "s": True, "sag": True}
 
-    for attempt in range(2):
-        try:
-            current_key = _fetch_api_key() if attempt == 1 else api_key
-
-            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）；
-            # 默认 sensenova 等保持原行为（thinking disabled / 8192）
-            _rt_think = {"type": "enabled"} if (model or "").startswith(("s-deepseek", "agnes")) else {"type": "disabled"}
-            _rt_mt = 16384 if (model or "").startswith(("s-deepseek", "agnes")) else 8192
-            resp = httpx.post(
-                f"{api_url.rstrip('/')}/chat/completions",
-                json={
-                    "model": model,
-                    "temperature": 0.1,
-                    "max_tokens": _rt_mt,
-                    "thinking": _rt_think,
-                    "messages": [
-                        {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
-                    ],
-                },
-                headers={"Authorization": f"Bearer {current_key}"} if current_key else {},
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                _incr_fallback("empty_choices")
-                logger.warning("Router LLM 返回空 choices, fallback h/kt/s 全开+sag开")
-                fallback_reason = "empty_choices"
-                break
+    try:
+        data = _call_router_llm(api_url, model, api_key, timeout, safe_msg)
+        choices = data.get("choices", [])
+        if not choices:
+            _incr_fallback("empty_choices")
+            logger.warning("Router LLM 返回空 choices, fallback h/kt/s 全开+sag开")
+            fallback_reason = "empty_choices"
+        else:
             choice = choices[0].get("message", {})
             raw = choice.get("content") or ""
             if not raw.strip():
@@ -359,38 +412,41 @@ def route(
             else:
                 fallback_reason = "success"
 
+            # 记录成功（非降级）决策到 session 历史，供超时/异常降级复用
+            if fallback_reason in ("success", "success_all_off"):
+                _store_session_mask(session_id, mask)
+
             duration = time.time() - start_time
             logger.info("Router 调用成功, mask=%s, duration=%.2fs", mask, duration)
-
             _cache_put(cache_key, mask)
             latency_ms = int((time.time() - start_time) * 1000)
             return mask, _meta(confidence, fallback_reason, latency_ms)
 
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                _incr_fallback("api_401")
-                if attempt == 0:
-                    logger.warning("Router 401 Unauthorized, 尝试刷新 API key 并重试")
-                    continue
-                fallback_reason = "api_401"
-                logger.warning("Router 401 Unauthorized 重试失败, fallback h/kt/s 全开+sag开")
-            else:
-                _incr_fallback("api_other")
-                fallback_reason = f"api_{e.response.status_code}"
-                logger.warning("Router HTTP 错误 (%s), fallback h/kt/s 全开+sag开", e)
-            break
+    except httpx.TimeoutException:
+        _incr_fallback("api_timeout")
+        hist = _get_session_mask(session_id)
+        if hist is not None:
+            # 超时降级到历史 mask：避免全开 over-injection，保留上次有效路由倾向
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.warning("Router 调用超时, 降级到历史 mask=%s (session=%s)", hist, session_id)
+            return hist, _meta(0.3, "timeout_historical", latency_ms)
+        fallback_reason = "api_timeout"
+        logger.warning("Router 调用超时且无历史 mask, fallback h/kt/s 全开+sag开")
 
-        except httpx.TimeoutException:
-            _incr_fallback("api_timeout")
-            fallback_reason = "api_timeout"
-            logger.warning("Router 调用超时, fallback h/kt/s 全开+sag开")
-            break
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            _incr_fallback("api_401")
+            fallback_reason = "api_401"
+            logger.warning("Router 401 Unauthorized 重试失败, fallback h/kt/s 全开+sag开")
+        else:
+            _incr_fallback("api_other")
+            fallback_reason = f"api_{e.response.status_code}"
+            logger.warning("Router HTTP 错误 (%s), fallback h/kt/s 全开+sag开", e)
 
-        except Exception as e:
-            _incr_fallback("api_error")
-            fallback_reason = "api_error"
-            logger.warning("Router 调用失败 (%s), fallback h/kt/s 全开+sag开", e)
-            break
+    except Exception as e:
+        _incr_fallback("api_error")
+        fallback_reason = "api_error"
+        logger.warning("Router 调用失败 (%s), fallback h/kt/s 全开+sag开", e)
 
     duration = time.time() - start_time
     logger.info("Router fallback h/kt/s 全开+sag开, reason=%s, duration=%.2fs", fallback_reason, duration)

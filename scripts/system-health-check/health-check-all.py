@@ -81,7 +81,7 @@ def get_systemd_pids():
         return _SYSTEMD_PIDS
     out, _, _ = run(
         "for svc in hermes-gateway hindsight-daemon hermes-dashboard "
-        "axiom-wiki-mcp-sse codegraph-mcp postgres-mcp sag sag-mcp; do "
+        "axiom-wiki-mcp-sse codegraph-mcp postgres-mcp sag; do "
         "systemctl show -P MainPID \"$svc\" 2>/dev/null; done || true"
     )
     pids = set()
@@ -299,39 +299,41 @@ def check_sag():
     sag_api_http = out.strip() if out and rc == 0 else "000"
     sag_api_reachable = sag_api_http not in ("000", "")
 
-    # SAG MCP SSE bridge (port 4175)
-    out, _, _ = run("systemctl show -P MainPID sag-mcp.service 2>/dev/null || echo 0")
-    sag_mcp_pid = int(out or 0)
-    sag_mcp_alive = sag_mcp_pid > 0
-
-    # HTTP health check on MCP SSE port
-    out, _, rc = run(
-        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-         "http://127.0.0.1:4175/", "--max-time", "5"],
-        shell=False,
-    )
-    sag_mcp_http = out.strip() if out and rc == 0 else "000"
-    sag_mcp_reachable = sag_mcp_http not in ("000", "")
+    # SAG MCP (v1.6.8+: embedded in 4173/mcp/, no separate 4175 service)
+    # Probe with token from .sag_token to verify auth works end-to-end
+    sag_mcp_auth = "skip"
+    try:
+        tok = open("/root/.hermes/.sag_token").read().strip()
+        if tok:
+            out, _, rc = run(
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                 "-X", "POST", "http://127.0.0.1:4173/mcp/",
+                 "-H", "Authorization: Bearer " + tok,
+                 "-H", "Content-Type: application/json",
+                 "-d", '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"hc","version":"0"}}}',
+                 "--max-time", "8"],
+                shell=False,
+            )
+            sag_mcp_auth = out.strip() if out and rc == 0 else "000"
+    except Exception:
+        sag_mcp_auth = "err"
 
     # DB connectivity (sag_lite database in shared-postgres:5434)
     out, _, rc = _psql("sag_lite", "SELECT 1 AS alive")
     sag_pg_ok = out.strip() == "1"
 
     st = "ok"
-    if not sag_alive and not sag_mcp_alive: st = "fail"
+    if not sag_alive: st = "fail"
     elif not sag_api_reachable: st = "warn"
-    elif not sag_mcp_reachable: st = "warn"
+    elif sag_mcp_auth not in ("skip", "406", "200"): st = "warn"
     elif not sag_pg_ok: st = "warn"
 
     write_check("sag", st, {
         "sag_process_alive": sag_alive,
         "sag_api_reachable": sag_api_reachable,
         "sag_api_http": sag_api_http,
-        "sag_mcp_process_alive": sag_mcp_alive,
-        "sag_mcp_reachable": sag_mcp_reachable,
+        "sag_mcp_auth": sag_mcp_auth,
         "sag_pid": sag_pid,
-        "sag_mcp_pid": sag_mcp_pid,
-        "sag_mcp_http": sag_mcp_http,
         "pg_connection": sag_pg_ok,
     })
 

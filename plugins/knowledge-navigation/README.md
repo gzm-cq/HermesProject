@@ -66,7 +66,9 @@ hooks:
 | `router_model` | `KN_ROUTER_MODEL` | `sensenova-6.8-flash-lite` | Router LLM 模型 |
 | `router_api_url` | `KN_ROUTER_API_URL` | `http://127.0.0.1:4142/v1` | LLM API 端点（LiteLLM 网关） |
 | `router_api_key` | `KN_ROUTER_API_KEY` | `""` | API Key（空时走网关默认凭证） |
-| `router_timeout` | `KN_ROUTER_TIMEOUT` | `5` | Router 超时秒数 |
+| `router_timeout` | `KN_ROUTER_TIMEOUT` | `15` | Router 超时秒数（5s 太紧致超时率高；超时代尽后降级到 session 历史 mask） |
+| `router_max_retries` | `KN_ROUTER_MAX_RETRIES` | `2` | Router 调用总次数（含首次）；超时/5xx 指数退避重试 |
+| `router_backoff_base` | `KN_ROUTER_BACKOFF_BASE` | `0.5` | 超时重试指数退避基数（秒），第 n 次等待 = base × 2^(n-1) |
 
 ### Skill 匹配 Embedding 配置（三级筛选专用）
 
