@@ -259,9 +259,13 @@ knowledge-tree-builder/
 │   ├── models.py                  # 共享数据结构（AtomicKnowledge 含 source_title）
 │   ├── manifest.py                # 批处理清单 + 断点续传
 │   ├── place.py                   # 阶段4：树定位 + 批量写入（含 k_vector 补写）
-├── scripts/
-│   ├── backfill_k_vectors.py  # k_vector 批量回填（CLI: backfill-k-vectors）
-│   └── redistribute_general.py# 领域重分类（CLI: redistribute）
+│   ├── commands/                  # CLI 子命令
+│   │   ├── run.py                 # run 主命令
+│   │   ├── basic.py / crud.py     # 基础 CRUD 命令
+│   │   ├── complex.py             # 复杂命令（consolidate / redistribute 等）
+│   │   ├── check_freshness.py     # 时效性检查
+│   │   ├── lineage.py             # 血缘查询
+│   │   └── deprecated.py          # 废弃命令重定向
 │   ├── phase/
 │   │   ├── scan.py                # Pre-phase：文件扫描 + YAML 前置元数据跳过
 │   │   ├── analyze.py             # 阶段1：分析（独立模式）
@@ -271,11 +275,26 @@ knowledge-tree-builder/
 │   ├── consolidate/
 │   │   ├── confidence.py          # confidence 衰减计算
 │   │   └── review.py              # review_queue 操作
+│   ├── scripts/
+│   │   ├── backfill_k_vectors.py  # k_vector 批量回填（CLI: backfill-k-vectors）
+│   │   ├── redistribute_general.py# 领域重分类（CLI: redistribute）
+│   │   └── build_edges.py         # 关联边构建
 │   ├── adapters/database.py       # PG 适配器
 │   ├── llm/client.py              # LLM API 调用
 │   └── core/
 │       ├── embeddings.py          # Embedding API（带 None 占位防御）
-│       └── incremental.py         # 增量去重
+│       ├── incremental.py         # 增量去重
+│       ├── admission.py           # 准入规则
+│       ├── extractor.py / writer.py / validator.py  # 提取/写入/校验
+│       ├── consolidation.py       # consolidate 编排
+│       ├── freshness.py / temporal.py  # 时效与时间处理
+│       ├── lineage.py             # 血缘追踪
+│       ├── cache_manager.py       # 断点缓存管理
+│       ├── clustering.py          # HDBSCAN 聚类（子科目拆分用）
+│       └── namer.py               # 命名
+├── scripts/
+│   ├── backfill_entities.py       # 实体回填
+│   └── rebuild_edges_and_baseline.py  # 重建边 + 基线
 ├── config/default.yaml            # 默认配置
 ├── deploy/                        # 部署脚本
 ├── tests/                         # 测试

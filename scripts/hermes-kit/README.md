@@ -38,9 +38,16 @@ hermes-kit/
 ├── SPEC.md                 # 架构方案（v1.2）
 ├── README.md               # 本文件
 ├── install.sh              # 一键安装脚本
+├── upgrade.sh              # 升级脚本
 ├── uninstall.sh            # 卸载脚本
 ├── config/
 │   └── default.yaml        # 默认配置模板
+├── manifests/
+│   └── kit.manifest        # kit 部署清单
+├── plans/                  # 审计/配置整合/产品化方案
+├── scripts/
+│   ├── kit-status.sh       # 安装状态检查
+│   └── kit-verify.sh       # 安装后验证
 └── templates/
     └── .env.append         # 需要追加到 .env 的配置项
 ```

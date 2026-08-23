@@ -16,23 +16,35 @@
 
 ```
 scripts/flywheel-health-report/
-├── scripts/flywheel-health-report.sh   # cron 入口（阶段 0/1/2 串联）
+├── scripts/
+│   ├── flywheel-health-report.sh   # cron 入口（阶段 0/1/2 串联）
+│   ├── auto-tuner.sh               # Auto-Tuner 独立触发脚本
+│   └── flywheel-watchdog.sh        # 看门狗（失败兜底）
 ├── src/flywheel_health_report/
-│   ├── runner.py                       # 阶段 0 Runner
-│   ├── cli.py                         # 阶段 1 CLI 入口
-│   ├── report.py                      # 报告生成（12 analyzer 聚合）
-│   ├── parsers.py                     # trace.log 解析 + daily-summary 落库
-│   ├── config.py                      # 路径常量 + 反馈键/参数定义（PARAM_DEFS）
-│   ├── analyzers/                     # 各维度分析器
-│   │   ├── router.py                  # Router 4 路 mask / recall 分析
-│   │   ├── kn_judge.py                # KN LLM Judge（mask 级 h/kt/sag 评分）
-│   │   ├── token_usage.py             # 实际 token 消耗观测（原 token_budget，已移除截断）
-│   │   ├── sag_contribution.py        # SAG 召回贡献率
-│   │   └── ...                        # 其余 analyzer
+│   ├── runner.py                   # 阶段 0 Runner
+│   ├── cli.py                      # 阶段 1 CLI 入口
+│   ├── report.py                   # 报告生成（12 analyzer 聚合）
+│   ├── parsers.py                  # trace.log 解析 + daily-summary 落库
+│   ├── config.py                   # 路径常量 + 反馈键/参数定义（PARAM_DEFS）
+│   ├── integrity.py                # 报告完整性校验
+│   ├── recommendations.py          # 优化建议生成
+│   ├── analyzers/                  # 各维度分析器（12 个）
+│   │   ├── router.py               # Router 4 路 mask / recall 分析
+│   │   ├── kn_judge.py             # KN LLM Judge（mask 级 h/kt/sag 评分）
+│   │   ├── kn_baseline.py          # KN 基线 + 数据可信度
+│   │   ├── kt_baseline.py          # 知识树基线
+│   │   ├── token_usage.py          # 实际 token 消耗观测
+│   │   ├── sag.py                  # SAG 召回贡献率
+│   │   ├── skill.py                # Skill Eval / 使用分析
+│   │   ├── cron_jobs.py            # cron 任务状态
+│   │   ├── global_errors.py        # 全局错误聚合
+│   │   ├── memory_cleanup.py       # 记忆清理状态
+│   │   ├── self_evolving.py        # 自进化状态
+│   │   └── cognee.py               # Cognee 知识图谱健康
 │   └── auto_tuner/
-│       ├── tuner.py                   # 调优核心逻辑（15 个可调参数）
-│       └── notifier.py                # 飞书通知
-└── tests/                             # pytest 回归套件
+│       ├── tuner.py                # 调优核心逻辑（15 个可调参数）
+│       └── notifier.py             # 飞书通知
+└── tests/                          # pytest 回归套件
 ```
 
 ## KN LLM Judge（mask 级）

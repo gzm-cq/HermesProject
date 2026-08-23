@@ -1,15 +1,15 @@
 # 知识导航插件（knowledge_navigation）
 
-> 自动 recall Hindsight 经验记忆并融合知识树知识点与 SAG 梦境反思，通过 LLM Router 智能决策**四路注入（Hindsight / 知识树 / SAG / Skill）**，采用**三级混合筛选架构**提升召回质量与效率
+> 自动 recall Hindsight 经验记忆并融合知识树知识点与 SAG 梦境反思，通过 LLM Router 智能决策**五路召回（Hindsight / 知识树 / SAG / Skill / CodeGraph）**，采用**三级混合筛选架构**提升召回质量与效率
 
 ## ✨ 插件简介
 
 知识导航插件是 Hermes 平台的核心增强组件，专为提升大语言模型（LLM）的上下文感知能力而设计。它在每次 LLM 调用前自动触发，通过 **LLM Router** 决策需要注入哪些知识源，从 Hindsight 记忆库召回经验片段、知识树提取结构化知识、Skill 匹配操作流程，以 XML 语义标签格式注入到请求上下文中。
 
 **核心特性**：
-- 🧠 **LLM Router 智能决策**：基于 need analysis 判断 **H（经验）/ KT（知识）/ SAG（梦境反思）/ S（技能）四路**是否需要注入；支持 confidence 置信度字段，低置信度（<0.5）时自动保守 fallback 全开
+- 🧠 **LLM Router 智能决策**：基于 need analysis 判断 **H（经验）/ KT（知识）/ SAG（梦境反思）/ S（技能）四路**是否需要注入（mask 决策）；另按代码关键词触发 **CodeGraph 符号级召回（第 5 路）**；支持 confidence 置信度字段，低置信度（<0.5）时自动保守 fallback 全开
 - 🔍 **三级混合筛选**：Skill 匹配采用"关键词粗筛（Top-30）→ Embedding 语义精筛（Top-20）→ LLM 精排（Top-3）"三级漏斗，平衡召回率与效率
-- ⚡ **高性能**：内置连接池、超时控制与熔断器；四路按 mask 条件**超时隔离真并行**执行（每路独立截止时间，互不连坐阻塞）；Router 缓存（TTL 5 分钟，64 条目上限），同 session 相同消息复用决策
+- ⚡ **高性能**：内置连接池、超时控制与熔断器；mask 四路按条件**超时隔离真并行**执行（每路独立截止时间，互不连坐阻塞）；CodeGraph 路 subprocess 只读查询（timeout 5s）不阻塞主链路；Router 缓存（TTL 5 分钟，64 条目上限），同 session 相同消息复用决策
 - 📊 **可观测性**：结构化 JSON 日志（含 router_mask 事件），支持监控与基线对比；fallback 原因分类统计（json_parse/api_401/api_timeout/api_error/api_other）；调用耗时记录
 - 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知；Router 异常自动 fallback 全开；Embedding 调用失败自动降级；401 Unauthorized 自动重试（刷新 API key）
 - 🧩 **易集成**：零侵入式 Hook 注册，开箱即用
@@ -46,18 +46,19 @@ hooks:
 | 配置项 | 环境变量 | 默认值 | 说明 |
 |--------|---------|--------|------|
 | `hindsight_api_url` | `KN_HINDSIGHT_URL` | `http://localhost:9177/v1/...` | Hindsight API 地址 |
-| `timeout_seconds` | `KN_TIMEOUT_SECONDS` | `25` | 单次请求超时（秒） |
-| `max_retries` | `KN_MAX_RETRIES` | `0` | HTTP 重试次数（0=不重试，依赖熔断器） |
-| `min_score` | `KN_MIN_SCORE` | `0.6` | 最低接受分数（rerank_score） |
+| `timeout_seconds` | `KN_TIMEOUT_SECONDS` | `30` | 单次请求超时（秒） |
+| `max_retries` | `KN_MAX_RETRIES` | `2` | HTTP 重试次数（0=不重试，依赖熔断器） |
+| `min_score` | `KN_MIN_SCORE` | `0.35` | 最低接受分数（rerank_score） |
 | `max_results` | `KN_MAX_RESULTS` | `3` | 最多注入记忆条数 |
 | `max_text_length` | `KN_MAX_TEXT_LENGTH` | `200` | 每条记忆截断长度（字符） |
-| `trace_log_path` | `KN_TRACE_LOG_PATH` | `trace.log` | 日志文件路径 |
+| `trace_log_path` | `KN_TRACE_LOG_PATH` | `""` | 日志文件路径（空则不写文件，仅标准日志） |
+| `recall_query_max_chars` | `KN_RECALL_QUERY_MAX_CHARS` | `800` | recall query 最大字符数（超长截断前 400+后 400） |
 | `circuit_breaker_threshold` | `KN_CB_THRESHOLD` | `3` | 熔断器阈值（连续失败次数） |
 | `circuit_breaker_cooldown` | `KN_CB_COOLDOWN` | `90` | 熔断冷却时间（秒，H / KT / SAG 三路共用） |
 | `feishu_app_id/app_secret/home_channel` | `FEISHU_APP_ID` 等 | `""` | 飞书 OpenAPI 凭据与告警群聊 |
 | `enable_temporal` | `KN_ENABLE_TEMPORAL` | `true` | 是否启用时态衰减排序 |
-| `eval_queries_path` | `KN_EVAL_QUERIES_PATH` | `""` | 评测查询 JSON 路径 |
-| `enable_score_span_compress` | `KN_SCORE_SPAN_COMPRESS` | `true` | 是否启用分数跨度压缩 |
+| `eval_queries_path` | `KN_EVAL_QUERIES_PATH` | `/root/.hermes/data/eval_queries.json` | 评测查询 JSON 路径 |
+| `enable_score_span_compress` | （无 ENV，代码默认） | `true` | 是否启用分数跨度压缩（阈值可由 `KN_SCORE_SPAN_TOP3_THRESHOLD` / `KN_SCORE_SPAN_HALF_THRESHOLD` 调整） |
 
 ### LLM Router 配置
 
@@ -114,6 +115,8 @@ LLM Router → {h: bool, kt: bool, s: bool, sag: bool}
       ├─ kt  → _do_kt_recall() → multi_hop_expand()（实体多跳关联展开，知识域）
       ├─ sag → _do_sag_recall()            （SAG 梦境反思召回，反思域）
       └─ s   → _do_skill_match()           （三级混合筛选，能力域）
+  ↓
+CodeGraph 符号级召回（第 5 路，代码 query 关键词触发，subprocess 只读查询）
   ↓
 后处理（过滤/去重/融合/标签化注入）
 ```

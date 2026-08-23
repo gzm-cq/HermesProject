@@ -1,6 +1,6 @@
 # 数据飞轮系统全景地图（Data Flywheel System Map）
 
-> 本文档沉淀对 HermesProject 数据飞轮的整体理解：四条飞轮闭环、四路召回的不对称设计、飞轮健康巡检四层结构，以及已落地的工程修复与残余弱点。
+> 本文档沉淀对 HermesProject 数据飞轮的整体理解：四条飞轮闭环、五路召回（mask 四路 + CodeGraph）的不对称设计、飞轮健康巡检四层结构，以及已落地的工程修复与残余弱点。
 > 配套代码：`plugins/knowledge-navigation`（消费侧召回编排）、`plugins/knowledge-tree-plugin`（生产侧写入）、`scripts/flywheel-health-report`（巡检与调参）、`scripts/cron-wrappers`（调度）。
 
 ---
@@ -20,9 +20,9 @@
 
 ---
 
-## 2. 四路召回架构（Router mask = {h, kt, s, sag}）
+## 2. 五路召回架构（Router mask = {h, kt, s, sag} + CodeGraph 符号级）
 
-### 2.1 四路不对称设计
+### 2.1 mask 四路不对称设计
 
 | 路 | 含义 | 传输/存储 | 超时 | 熔断 | 是否走打分链 |
 |----|------|-----------|------|------|--------------|
@@ -33,13 +33,16 @@
 
 > 不对称是刻意的：s 路绕过打分链是因为 skill 是"操作手册"而非"记忆片段"，不应被 MMR/降权裁剪；h/sag 有熔断而 kt 无熔断的历史原因已消除（见 §4 修复）。
 
+**第 5 路（CodeGraph 符号级）**：不在 mask 决策内，由 `_is_code_query()` 代码关键词独立触发（`_do_codegraph_recall`，subprocess 只读查询 `codegraph query`，timeout 5s），返回符号级结果（文件/行号/签名），并入 `kept` 参与去重/度量，注入 `<knowledge source="codegraph">`，绝不阻塞主链路。
+
 ### 2.2 编排与合并流水线
 
 `pre_llm_call`（`core/hooks/router.py`）主线：
 
 ```
-三层门控 → LLM Router 决策 mask → 四路并行 submit（共享线程池）
+三层门控 → LLM Router 决策 mask → mask 四路并行 submit（共享线程池）
    → 各自绝对截止时间收割（_left(key)）
+   → CodeGraph 符号级召回（代码 query 关键词触发，第 5 路，timeout 5s 不阻塞）
    → 合并流水线 → XML 注入
 ```
 

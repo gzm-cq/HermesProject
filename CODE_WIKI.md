@@ -1,7 +1,8 @@
 # HermesProject Code Wiki
 
-> 版本: 1.0 | 最后更新: 2026-07-23
+> 版本: 1.1 | 最后更新: 2026-08-21
 > 本文档为 HermesProject 的结构化代码百科，涵盖项目整体架构、模块职责、关键类与函数、依赖关系及运行方式。
+> 本文档基于 CodeGraph 索引（561 文件 / 10,110 节点 / 22,268 边）与仓库源码同步生成。
 
 ---
 
@@ -27,6 +28,9 @@
    - 6.12 [P0 Benchmark](#612-p0-benchmark)
    - 6.13 [Recall Eval](#613-recall-eval)
    - 6.14 [每日在线学习](#614-每日在线学习-daily-learn)
+   - 6.15 [Codex App Server 桥接](#615-codex-app-server-桥接)
+   - 6.16 [飞轮健康报告与 Auto-Tuner](#616-飞轮健康报告与-auto-tuner)
+   - 6.17 [Hermes-Kit 一键安装包](#617-hermes-kit-一键安装包)
 7. [Cron 定时任务系统](#7-cron-定时任务系统)
 8. [部署系统](#8-部署系统)
 9. [依赖关系图](#9-依赖关系图)
@@ -41,7 +45,7 @@
 | 属性 | 值 |
 |------|------|
 | **项目名称** | HermesProject |
-| **定位** | Hermes 智能体平台的开发主仓库，包含 10+ 独立可部署子项目 |
+| **定位** | Hermes 智能体平台的开发主仓库，包含 17+ 独立可部署子项目 |
 | **核心目标** | 端到端 AI 助手系统：5 层记忆体系 + 技能强制注入 + 自进化飞轮 |
 | **语言** | Python 3.10+ |
 | **运行环境** | WSL2 (Ubuntu)，部署目标 `/root/.hermes/` |
@@ -49,7 +53,7 @@
 | **许可证** | MIT |
 
 **核心能力**：
-- **知识导航**：LLM Router 四路注入（Hindsight 经验 + 知识树 + SAG 反思 + Skill），确保有效记忆主动召回
+- **知识导航**：LLM Router 五路召回（Hindsight 经验 + 知识树 + SAG 反思 + Skill + CodeGraph 符号级），确保有效记忆/代码符号主动召回
 - **技能强制注入**：三级混合筛选（关键词预筛 → Embedding 精筛 → LLM 精排）
 - **聚类分析**：优化 RAG 库结构，提升召回率
 - **记忆清理**：精简核心记忆，控制 token 开销
@@ -119,17 +123,22 @@ HermesProject/
 ├── scripts/                 # 独立脚本项目
 │   ├── ai-report-system/       # AI 报告生成系统
 │   ├── clustering-analysis-v3/ # 记忆聚类分析
+│   ├── codex-app-server/       # Codex App Server 长时任务桥接
 │   ├── cron-wrappers/          # Cron shell wrapper 集合
 │   ├── daily-learn/            # 每日在线学习
 │   ├── drawio-generator/       # Draw.io 矢量图生成
 │   ├── dream-synth/            # Dream Synth 梦境合成
+│   ├── flywheel-health-report/ # 飞轮健康报告 + Auto-Tuner
+│   ├── hermes-kit/             # 一键安装/升级/卸载增强包
 │   ├── knowledge-tree-builder/ # 知识分域建树管线
 │   ├── memory-cleanup/         # 记忆分类清理
 │   ├── p0-benchmark/           # 性能基准测试
 │   ├── recall-eval/            # 召回评估
 │   ├── self-evolving/          # 自我进化研究
 │   ├── skillopt-runner/        # SkillOpt 增量优化 runner
-│   └── skillopt-sleep/         # SkillOpt-Sleep 优化引擎
+│   ├── skillopt-sleep/         # SkillOpt-Sleep 优化引擎
+│   ├── system-health-check/    # 系统健康巡检
+│   └── ...实验性工具            # auto-harness / graphiti-bridge / memory-weeder / p2-eval / skill-router / cognee-setup
 ├── deploy/                  # 一键部署系统
 │   ├── deploy.sh            # 分发入口
 │   ├── lib/common.sh        # 共享函数库
@@ -171,7 +180,7 @@ HermesProject/
 核心闭环：**知识生产 → 知识组织 → 知识消费 → 闭环优化**
 
 ```
-对话/任务 ──→ 知识导航插件（四路召回） ──→ LLM 输出
+对话/任务 ──→ 知识导航插件（五路召回） ──→ LLM 输出
    ↑                                            |
    |                                            v
    |                              新经验 -> Hindsight retain
@@ -187,7 +196,7 @@ HermesProject/
 |------|------|------|
 | **知识生产** | 知识树构建器 + 知识树在线插件 + Hindsight retain | 从文档建树、增量提取、对话经验沉淀 |
 | **知识组织** | 聚类分析 + 记忆清理 | HDBSCAN 聚类、因果链、LLM 分类 |
-| **知识消费** | 知识导航插件 | LLM Router 四路召回注入上下文 |
+| **知识消费** | 知识导航插件 | LLM Router 五路召回注入上下文 |
 
 ### 4.2 能力飞轮
 
@@ -200,7 +209,7 @@ HermesProject/
 ### 4.3 Router 飞轮
 
 ```
-用户消息 → LLM Router 决策 → 按 mask 条件执行四路召回 → LLM 输出
+用户消息 → LLM Router 决策 → 执行五路召回（mask 四路 + CodeGraph）→ LLM 输出
    ↑                                                     |
    |                                                     v
    |                                   Router 健康巡检 + 基线采集
@@ -264,11 +273,12 @@ def register(ctx) -> None:
 
 #### 职责
 
-在每次 LLM 调用前通过 LLM Router 智能决策注入路径，实现四路召回：
+在每次 LLM 调用前通过 LLM Router 智能决策注入路径，实现五路召回：
 - **H（经验域）**：从 Hindsight 召回相关记忆
 - **KT（知识域）**：通过 knowledge-tree-plugin 召回知识树
 - **SAG（反思域）**：SAG 梦境反思召回，将对话沉淀的结构化知识/公理回流到下一轮上下文
 - **S（能力域）**：Skill 三级混合筛选（关键词预筛 Top-30 → Embedding 精筛 Top-20 → LLM 精排 Top-3）
+- **CG（代码域）**：代码相关 query 关键词触发 CodeGraph 符号级召回（文件/行号/签名），结果并入 `<knowledge source="codegraph">`
 
 #### 核心目录结构
 
@@ -280,16 +290,25 @@ plugins/knowledge-navigation/
 │   ├── client.py            # 兼容 shim → adapters.hindsight
 │   ├── config.py            # KnowledgeNavigationConfig 配置类
 │   ├── logger.py            # 日志模块
+│   ├── filtering.py         # 过滤工具（顶层 shim）
+│   ├── turn_gate.py         # 轮次门控
 │   ├── adapters/
-│   │   ├── hindsight.py     # Hindsight 客户端适配器
-│   │   └── ...
+│   │   └── hindsight.py     # Hindsight 客户端适配器
 │   └── core/
-│       ├── hooks.py         # pre_llm_call 钩子实现
+│       ├── hooks/           # pre_llm_call 钩子包
+│       │   ├── __init__.py  # 钩子组装入口
+│       │   ├── cache.py     # 缓存
+│       │   ├── db.py        # 数据库访问
+│       │   └── router.py    # LLM Router 路由决策（mask 解析）
 │       ├── filtering.py     # 召回结果过滤与格式化
-│       ├── router.py        # LLM Router 路由决策
+│       ├── router.py        # Router 核心
 │       ├── skill_matcher.py # Skill 三级混合筛选
 │       ├── circuit_breaker.py # 熔断器
-│       └── recall_logger.py # 召回日志记录
+│       ├── recall_logger.py # 召回日志记录
+│       ├── env_loader.py    # 环境变量热加载（60s TTL）
+│       ├── source_defs.py   # 召回源定义
+│       ├── use_log.py       # 使用日志
+│       └── vestige.py       # 记忆残留追踪
 ├── config/                  # 评估查询配置
 ├── scripts/                 # 辅助脚本（基线采集、Skill 评估）
 ├── tests/                   # 测试套件
@@ -302,7 +321,7 @@ plugins/knowledge-navigation/
 | 类/函数 | 文件 | 说明 |
 |---------|------|------|
 | `KnowledgeNavigationConfig` | `config.py` | 配置类，定义 Hindsight API、召回行为、性能参数等，支持 ENV 覆盖 |
-| `pre_llm_call()` | `core/hooks.py` | 核心钩子，在 LLM 调用前执行四路召回逻辑 |
+| `pre_llm_call()` | `core/hooks/__init__.py` | 核心钩子，在 LLM 调用前执行五路召回逻辑 |
 | `HindsightClient` | `adapters/hindsight.py` | Hindsight 服务客户端，封装 recall API 请求 |
 | `SkillMatcher` | `core/skill_matcher.py` | Skill 三级混合筛选：关键词预筛 → Embedding 精筛 → LLM 精排 |
 | `Router` | `core/router.py` | LLM Router 决策，返回 `{h, kt, s, sag}` mask，含三层 JSON 解析兜底 |
@@ -820,6 +839,151 @@ scripts/recall-eval/
 
 ---
 
+### 6.15 Codex App Server 桥接 (codex-app-server)
+
+> **路径**: `scripts/codex-app-server/`
+> **类型**: systemd 常驻服务（桥接层）
+> **部署位置**: `/root/.hermes/scripts/codex-app-server/`
+
+#### 职责
+
+Hermes 通过 Codex App Server 提交**长时任务**（数小时级）的集成桥接层：Python MCP 桥接进程经 WebSocket JSON-RPC 驱动 codex app-server，暴露长时任务管理工具，不阻塞会话、不丢进度。
+
+#### 架构
+
+```
+Hermes Agent → [Python MCP Client] → WebSocket JSON-RPC → codex app-server
+                              ↕
+                     systemd: codex-app-server.service
+```
+
+#### 组成
+
+| 文件 | 说明 |
+|------|------|
+| `codex_app_server_bridge.py` | WebSocket JSON-RPC 客户端 + 可选 FastMCP 服务模式，暴露长时任务工具 |
+| `schema/` | 协议 JSON Schema 定义 |
+
+#### 暴露工具
+
+- `codex_start_task` — 提交长时任务
+- `codex_task_status` — 查询任务状态
+- `codex_cancel_task` — 取消任务
+
+#### 协议要点
+
+- `initialize` 握手建立会话
+- `thread/start` 提交任务
+- `turn/completed` 任务完成通知
+
+---
+
+### 6.16 飞轮健康报告与 Auto-Tuner (flywheel-health-report)
+
+> **路径**: `scripts/flywheel-health-report/`
+> **类型**: Cron（每日 08:00）+ 常驻分析框架
+> **部署位置**: `/root/.hermes/scripts/flywheel-health-report/`
+
+#### 职责
+
+Hermes 数据飞轮的健康巡检与参数自优化组件：解析 `trace.log` → 多维度分析器聚合 → KN LLM Judge（mask 级评分）→ Auto-Tuner 参数自优化 → 半自动生效。
+
+#### 三阶段流程
+
+| 阶段 | 模块 | 说明 |
+|------|------|------|
+| 阶段 0 | `runner.py` | 前置登记，声明内部任务（KN Judge 由阶段 1 内部执行），避免重复跑 LLM |
+| 阶段 1 | `cli.py` → `report.py` | 生成每日健康报告，聚合 12 个 analyzer，落库 `daily-summary-history.jsonl`，飞书推送 P0/P1 |
+| 阶段 2 | `auto_tuner/tuner.py` | 参数自优化：选参 → 方向决策 → 写 `.env` → 飞书通知人工确认重启 |
+
+#### 核心目录结构
+
+```
+scripts/flywheel-health-report/
+├── scripts/flywheel-health-report.sh   # cron 入口（阶段 0/1/2 串联）
+├── src/flywheel_health_report/
+│   ├── runner.py                       # 阶段 0 Runner
+│   ├── cli.py                         # 阶段 1 CLI 入口
+│   ├── report.py                      # 报告生成（12 analyzer 聚合）
+│   ├── parsers.py                     # trace.log 解析 + daily-summary 落库
+│   ├── config.py                      # 路径常量 + 反馈键/参数定义（PARAM_DEFS）
+│   ├── analyzers/                     # 各维度分析器
+│   │   ├── router.py                  # Router 4 路 mask / recall 分析
+│   │   ├── kn_judge.py                # KN LLM Judge（mask 级 h/kt/sag 评分）
+│   │   ├── token_usage.py             # 实际 token 消耗观测
+│   │   ├── sag_contribution.py        # SAG 召回贡献率
+│   │   └── ...                        # 其余 analyzer
+│   └── auto_tuner/
+│       ├── tuner.py                   # 调优核心逻辑（15 个可调参数）
+│       └── notifier.py                # 飞书通知
+└── tests/                             # pytest 回归套件
+```
+
+#### KN LLM Judge（mask 级）
+
+`analyzers/kn_judge.py` 的 `run_judge_within_window()` 从 `trace.log` 采样召回记录，并发调用 LLM 逐条评分，输出**按影响路径拆分**的相关率：
+
+- `kn_judge_relevant_rate_h` / `kn_judge_sample_count_h` — Hindsight 经验路
+- `kn_judge_relevant_rate_kt` / `kn_judge_sample_count_kt` — 知识树路
+- `kn_judge_relevant_rate_sag` / `kn_judge_sample_count_sag` — SAG 反思路
+
+> ⚠️ **Token 预算已移除（2026-08-10）**：采样窗口固定 `[now-30d, now]`，不再做注入前 token 截断，仅观测实际消耗。
+
+#### Auto-Tuner
+
+`auto_tuner/tuner.py` 负责让 Router 飞轮**真正产生优化作用**：
+
+- **15 个可调参数**（PARAM_DEFS），覆盖召回阈值、SAG 参数、因果链、熔断冷却等
+- **4 桶优先级选参**：virgin-confident → virgin-unconfident → remaining-confident → remaining-unconfident
+- **信任门控（per-mask）**：`_feedback_key_trusted` 按 `_h/_kt/_sag` 后缀读取 `daily-summary` 全量记录的样本计数，≥ `mask_min_sample`(12) 才采信 mask 反馈
+- **安全机制**：不自动重启（飞书通知人工确认）、收敛锁定、连续恶化暂停并回滚、震荡惩罚、24h 冷却
+
+---
+
+### 6.17 Hermes-Kit 一键安装包 (hermes-kit)
+
+> **路径**: `scripts/hermes-kit/`
+> **类型**: 安装/升级/卸载增强包
+> **部署位置**: 运行时配置 `~/.hermes-kit/`
+
+#### 职责
+
+Hermes 知识飞轮增强包 — 五路召回、聚类分析、Skill 优化、飞轮监控、知识树维护、记忆清理、梦境合成、自进化研究，一键安装。
+
+#### 组成
+
+| 文件 | 说明 |
+|------|------|
+| `install.sh` | 首次安装（部署组件 + 创建配置 + 建 cron） |
+| `upgrade.sh` | 升级（更新代码 + 合并配置 + 重建 cron） |
+| `uninstall.sh` | 卸载（代码卸载，数据保留，默认 dry-run） |
+| `config/default.yaml` | 默认配置模板 |
+| `templates/.env.append` | 需要追加到 `.env` 的配置项 |
+| `SPEC.md` | 架构方案（v1.2） |
+
+#### 安装内容
+
+**14 个组件**（通过 `deploy/deploy.sh` 部署）：
+cron-common、knowledge-navigation、knowledge-tree-plugin、knowledge-tree-builder、clustering-analysis-v3、memory-cleanup、skillopt-runner、skillopt-sleep、system-health-check、daily-learn、dream-synth、self-evolving、cron-wrappers、recall-eval
+
+**14 个常驻 cron**（通过 `hermes cron create`）：系统巡检、飞轮健康报告、每日在线学习、k-vector 维护、每周深度研究、聚类分析、知识树维护、知识导航基线、Skill Eval、记忆清理、Router 巡检、Skill 优化、梦境合成、cron 异常检测
+
+#### 命令说明
+
+```bash
+./install.sh --dry-run    # 预览安装（不实际执行）
+./install.sh --yes        # 正式安装
+./upgrade.sh --yes        # 升级（更新代码 + 合并配置 + 重建 cron）
+./uninstall.sh            # 预览卸载
+./uninstall.sh --apply    # 真正卸载（保留数据）
+```
+
+#### 配置
+
+安装后配置文件位于 `~/.hermes-kit/config.yaml`，环境变量通过 `~/.hermes/.env` 注入，所有 kit 相关变量以 `HERMES_KIT_` 前缀命名。
+
+---
+
 ## 7. Cron 定时任务系统
 
 ### 7.1 架构
@@ -829,15 +993,23 @@ scripts/recall-eval/
 ```
 cron_common.sh → flock 防重入 + 日志落盘 + 飞书通知 + 任务状态记录
      ↑
-     ├── health-check-cron.sh          # 系统健康巡检
-     ├── flywheel-health-report.sh     # 飞轮健康报告
-     ├── kn-router-health-check.sh     # Router 健康巡检
-     ├── knowledge-navigation-baseline.sh  # 知识导航基线采集
-     ├── run-skill-eval.sh             # Skill 评估
-     ├── memory-cleanup/daily_dryrun.sh  # 记忆清理
-     ├── skillopt-runner/              # SkillOpt 增量优化
-     └── daily-learn/daily_learn.sh    # 每日在线学习
+     ├── health-check-cron.sh                    # 系统健康巡检
+     ├── flywheel-health-report.sh               # 飞轮健康报告 + Auto-Tuner
+     ├── daily-learn/daily_learn.sh              # 每日在线学习
+     ├── knowledge-tree-kvector-maintenance.sh   # 知识树 k_vector 兜底维护
+     ├── clustering-analysis-cron.sh             # 记忆聚类分析
+     ├── knowledge-tree-consolidate.sh           # 知识树 consolidate 维护
+     ├── knowledge-navigation-baseline.sh        # 知识导航基线采集
+     ├── run-skill-eval.sh                       # Skill 评估
+     ├── memory-cleanup/daily_dryrun.sh          # 记忆清理
+     ├── kn-router-health-check.sh               # Router 健康巡检
+     ├── skillopt-runner/skillopt-nightly-run.sh # SkillOpt 增量优化
+     ├── dream-synth/scripts/dream-daily.sh      # 梦境合成
+     ├── cron-periodic-detect.sh                 # cron 异常检测
+     └── self-evolving/self-evolving-nightly.sh  # 自进化夜间研究
 ```
+
+> agent 类型任务（每周深度研究、论文投稿提醒）无 wrapper 脚本，由 Hermes cron 调度 LLM 代理执行 prompt。
 
 ### 7.2 Cron 公共库 (`cron_common.sh`)
 
@@ -850,17 +1022,34 @@ cron_common.sh → flock 防重入 + 日志落盘 + 飞书通知 + 任务状态�
 
 ### 7.3 定时任务清单
 
-| 任务 | 时间（北京时间） | 脚本 | 说明 |
-|------|------------------|------|------|
-| 系统健康巡检 | 工作日 08:00 | `health-check-cron.sh` | 3-tier 架构巡检 + 飞书告警 |
-| 每日在线学习 | 工作日 09:00 | `daily-learn/daily_learn.sh` | GitHub/ArXiv 知识采集 |
-| 聚类分析 | 周一 10:00 | `clustering-analysis-cron.sh` | HDBSCAN 聚类 + 因果链 |
-| 知识树 consolidate | 周一 11:00 | `knowledge-tree-consolidate.sh` | 知识树周期维护 |
-| 知识导航基线 | 每日 12:00 | `knowledge-navigation-baseline.sh` | 基线采集 + 退化检测 |
-| Skill Eval 评估 | 每日 12:00 | `run-skill-eval.sh` | Skill 匹配质量评估 |
-| 记忆清理 | 每日 13:00 | `memory-cleanup/daily_dryrun.sh` | LLM 分类清理 |
-| Router 健康巡检 | 每日 14:00 | `kn-router-health-check.sh` | Router 解析失败率/稳定性检查 |
-| SkillOpt 增量优化 | 每日 15:00 | `skillopt-nightly-run.sh` | Skill 文档自动优化 |
+> 真相源：`~/.hermes/cron/jobs.json`，源码锚点见 `scripts/cron-wrappers/cron-jobs-config.md`。共 16 个任务：14 no_agent 脚本 + 2 agent 任务。
+
+| # | 任务 (name) | 时间（北京时间） | 类型 | 脚本 | 说明 |
+|---|-------------|------------------|------|------|------|
+| 1 | system-health-check | 工作日 08:00 | no_agent | `health-check-cron.sh` | 3-tier 架构巡检 + 飞书告警 |
+| 2 | flywheel-health-report | 每日 08:00 | no_agent | `flywheel-health-report.sh` | 飞轮健康报告 + Auto-Tuner（阶段 0/1/2 串联） |
+| 3 | 每日在线学习 | 工作日 09:00 | no_agent | `daily-learn/daily_learn.sh` | GitHub/ArXiv 知识采集 |
+| 4 | 知识树k_vector每周兜底维护 | 周六 09:00 | no_agent | `knowledge-tree-kvector-maintenance.sh` | k_vector 兜底回填 |
+| 5 | 每周深度研究-知识树学习 | 周日 09:00 | agent | —（LLM prompt 驱动） | 深度研究后知识入库 |
+| 6 | clustering-analysis | 周一 10:00 | no_agent | `clustering-analysis-cron.sh` | HDBSCAN 聚类 + 因果链 |
+| 7 | 知识树维护每日 | 周一 11:00 | no_agent | `knowledge-tree-consolidate.sh` | 知识树 consolidate 周期维护 |
+| 8 | 知识导航评估基线 | 每日 12:00 | no_agent | `knowledge-navigation-baseline.sh` | 基线采集 + 退化检测 |
+| 9 | Skill Eval 评估 | 每日 12:00 | no_agent | `run-skill-eval.sh` | Skill 匹配质量评估 |
+| 10 | memory-cleanup-daily | 每日 13:00 | no_agent | `memory-cleanup/daily_dryrun.sh` | LLM 分类清理 |
+| 11 | 知识导航 Router 健康巡检 | 每日 14:00 | no_agent | `kn-router-health-check.sh` | Router 解析失败率/稳定性检查 |
+| 12 | skillopt-nightly-run | 每日 15:00 | no_agent | `skillopt-nightly-run.sh` | Skill 文档自动优化 |
+| 13 | dream-daily | 每日 16:00 | no_agent | `dream-synth/scripts/dream-daily.sh` | 梦境合成 |
+| 14 | cron-periodic-detect | 每小时整点 | no_agent | `cron-periodic-detect.sh` | 失败 job 检测 + 去重告警（独立于飞轮任务） |
+| 15 | 论文投稿提醒-改投 | once 2026-08-06 09:00 | agent | —（LLM prompt 驱动） | 一次性任务，到期自动归档 |
+| 16 | self-evolving-nightly | 每日 17:30 | no_agent | `self-evolving/self-evolving-nightly.sh` | 消费 skillopt 失败轨迹做 Revision→Refinement 并写回 SKILL.md |
+
+**排班要点**：
+- 周一上午链式排班：clustering-analysis(10:00) → 知识树维护(11:00) → 评估基线 + Skill Eval(12:00)
+- 工作日 08:00 并行：system-health-check（仅 1-5）+ flywheel-health-report（每日）
+- LLM 任务间隔 ≥ 1h 避免争抢 LiteLLM 网关；skillopt 放最后（15:00）
+- self-evolving-nightly(17:30) 在 skillopt(15:00) 与 dream-daily(16:00) 之后运行，避开 LLM 网关高峰
+
+> **飞轮 state 文件标识对照**：`flywheel-health-report` 的 `ACTIVE_CRON_JOBS` 使用 cron state 文件名，部分与 jobs.json 的 `name` 不同（如 `memory-cleanup-daily` → `memory-cleanup`、`知识导航评估基线` → `knowledge-navigation-baseline`、`Skill Eval 评估` → `run-skill-eval` 等），详见 `scripts/cron-wrappers/cron-jobs-config.md`。
 
 ### 7.4 飞轮健康报告
 
@@ -908,11 +1097,32 @@ deploy/lib/common.sh          # 共享函数库（备份/回滚/清单展开/防
 
 ### 8.4 部署目标与重启
 
+共 20 个可部署项目（`deploy/deploy.sh list` 列出）。插件类部署后自动重启 hermes-gateway：
+
 | 项目 | 运行时位置 | 重启服务 |
 |------|------------|---------|
 | knowledge-navigation | `/root/.hermes/plugins/knowledge-navigation/` | `hermes-gateway.service` |
 | knowledge-tree-plugin | `/root/.hermes/plugins/knowledge-tree-plugin/` | `hermes-gateway.service` |
-| 其他脚本项目 | `/root/.hermes/scripts/<project>/` | — |
+| hermes-common（共享库） | `/root/.hermes/lib/`（含 `hermes_common/`） | — |
+| cron-common（共享库） | `/root/.hermes/scripts/common/` | — |
+| cron-wrappers | `/root/.hermes/scripts/cron-wrappers/` | — |
+| ai-report-system | `/root/.hermes/scripts/ai-report-system/` | — |
+| clustering-analysis-v3 | `/root/.hermes/scripts/clustering-analysis-v3/` | — |
+| daily-learn | `/root/.hermes/scripts/daily-learn/` | — |
+| drawio-generator | `/root/.hermes/scripts/drawio-generator/` | — |
+| dream-synth | `/root/.hermes/scripts/dream-synth/` | — |
+| flywheel-health-report | `/root/.hermes/scripts/flywheel-health-report/` | — |
+| flywheel-scripts | `/root/.hermes/scripts/`（独立脚本） | — |
+| knowledge-tree-builder | `/root/.hermes/scripts/knowledge-tree-builder/` | — |
+| memory-cleanup | `/root/.hermes/scripts/memory-cleanup/` | — |
+| p0-benchmark | `/root/.hermes/scripts/p0-benchmark/` | — |
+| recall-eval | `/root/.hermes/scripts/recall-eval/` | — |
+| self-evolving | `/root/.hermes/scripts/self-evolving/` | — |
+| skillopt-runner | `/root/.hermes/scripts/skillopt-runner/` | — |
+| skillopt-sleep | `/root/.hermes/scripts/skillopt-sleep/` | — |
+| system-health-check | `/root/.hermes/scripts/system-health-check/` | — |
+
+> 注：`hermes-kit` 为独立安装包（不通过 deploy.sh 部署），运行时配置位于 `~/.hermes-kit/`；`codex-app-server` 为 systemd 常驻服务（`codex-app-server.service`）。
 
 ### 8.5 设计原则
 
@@ -960,11 +1170,12 @@ deploy/lib/common.sh          # 共享函数库（备份/回滚/清单展开/防
 
 | 服务 | 端口 | 使用者 |
 |------|------|--------|
-| Hindsight RAG | 9177 | knowledge-navigation (H 路召回) |
+| Hindsight RAG | 9177 | knowledge-navigation (H 路召回)、clustering-analysis |
 | shared-postgres | 5434 | knowledge-navigation、knowledge-tree-plugin/builder、clustering-analysis、Hindsight |
 | LiteLLM | 4142 | 所有需要 LLM 的模块（统一模型网关） |
-| Hermes Gateway | 8642 | 插件运行时 |
-| 飞书 API | — | cron 通知、self-evolving 反思 |
+| Hermes Gateway | 8642 | 插件运行时、flywheel-health-report（解析 trace.log） |
+| 飞书 API | — | cron 通知、self-evolving 反思、Auto-Tuner 通知 |
+| Codex App Server | — | codex-app-server 桥接（长时任务提交） |
 
 ### 9.3 Python 包依赖矩阵
 
@@ -981,6 +1192,8 @@ deploy/lib/common.sh          # 共享函数库（备份/回滚/清单展开/防
 | dream-synth | `httpx`, `pyyaml` |
 | recall-eval | `typer`, `httpx`, `pyyaml` |
 | p0-benchmark | `typer`, `httpx`, `numpy` |
+| flywheel-health-report | `httpx`, `pyyaml`, `psycopg2-binary` |
+| hermes-common（共享库） | `httpx`, `pyyaml`（ledger / llm_guard / text_utils） |
 
 ---
 
@@ -1007,9 +1220,14 @@ cd scripts/clustering-analysis-v3 && pip install -e .
 cd scripts/drawio-generator && pip install -e .
 cd scripts/knowledge-tree-builder && pip install -e .
 cd scripts/memory-cleanup && pip install -e .
+cd scripts/flywheel-health-report && pip install -e .
+cd scripts/recall-eval && pip install -e .
+cd scripts/p0-benchmark && pip install -e .
 cd plugins/knowledge-navigation && pip install -e .
 cd plugins/knowledge-tree-plugin && pip install -e .
 ```
+
+> 注：`dream-synth` / `self-evolving` 等也支持 `pip install -e .`；`codex-app-server` / `hermes-kit` 为独立部署方式（见 6.15 / 6.17）。
 
 ### 10.3 运行测试
 
@@ -1020,7 +1238,11 @@ cd scripts/clustering-analysis-v3 && pip install -e . && pytest
 cd scripts/drawio-generator && pip install -e . && pytest
 cd scripts/knowledge-tree-builder && pip install -e . && pytest
 cd scripts/memory-cleanup && pip install -e . && pytest
+cd scripts/flywheel-health-report && pip install -e . && pytest -q --ignore=tests/test_feishu_live.py
+cd scripts/recall-eval && pip install -e . && pytest
+cd scripts/p0-benchmark && pip install -e . && pytest
 cd plugins/knowledge-navigation && pip install -e . && pytest
+cd plugins/knowledge-tree-plugin && pip install -e . && pytest
 
 # 排除集成测试
 pytest -m "not integration"
@@ -1041,6 +1263,8 @@ pytest --cov=package_name --cov-report=term-missing --cov-fail-under=80
 | drawio-generator | `drawio-generator render <spec>` | 生成矢量图 |
 | p0-benchmark | `p0-benchmark run` | 性能基准测试 |
 | recall-eval | `recall-eval run` | 召回评估 |
+| flywheel-health-report | `python -m flywheel_health_report` | 飞轮健康报告（阶段 1 CLI） |
+| flywheel-health-report | `auto_tuner/tuner.py` | Auto-Tuner 参数自优化（阶段 2） |
 | self-evolving | `python -m self_evolving.scripts.se_refine` | Refinement 算子 |
 | self-evolving | `python -m self_evolving.scripts.se_revision` | Revision 算子 |
 | self-evolving | `python -m self_evolving.scripts.se_recombine` | Recombination 算子 |

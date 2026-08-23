@@ -4,21 +4,27 @@
 
 ## 项目概览
 
-HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 10+ 独立可部署的子项目，共同支撑端到端的 AI 助手系统：
+HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 17+ 独立可部署的子项目，共同支撑端到端的 AI 助手系统：
 
 | # | 项目 | 路径 | 类型 | 简介 |
 |---|------|------|------|------|
-| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | LLM Router **四路注入**（Hindsight 经验 + 知识树 + SAG 梦境反思 + Skill），pre_llm_call 智能召回，Skill 三级混合筛选（关键词预筛→Embedding精筛→LLM精排） |
+| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | LLM Router **五路召回**（Hindsight 经验 + 知识树 + SAG 反思 + Skill + CodeGraph 符号级），pre_llm_call 智能召回，Skill 三级混合筛选（关键词预筛→Embedding精筛→LLM精排） |
 | 2 | **知识树在线插件** | `plugins/knowledge-tree-plugin/` | 插件 | 知识树 pre_llm_call recall + post_llm_call 增量学习 |
-| 3 | **SkillOpt 增量优化** | `scripts/skillopt-runner/` | Cron | 基于对话负反馈自动优化 skill 文档 |
-| 4 | **系统健康巡检** | `scripts/system-health-check/` | Cron | 3-tier 架构每日巡检组件状态，异常飞书告警 |
-| 5 | **记忆清理** | `scripts/memory-cleanup/` | Cron | LLM 驱动的 MEMORY.md/USER.md 分类清理 |
-| 6 | **记忆聚类分析** | `scripts/clustering-analysis-v3/` | Cron | HDBSCAN 聚类 + LLM 因果链检测 |
-| 7 | **每日在线学习** | `scripts/daily-learn/` | Cron | 从 GitHub/ArXiv 自动采集知识入库 |
-| 8 | **知识分域建树管线** | `scripts/knowledge-tree-builder/` | 手动 | 从文档批量建知识树（Step 1-5 全管线） |
-| 9 | **Draw.io 矢量图生成** | `scripts/drawio-generator/` | 手动 | 根据描述自动生成 draw.io/SVG 架构图 |
-| 10 | **AI 报告生成系统** | `scripts/ai-report-system/` | 手动 | 多数据源分析，自动生成报告 |
-| 11 | **自我进化研究** | `scripts/self-evolving/` | 研究 | SE-Agent 自进化算子研究 + 反思回路 |
+| 3 | **飞轮健康报告 & Auto-Tuner** | `scripts/flywheel-health-report/` | Cron | 每日健康巡检（12 analyzer 聚合）+ KN LLM Judge（mask 级评分）+ 参数自优化 |
+| 4 | **SkillOpt 增量优化** | `scripts/skillopt-runner/` | Cron | 基于对话负反馈自动优化 skill 文档 |
+| 5 | **系统健康巡检** | `scripts/system-health-check/` | Cron | 3-tier 架构每日巡检组件状态，异常飞书告警 |
+| 6 | **记忆清理** | `scripts/memory-cleanup/` | Cron | LLM 驱动的 MEMORY.md/USER.md 分类清理 |
+| 7 | **记忆聚类分析** | `scripts/clustering-analysis-v3/` | Cron | HDBSCAN 聚类 + LLM 因果链检测 |
+| 8 | **每日在线学习** | `scripts/daily-learn/` | Cron | 从 GitHub/ArXiv 自动采集知识入库 |
+| 9 | **梦境合成** | `scripts/dream-synth/` | Cron | 从历史记忆发现模式、合成新知识组合 |
+| 10 | **自进化研究** | `scripts/self-evolving/` | Cron | SE-Agent 自进化算子研究 + 反思回路 |
+| 11 | **知识分域建树管线** | `scripts/knowledge-tree-builder/` | 手动 | 从文档批量建知识树（Step 1-5 全管线） |
+| 12 | **Draw.io 矢量图生成** | `scripts/drawio-generator/` | 手动 | 根据描述自动生成 draw.io/SVG 架构图 |
+| 13 | **AI 报告生成系统** | `scripts/ai-report-system/` | 手动 | 多数据源分析，自动生成报告 |
+| 14 | **P0 Benchmark** | `scripts/p0-benchmark/` | 手动 | 去重/LLM 调用/Skill 匹配性能基准测试 |
+| 15 | **Recall Eval** | `scripts/recall-eval/` | 手动 | 召回质量评估（评估查询数据集） |
+| 16 | **Codex App Server 桥接** | `scripts/codex-app-server/` | 常驻服务 | 长时任务（数小时级）WebSocket JSON-RPC 桥接 |
+| 17 | **Hermes-Kit 一键安装包** | `scripts/hermes-kit/` | 安装包 | 一键安装/升级/卸载增强包（14 组件 + 14 cron） |
 | — | **Cron 定时脚本集合** | `scripts/cron-wrappers/` | Cron | 统一 shell wrapper（cron_common.sh），flock 防重入 |
 
 > Hermes Gateway（消息网关）、SkillOpt-Sleep（优化引擎）、Hindsight RAG（记忆系统）是系统级的常驻服务，其源码独立管理，不在此仓库中。
@@ -28,7 +34,20 @@ HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 10+ 独�
 > 📖 **想深入了解架构、模块职责、关键类与函数？请看 [CODE_WIKI.md](CODE_WIKI.md)** — 完整代码百科（项目架构、模块详解、依赖关系、运行方式）。
 
 ## 系统架构
-Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 + 两个插件协同，实现：控制 token 开销 + 最大化记忆有效性 + 技能即时可用。
+
+Hermes 采用 **5 层记忆体系** + **五路召回**（Hindsight 经验 + 知识树 + SAG 反思 + Skill 能力 + CodeGraph 符号级）+ **三大飞轮闭环**，实现：控制 token 开销 + 最大化记忆有效性 + 技能即时可用 + 知识自进化。
+
+### 五层记忆体系
+
+| 层级 | 名称 | 数据存储 | 生命周期 | 管理方式 |
+|------|------|----------|----------|----------|
+| L1 | Session DB | SQLite sessions | 会话级 | 自动，Hermes 内置 |
+| L2 | MEMORY.md | `~/.hermes/memories/MEMORY.md` | 跨会话 | Agent 手动写 + 记忆清理 |
+| L3 | USER.md | `~/.hermes/memories/USER.md` | 持久 | Agent 手动写 |
+| L4 | **经验域**（Hindsight） | PG `memory_units` (pgvector) | 长期 | 自动 retain + 聚类增强 |
+| L5 | **知识域**（知识树） | PG `knowledge_tree` (pgvector) | 长期 | 离线 builder + 在线 plugin |
+
+### 运行时链路（每条消息）
 
 ```
 ═══════════════════ Session 初始化（仅一次） ═══════════════════
@@ -50,7 +69,7 @@ Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 +
 │                    ┌───────┴───────┐                  │             │               │
 │                    ▼               ▼                  │             │               │
 │           Hindsight recall   知识树 recall   SAG 反思召回              │             │               │
-│           （经验域）         （知识域）      （反思域）                 │             │               │
+│           （经验域 L4）     （知识域 L5）  （反思域）                 │             │               │
 │                    │               │                  │             │               │
 │                    └───────┬───────┘                  │             │               │
 │                            │                          │             │               │
@@ -78,25 +97,30 @@ Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 +
 │ + 因果链检测      │  │ 其余降级→RAG                 │   │
 │ → 提升 recall 率 │  │ → 减少 token 开销            │   │
 └───────────────────┘  └──────────────────────────────┘   │
-                                                          │
-┌──────────────────────────────────────────────────────────┘
-│
-┌─────────────────────────────────────────────────────┐
-│ AI 报告生成 (Cron / 手动)                                   │
-│ 多数据源分析 → DAG 并行执行 → 质量评估 → 导出报告       │
-└─────────────────────────────────────────────────────┘
+```
 
-╔═════════════════════════════════════════════════════╗
-║ 本仓库 /mnt/d/HermesProject                                ║
-║ 统一部署: ./deploy/deploy.sh deploy <project>              ║
-╚═════════════════════════════════════════════════════╝
+### 三大飞轮闭环
+
+```
+数据飞轮（知识）：生产 → 组织 → 消费 → 闭环优化
+  知识树 builder/在线插件 + Hindsight retain  →  聚类分析/记忆清理  →  知识导航五路召回  →  下一轮更精准
+
+能力飞轮（技能）：负反馈 → SkillOpt 优化 → 即时可用
+  SkillOpt Runner + Sleep  →  SE-Agent 自进化算子 + 反思回路
+
+Router 飞轮（决策）：决策 → 执行 → 健康巡检 → 更精准
+  LLM Router 五路召回决策（mask 四路 + CodeGraph 符号级）  →  recall 执行  →  飞轮健康报告 + Auto-Tuner 参数自优化
 ```
 
 **设计目标**：
-- **知识导航**：确保有效记忆主动召回，避免 LLM 不主动提取记忆的问题
+- **五层记忆分层**：按生命周期（会话 / 跨会话 / 持久 / 长期经验 / 长期知识）分层治理，各层独立维护，控制 token 开销
+- **知识导航（五路召回）**：LLM Router 按 mask 动态决策（Hindsight 经验 L4、知识树 L5、SAG 反思、Skill 能力四路）+ CodeGraph 符号级召回（代码 query 关键词触发），避免 LLM 不主动提取记忆/技能/代码符号的问题
 - **技能强制注入**：Skill 三级混合筛选（关键词预筛→Embedding精筛→LLM精排），自动匹配相关 skill 并注入全文到 `<auto_loaded_skills>`，匹配不到不强行注入，解决 LLM 不主动 `skill_view()` 的问题
-- **聚类分析**：优化 RAG 库结构，最大化提升召回记忆的有效性与 recall 率
+- **聚类分析**：优化 RAG 库结构（HDBSCAN + 因果链），最大化提升召回记忆的有效性与 recall 率
 - **记忆清理**：精简核心记忆，控制 token 开销，其余降级到 RAG 按需召回
+- **数据飞轮闭环**：知识生产 → 组织 → 消费 → 闭环优化，下一轮召回更精准
+- **能力飞轮**：SkillOpt 基于对话负反馈自动优化 skill 文档；SE-Agent 自进化算子（Revision / Recombination / Refinement）+ 反思回路持续改进
+- **Router 决策质量**：决策置信度 / fallback 指标采集，飞轮健康报告巡检 + Auto-Tuner 参数自优化（不自动重启，飞书人工确认）
 - **综合效果**：每条消息只携带必要上下文，又不丢失任何历史记忆，最大化记忆有效性
 
 ## 目录结构
@@ -104,14 +128,22 @@ Hermes 采用 **5 层记忆体系** + **技能强制注入**，三个子项目 +
 ```
 HermesProject/
 ├── config/                  # 全局配置（common.yaml、gateway.yaml.example）
+├── libs/                    # 共享库
+│   └── hermes_common/       #   hermes_common 共享库（ledger / llm_guard / text_utils）
 ├── scripts/
 │   ├── ai-report-system/         # AI 报告生成系统
 │   ├── clustering-analysis-v3/   # 记忆聚类分析（HDBSCAN + 因果链）
+│   ├── codex-app-server/         # Codex App Server 长时任务桥接
 │   ├── cron-wrappers/            # 统一 cron shell wrapper 集合
 │   ├── daily-learn/              # 每日在线学习（ArXiv/GitHub）
 │   ├── drawio-generator/         # Draw.io 矢量图生成
+│   ├── dream-synth/              # 梦境合成（pattern-discovery → synthesis）
+│   ├── flywheel-health-report/   # 飞轮健康报告 + Auto-Tuner
+│   ├── hermes-kit/               # 一键安装/升级/卸载增强包
 │   ├── knowledge-tree-builder/   # 知识分域建树管线
 │   ├── memory-cleanup/           # 记忆分类清理
+│   ├── p0-benchmark/             # 性能基准测试
+│   ├── recall-eval/              # 召回评估
 │   ├── self-evolving/            # 自我进化研究 + 反思回路
 │   ├── skillopt-runner/          # SkillOpt 增量优化 runner
 │   ├── skillopt-sleep/           # SkillOpt-Sleep 优化引擎（独立依赖）
@@ -124,12 +156,7 @@ HermesProject/
 │   ├── deploy.sh            # 分发入口（list / plan / deploy / rollback / history / cleanup）
 │   ├── lib/
 │   │   └── common.sh        # 共享函数库（备份/回滚/清单展开/技能部署/防残留）
-│   ├── projects/            # 各项目独立配置脚本
-│   │   ├── ai-report-system.sh
-│   │   ├── clustering-analysis-v3.sh
-│   │   ├── drawio-generator.sh
-│   │   ├── knowledge-navigation.sh
-│   │   └── memory-cleanup.sh
+│   ├── projects/            # 各项目独立配置脚本（20 个项目）
 │   ├── manifests/           # 各项目文件级部署清单（glob 模式）
 │   └── README.md            # 部署系统说明文档
 ├── docs/                    # 文档入口 → docs/README.md
@@ -150,7 +177,7 @@ HermesProject/
 │       └── testing-spec.md
 ├── AGENTS.md                # Agent 配置与交互规则
 ├── pyproject.toml           # 主项目构建配置（hermes-gateway）
-├── requirements.txt         # 主项目依赖（占位符）
+├── requirements.txt         # 仓库级依赖清单（各子项目运行时依赖合并）
 └── .gitignore
 ```
 
@@ -249,10 +276,16 @@ deploy 采用三层架构：
 ./deploy/deploy.sh deploy cron-wrappers
 ./deploy/deploy.sh deploy daily-learn
 ./deploy/deploy.sh deploy drawio-generator
+./deploy/deploy.sh deploy dream-synth
+./deploy/deploy.sh deploy flywheel-health-report
+./deploy/deploy.sh deploy flywheel-scripts
+./deploy/deploy.sh deploy hermes-common
 ./deploy/deploy.sh deploy knowledge-navigation  # 自动重启 hermes-gateway
 ./deploy/deploy.sh deploy knowledge-tree-builder
 ./deploy/deploy.sh deploy knowledge-tree-plugin  # 自动重启 hermes-gateway
 ./deploy/deploy.sh deploy memory-cleanup
+./deploy/deploy.sh deploy p0-benchmark
+./deploy/deploy.sh deploy recall-eval
 ./deploy/deploy.sh deploy self-evolving
 ./deploy/deploy.sh deploy skillopt-runner
 ./deploy/deploy.sh deploy skillopt-sleep
@@ -271,15 +304,21 @@ deploy 采用三层架构：
 | Cron wrappers | `/root/.hermes/scripts/cron-wrappers/` | — |
 | 每日在线学习 | `/root/.hermes/scripts/daily-learn/` | — |
 | Draw.io 生成 | `/root/.hermes/scripts/drawio-generator/` | — |
+| 梦境合成 | `/root/.hermes/scripts/dream-synth/` | — |
+| 飞轮健康报告 | `/root/.hermes/scripts/flywheel-health-report/` | — |
 | 知识树构建器 | `/root/.hermes/scripts/knowledge-tree-builder/` | — |
 | 记忆清理 | `/root/.hermes/scripts/memory-cleanup/` | — |
 | 知识导航 | `/root/.hermes/plugins/knowledge-navigation/` | `hermes-gateway.service` |
 | 知识树插件 | `/root/.hermes/plugins/knowledge-tree-plugin/` | `hermes-gateway.service` |
+| 共享库 | `/root/.hermes/lib/`（hermes_common）/ `/root/.hermes/scripts/common/`（cron-common） | — |
 | 自我进化 | `/root/.hermes/scripts/self-evolving/` | — |
 | SkillOpt Runner | `/root/.hermes/scripts/skillopt-runner/` | — |
 | SkillOpt Sleep | `/root/.hermes/scripts/skillopt-sleep/` | — |
 | 系统健康巡检 | `/root/.hermes/scripts/system-health-check/` | — |
+| P0 Benchmark | `/root/.hermes/scripts/p0-benchmark/` | — |
+| Recall Eval | `/root/.hermes/scripts/recall-eval/` | — |
 
+> 注：`hermes-kit` 为独立安装包（`./install.sh`），`codex-app-server` 为 systemd 常驻服务，均不通过 `deploy.sh` 部署。
 > 部署系统完整说明见 [deploy/README.md](deploy/README.md)。
 
 ## 各子项目详情
@@ -324,13 +363,14 @@ LLM 驱动的智能记忆管理（MEMORY.md + USER.md）：
 - Step 5：PG 写入（含增量去重 + 矛盾检测）
 - 用户命令：`add` / `ingest` / `tree` / `find` / `move` / `edit` / `remove` / `merge`
 
-### 6. 知识导航插件（LLM Router 四路注入）
-在每次 LLM 调用前通过 LLM Router 智能决策注入路径：
+### 6. 知识导航插件（LLM Router 五路召回）
+在每次 LLM 调用前通过 LLM Router 智能决策注入路径（mask 决策四路 + CodeGraph 第 5 路）：
 - **H（经验域）**：从 Hindsight 召回相关记忆
 - **KT（知识域）**：通过 knowledge-tree-plugin 召回知识树，沿 `kt_entity_links` 表展开共享实体的关联知识点（实体多跳）
 - **SAG（反思域）**：SAG 梦境反思召回，将对话沉淀的结构化知识/公理回流到下一轮上下文
 - **S（能力域）**：Skill 三级混合筛选（关键词预筛 Top-30 → Embedding 余弦相似度精筛 Top-20 → LLM 精排 Top-3），自动注入
-- 动态执行：四路按 mask 超时隔离真并行（每路独立截止时间，互不连坐），单路则串行
+- **CG（代码域）**：代码相关 query 经 `_is_code_query` 关键词触发 CodeGraph 符号级召回（subprocess 调 `codegraph query`，返回文件/行号/签名），结果并入 `<knowledge source="codegraph">`
+- 动态执行：mask 四路按条件超时隔离真并行（每路独立截止时间，互不连坐），单路则串行；CodeGraph 路独立触发（timeout 5s），绝不阻塞主链路
 - H/KT/SAG 三路各带独立熔断器（阈值 3 / 冷却 90s）+ 飞书告警 + Router 异常 fallback 全开；Embedding 调用失败自动降级
 - 注入去重、Compaction、HitCounter、时态衰减、跨域去重；recall 日志每条带明确 `source` 来源标识
 
@@ -359,6 +399,39 @@ LLM 驱动的智能记忆管理（MEMORY.md + USER.md）：
 
 支持 B / D 两种算子串联模式，可通过 `python -m self_evolving.scripts.*` 调用。
 
+### 9. 飞轮健康报告 & Auto-Tuner
+Hermes 数据飞轮的健康巡检与参数自优化组件（每日 08:00）：
+- **三阶段**：Runner 前置登记 → 健康报告生成（12 analyzer 聚合）→ Auto-Tuner 参数自优化
+- **KN LLM Judge**：按 Hindsight/知识树/SAG 路径拆分 mask 级评分（`_h/_kt/_sag` 相关率）
+- **Auto-Tuner**：15 个可调参数，4 桶优先级选参，信任门控 + 收敛锁定 + 连续恶化回滚
+- **安全机制**：不自动重启，飞书通知人工确认
+
+### 10. 梦境合成（Dream Synth）
+从历史记忆中发现模式、评估显著性、合成新知识组合：
+- 四阶段：pattern-discovery → promote-judge → significance-filter → synthesis
+- 每日 16:00 cron 执行（`dream-daily.sh`）
+
+### 11. P0 Benchmark
+性能基准测试（手动执行）：
+- 去重基准（dedup_benchmark）、LLM 调用基准（llm_benchmark）、Skill 匹配基准（skill_benchmark）
+
+### 12. Recall Eval
+召回质量评估（手动执行）：
+- 使用评估查询数据集（`data/eval_queries.json`）评估知识导航召回效果
+- 指标计算：precision / recall / MRR
+
+### 13. Codex App Server 桥接
+Hermes 提交长时任务（数小时级）的集成桥接层：
+- Python MCP 桥接进程 → WebSocket JSON-RPC → codex app-server
+- 暴露工具：`codex_start_task` / `codex_task_status` / `codex_cancel_task`
+- systemd 常驻服务（`codex-app-server.service`）
+
+### 14. Hermes-Kit 一键安装包
+Hermes 知识飞轮增强包，一键安装：
+- 命令：`./install.sh --dry-run`（预览）/ `--yes`（安装）、`./upgrade.sh --yes`（升级）、`./uninstall.sh --apply`（卸载）
+- 安装内容：14 个组件 + 14 个常驻 cron
+- 配置：`~/.hermes-kit/config.yaml`，环境变量 `HERMES_KIT_` 前缀
+
 ## 开发规范
 
 - **代码风格**：见 [docs/engineering-standards.md](docs/engineering-standards.md)
@@ -381,12 +454,11 @@ MIT
 
 | 项目 | Skill |
 |------|-------|
-| `scripts/ai-report-system/` | `software-development/ai-report-generation-system-implementation/SKILL.md` |
-| `scripts/clustering-analysis-v3/` | `mlops/clustering-analysis/SKILL.md`、`operations/memory-correction/SKILL.md` |
+| `scripts/clustering-analysis-v3/` | `operations/memory-correction/SKILL.md` |
 | `scripts/drawio-generator/` | `diagramming/drawio-generator/SKILL.md` |
 | `scripts/memory-cleanup/` | `devops/memory-md-cleanup/SKILL.md`、`software-development/memory-cleanup/SKILL.md` |
 | `scripts/self-evolving/` | `se-agent-evolution/SKILL.md` |
-| `scripts/knowledge-tree-builder/` | 建树管线 Step 1-5 CLI |
+| `scripts/knowledge-tree-builder/` | `skills/knowledge-tree-builder/SKILL.md` |
 | `plugins/knowledge-navigation/` | `software-development/knowledge-navigation/SKILL.md` |
 | `plugins/knowledge-tree-plugin/` | `public_api.recall_from_tree()` 公共 API |
 

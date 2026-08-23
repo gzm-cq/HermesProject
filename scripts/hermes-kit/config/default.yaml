@@ -6,7 +6,7 @@ kit:
   version: "1.2"
   log_level: info
 
-# 四路召回
+# 五路召回（mask 四路 + CodeGraph 符号级）
 recall:
   knowledge_tree:
     enabled: true
@@ -20,6 +20,9 @@ recall:
   sag:
     enabled: true
     top_k: 5
+  codegraph:
+    enabled: true
+    limit: 5
 
 # 聚类分析
 clustering:

@@ -27,8 +27,10 @@ src/memory_cleanup/
 │   └── session_db.py   # SessionDB 适配器（Phase 2 去重参考）
 └── core/
     ├── classifier.py   # Phase 1 分类引擎 + remove 候选筛选
+    ├── lifecycle.py    # 记忆生命周期管理（合并/压缩/降级执行）
     ├── prompts.py      # LLM 提示词模板
     ├── reporter.py     # 报告输出（human/json）
+    ├── utils.py        # 通用工具
     └── verifier.py     # Phase 2 验证（LLM 二次确认 remove 决策）
 ```
 

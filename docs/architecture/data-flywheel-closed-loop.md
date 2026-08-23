@@ -87,7 +87,7 @@
 
 ```python
 def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | None:
-    """每次 LLM 调用前自动执行：三层门控 → LLM Router → 四路 mask 条件执行 → 后处理注入。"""
+    """每次 LLM 调用前自动执行：三层门控 → LLM Router → mask 四路 + CodeGraph 五路召回 → 后处理注入。"""
 ```
 
 **执行流程**（L1013-1139）：
@@ -97,14 +97,14 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
 | 1 | `_pass_gates` | L411-438 | 三层门控：platform 检查 → system_prompt 检查 → turn_gate 操作型消息过滤 |
 | 2 | 熔断器检查 | L1024-1027 | 熔断器开启时跳过召回 |
 | 3 | `_get_router_mask` | L451-468 | 调 LLM Router 获取 4 路 mask `{h, kt, s, sag}` |
-| 4 | `_execute_recall` | L497-518 | 按 mask 并行/串行执行 4 路召回 |
+| 4 | `_execute_recall` | L497-518 | 按 mask 并行/串行执行 4 路召回（CodeGraph 在 L1347 后独立执行，第 5 路） |
 | 5 | `_expand_multi_hop` | L730-738 | 知识树实体多跳展开 |
 | 6 | `_post_process_recall` | L883-916 | 降级 + 过滤 + boost + 因果链 + 压缩 + 跨域去重 |
 | 7 | SAG 合并 | L1085-1122 | SAG 候选合并到主结果集 |
 | 8 | `_dedup_and_measure` | L725-790 | Turn-to-turn 去重 + 文本去重 + 实际 token 消耗观测 |
 | 9 | `_assemble_xml_output` | L753-881 | 组装 XML 标签化上下文 + 记录日志 |
 
-### 2.2 四路召回详解
+### 2.2 五路召回详解（mask 四路 + CodeGraph）
 
 #### Route 1：Hindsight（经验记忆）
 
@@ -184,6 +184,22 @@ def _do_sag_recall(query: str) -> list[dict]:
 - **数据源**：SAG 服务（`http://127.0.0.1:4173/search`）
 - **独立熔断器**：连续失败时自动熔断，跳过 SAG 召回
 - **关键参数**：`KN_SAG_SEARCH_TOP_K`、`KN_SAG_MAX_INJECT`、`KN_SAG_MIN_SCORE`
+
+#### Route 5：CodeGraph（符号级代码召回）
+
+**函数**：`_do_codegraph_recall` — [router.py L429-480](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks/router.py#L429-L480)
+
+```python
+def _do_codegraph_recall(query: str) -> tuple[list[dict], str | None]:
+    # 代码 query（_is_code_query 关键词命中）时触发；
+    # subprocess 调 codegraph CLI 只读查询（WAL 并发对运行中 MCP server 安全）
+    ...
+```
+
+- **触发条件**：`CONFIG.codegraph_enabled` && 非 eval query && `_is_code_query()` 命中（代码/符号关键词）
+- **数据源**：codegraph CLI（`codegraph query --json --limit N --path <project>`，与 MCP 服务共用同一索引）
+- **执行位置**：mask 四路召回之后独立执行（router.py L1347+），`timeout=5s` 绝不阻塞主链路；结果并入 `kept` 参与去重/度量，注入 `<knowledge source="codegraph">`
+- **关键参数**：`KN_CODEGRAPH_ENABLED`、`KN_CODEGRAPH_BIN`、`KN_CODEGRAPH_TIMEOUT`、`KN_CODEGRAPH_LIMIT`
 
 ### 2.3 跨域去重与实际消耗观测
 

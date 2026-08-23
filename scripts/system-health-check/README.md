@@ -29,6 +29,6 @@ cd deploy && ./deploy/deploy.sh deploy system-health-check --yes
 
 ## Cron
 
-- 排期：工作日 9:00
+- 排期：工作日 08:00（`0 8 * * 1-5`，与真相源 `scripts/cron-wrappers/cron-jobs-config.md` 一致）
 - no_agent 脚本：`health-check-cron.sh`
 - 交付：local（结果写入  ~/.hermes/cron/output/）

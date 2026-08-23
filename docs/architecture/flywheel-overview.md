@@ -14,12 +14,12 @@
 | | Hindsight retain | （外部服务） | 对话经验自动沉淀为记忆单元 |
 | **知识组织** | 聚类分析 | `scripts/clustering-analysis-v3/` | HDBSCAN 聚类 + 因果链检测，优化 RAG 索引 |
 | | 记忆清理 | `scripts/memory-cleanup/` | LLM 分类 retain/remove/merge/compress，控制 L2 token |
-| **知识消费** | 知识导航插件 | `plugins/knowledge-navigation/` | LLM Router 四路召回（H + KT + S + SAG），注入上下文 |
+| **知识消费** | 知识导航插件 | `plugins/knowledge-navigation/` | LLM Router 五路召回（mask 四路 H + KT + S + SAG + CodeGraph 符号级），注入上下文 |
 
 ### 飞轮闭环
 
 ```
-对话/任务 ──→ 知识导航插件（四路召回） ──→ LLM 输出
+对话/任务 ──→ 知识导航插件（五路召回） ──→ LLM 输出
    ↑                                            |
    |                                            v
    |                              新经验 -> Hindsight retain
@@ -78,7 +78,7 @@ Hermes 有**两条并列的能力飞轮**：
 **Router 飞轮闭环**：
 
 ```
-用户消息 → LLM Router 决策 → 按 mask 条件执行四路召回 → LLM 输出
+用户消息 → LLM Router 决策 → 执行五路召回（mask 四路 + CodeGraph）→ LLM 输出
    ↑                                                     |
    |                                                     v
    |                                   Router 健康巡检 + 基线采集

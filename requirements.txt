@@ -1,2 +1,51 @@
-# Requirements
-# Fill in dependencies as needed (e.g., fastapi, httpx, pydantic)
+# HermesProject 仓库级依赖清单
+# 汇总各子项目运行时依赖（合并去重），安装：pip install -r requirements.txt
+# 可选依赖（charts / dedup / dev）以注释标注，按需安装。
+
+# ── HTTP / API 客户端 ────────────────────────────────────────────
+requests>=2.25.0          # knowledge-navigation / knowledge-tree-plugin / dream-synth / recall-eval / memory-cleanup / ai-report-system / knowledge-tree-builder / clustering-analysis-v3
+httpx>=0.24.0             # knowledge-navigation（路由 / 因果链查询）
+
+# ── CLI 框架 ─────────────────────────────────────────────────────
+typer>=0.9.0              # knowledge-navigation / knowledge-tree-plugin / self-evolving / p0-benchmark / recall-eval / memory-cleanup / clustering-analysis-v3
+
+# ── 数据库（PostgreSQL + pgvector）────────────────────────────────
+psycopg2-binary>=2.9.0    # knowledge-navigation / knowledge-tree-plugin / knowledge-tree-builder / clustering-analysis-v3
+pgvector                  # knowledge-tree-plugin / knowledge-tree-builder（VECTOR 类型读写）
+
+# ── 数值 / 机器学习 ───────────────────────────────────────────────
+numpy>=1.24.0             # knowledge-tree-plugin / knowledge-tree-builder / clustering-analysis-v3
+scikit-learn              # knowledge-tree-builder / clustering-analysis-v3
+torch                     # clustering-analysis-v3（HDBSCAN 聚类）
+
+# ── 类型支持 ──────────────────────────────────────────────────────
+typing_extensions>=4.8.0  # knowledge-tree-builder（Python<3.11 时 NotRequired 回退）
+
+# ── 配置 ──────────────────────────────────────────────────────────
+PyYAML>=6.0               # knowledge-tree-plugin / self-evolving / dream-synth / p0-benchmark / recall-eval / memory-cleanup / knowledge-tree-builder / clustering-analysis-v3
+
+# ── 文档导出 ──────────────────────────────────────────────────────
+python-docx>=1.1.0        # ai-report-system（Markdown → DOCX）
+# matplotlib>=3.7.0       # ai-report-system 可选 [charts]：本地图表渲染
+
+# ── 去重（可选）───────────────────────────────────────────────────
+# datasketch>=1.6.0       # clustering-analysis-v3 可选 [dedup]：MinHash LSH 去重
+
+# ── 可选（优雅降级，缺省可运行）───────────────────────────────────
+# scipy>=1.10.0           # knowledge-navigation 可选：collect_baseline 精确 t 分布 p 值（无则正态近似）
+# tqdm>=4.60.0            # dream-synth 可选：进度条显示（无则静默降级）
+# transformers>=4.30.0    # skill-router 可选：bi-encoder/cross-encoder 模型加载（懒加载）
+# mcp>=1.0.0              # codex-app-server 可选：MCP server 模式（FastMCP），纯 WS 客户端无需
+
+# ── 测试（dev）────────────────────────────────────────────────────
+# pytest>=7.0
+# pytest-cov>=4.0
+# ruff>=0.4
+# black>=24.0
+# mypy>=1.0.0
+
+# ── 独立项目（自行安装，不并入本清单）─────────────────────────────
+# skillopt-sleep          # vendored 第三方引擎，见 scripts/skillopt-sleep/requirements.txt
+# hermes_common           # 纯 stdlib，零第三方依赖
+# flywheel-health-report  # 零第三方依赖
+# drawio-generator        # 零第三方依赖

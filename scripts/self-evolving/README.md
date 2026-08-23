@@ -24,6 +24,8 @@
 scripts/self-evolving/
 ├── src/self_evolving/            # 主源码（自进化算子实现）
 │   ├── __init__.py
+│   ├── adapters/                 # LLM 客户端适配
+│   │   └── llm_client.py
 │   ├── operators/                # 三大算子核心实现
 │   │   ├── __init__.py
 │   │   ├── revision.py           # Revision 算子
@@ -32,14 +34,27 @@ scripts/self-evolving/
 │   ├── models/                   # 数据模型
 │   │   ├── __init__.py
 │   │   ├── trajectory.py         # 轨迹数据模型
-│   │   ├── failure_diagnosis.py  # 失败诊断模型
 │   │   └── risk_assessment.py    # 风险评估模型
-│   └── scripts/                  # CLI 入口
-│       ├── se_revision.py        # Revision CLI
-│       ├── se_recombine.py       # Recombination CLI
-│       └── se_refine.py          # Refinement CLI
+│   ├── scripts/                  # CLI 入口
+│   │   ├── se_revision.py        # Revision CLI
+│   │   ├── se_recombine.py       # Recombination CLI
+│   │   └── se_refine.py          # Refinement CLI
+│   └── prompt_loader.py          # 提示词加载
+├── src/kanban_reflection/        # Kanban 反思回路子包
+│   ├── __init__.py
+│   ├── cli.py                    # kanban-reflect CLI
+│   ├── config.py
+│   ├── adapters/llm_client.py
+│   └── core/reflector.py         # 失败任务反思分析
+├── scripts/                      # 运维/验证脚本
+│   ├── self_evolving_driver.py   # 夜间自进化驱动
+│   ├── kanban_reflect_hook.py    # Kanban 反思钩子
+│   ├── skill_patch.py            # SKILL.md 自动回写
+│   └── _make_trace.py / _scan_quality.py / _verify_kn.py
 ├── config/                       # 默认配置
-│   └── default.yaml
+│   ├── default.yaml
+│   ├── eval_queries.yaml
+│   └── prompts.yaml
 ├── tests/                        # 测试
 │   └── test_operators.py
 ├── docs/                         # 项目文档
@@ -105,6 +120,21 @@ se-refine --content-file document.md --risk-threshold 0.3
 python -m self_evolving.scripts.se_revision --help
 python -m self_evolving.scripts.se_recombine --help
 python -m self_evolving.scripts.se_refine --help
+```
+
+### Kanban 反思回路（kanban_reflection）
+
+分析 Kanban 失败任务 trace 并输出结构化反思结果（夜间 `self-evolving-nightly.sh` 调用）：
+
+```bash
+# 分析失败原因
+kanban-reflect analyze --task-id <id> --trace <path> [--goal <goal>] [-o result.json]
+
+# 仅预览 trace 内容，不调用 LLM
+kanban-reflect analyze --task-id <id> --trace <path> --dry-run
+
+# 列出支持的失败类型（SEAL 6 类）
+kanban-reflect list-types
 ```
 
 ## 算子串联模式
