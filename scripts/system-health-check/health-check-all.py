@@ -382,12 +382,13 @@ def check_postgres():
 # ============================================
 # 6. MCP
 # ============================================
-# All 5 MCP servers from config.yaml (mcp_servers section)
-MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "sag", "windows-mcp"]
+# All 6 MCP servers from config.yaml (mcp_servers section)
+MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "sag", "windows-mcp", "cognee"]
 MCP_PATTERNS = {
     "axiom-wiki":  r'axiom-wiki-mcp-sse\.mjs',
     "postgres":    r'postgres-mcp-sse\.mjs',
     "codegraph":   r'codegraph\.js serve --mcp',
+    "cognee":      r'cognee-mcp.*--transport stdio',
 }
 # windows-mcp runs on Windows host, checked via HTTP endpoint
 WINDOWS_MCP_URL = "http://127.0.0.1:8000/sse"

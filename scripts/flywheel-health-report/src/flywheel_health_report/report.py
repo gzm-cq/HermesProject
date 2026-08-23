@@ -35,6 +35,7 @@ from .analyzers.kn_baseline import analyze_kn_baseline, analyze_data_credibility
 from .analyzers.kn_judge import run_judge_within_window, summarize_param_tuning
 from .analyzers.memory_cleanup import analyze_memory_cleanup
 from .analyzers.self_evolving import analyze_self_evolving
+from .analyzers.cognee import analyze_cognee_health
 from .recommendations import generate_recommendations
 from .runner import load_runner_summary
 
@@ -119,6 +120,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     kn_issues, kn_m, kn_trend = analyze_kn_baseline(kn_baseline_dir)
     memory_issues, memory_m, memory_trend = analyze_memory_cleanup(home / MEMORY_DIR_SUBPATH, data_window)
     se_issues, se_m, se_trend = analyze_self_evolving(home)
+    cognee_issues, cognee_m, cognee_trend = analyze_cognee_health(home)
 
     # ===== KN LLM Judge：知识导航召回质量评估（KN_MIN_SCORE 调优主反馈）=====
     #   since = CN 昨天 00:00 (CST = UTC+8)，until = CN 今天 00:00
@@ -160,7 +162,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     all_issues = (cron_issues + router_issues + skill_issues + skill_usage_issues +
                   token_issues + sag_contr_issues + error_issues + kt_issues +
                   kn_issues + memory_issues + se_issues +
-                  integrity_issues + dep_issues)
+                  integrity_issues + dep_issues + cognee_issues)
     p0 = [i for i in all_issues if i["severity"] == "P0"]
     p1 = [i for i in all_issues if i["severity"] == "P1"]
 
@@ -538,6 +540,28 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             L.append(f"- 统一账本(ledger): {se_m.get('ledger_events', 0)} 事件（applied={se_m.get('ledger_applied', 0)}, blocked={se_m.get('ledger_blocked', 0)}）")
         else:
             L.append("- 📝 统一账本(ledger)未部署：applied/blocked 计数缺失，建议将 hermes-common 纳入部署清单（F-1 待部署）")
+    L.append("")
+
+    # Cognee MCP 连通性（F-5 跨科语义召回依赖项；黑盒，不参与 auto-tuner 调参）
+    L.append("### Cognee MCP 连通性")
+    L.append("")
+    if not cognee_m.get("registered"):
+        L.append("- 状态: ❌ 未注册（config.yaml 无 mcp_servers.cognee）")
+    elif not cognee_m.get("wrapper_executable"):
+        L.append("- 状态: ❌ wrapper 缺失或不可执行")
+    elif not cognee_m.get("startup_ok"):
+        L.append("- 状态: ❌ wrapper 启动失败（--help 非零退出）")
+    elif not cognee_m.get("data_nonempty"):
+        L.append("- 状态: ⚠️ 已连通但数据目录为空（跨科召回将返回空）")
+    else:
+        L.append("- 状态: ✅ 已注册 / 可启动 / 数据非空")
+    L.append(f"- 注册: {'是' if cognee_m.get('registered') else '否'} | "
+             f"wrapper 可执行: {'是' if cognee_m.get('wrapper_executable') else '否'} | "
+             f"启动(--help): {'是' if cognee_m.get('startup_ok') else '否'} | "
+             f"数据非空: {'是' if cognee_m.get('data_nonempty') else '否'}")
+    L.append(f"- 进程存活(gateway 惰性拉起，不在≠故障): {'是' if cognee_m.get('process_alive') else '否/未查'}")
+    if cognee_m.get("data_dir") and cognee_m.get("data_dir") != "NOT_FOUND":
+        L.append(f"- 数据目录: {cognee_m.get('data_dir')}")
     L.append("")
 
     # 全局错误
