@@ -347,12 +347,117 @@ class RevisionOperator:
             diagnosis.confidence,
             max(a.confidence for a in alternatives) if alternatives else 0.5,
         )
+
+        # ── Ouroboros 审查闭环（P1-3）──
+        # 1) 保护面检查：Revision 产出不得改动 SKILL.md frontmatter（元数据/约束面）
+        surface_violation = self._protected_surface_check(revised_content)
+        # 2) 多模型审查：3 LLM 投票，多数通过才允许 deploy
+        review_passed, review_detail = self._multi_model_review(
+            failed_content, revised_content, diagnosis,
+        )
+        rejected = bool(surface_violation) or not review_passed
+
         return RevisionOutput(
             revised_content=revised_content,
             diagnosis=diagnosis,
             alternatives=alternatives,
             confidence_score=confidence_score,
+            ouroboros_rejected=rejected,
+            ouroboros_surface_violation=surface_violation,
+            ouroboros_review=review_detail,
         )
+
+    # ── Ouroboros 审查闭环（P1-3）────────────────────────────────
+
+    # 保护面：Revision 产出不得改动 SKILL.md 的 YAML frontmatter
+    # （name/title/description/version/author/license/tags/metadata 等元数据与约束面）
+    _PROTECTED_FRONTMATTER_KEYS = (
+        "name", "title", "description", "version", "author",
+        "license", "tags", "metadata", "hermes",
+    )
+
+    def _protected_surface_check(self, revised_content: str) -> str:
+        """检查 Revision 产出是否改动了 SKILL.md frontmatter 保护面。
+
+        Returns:
+            违规说明字符串（非空表示违规）；空字符串表示通过。
+        """
+        if not revised_content.strip().startswith("---"):
+            # 非 SKILL.md 类产出（无 frontmatter），不触发保护面检查
+            return ""
+        try:
+            import yaml
+        except Exception:
+            logger.warning("Ouroboros: 未安装 pyyaml，跳过 frontmatter 保护面检查")
+            return ""
+        try:
+            fm_text = revised_content.split("---", 2)[1]
+            data = yaml.safe_load(fm_text) or {}
+        except Exception as e:
+            return f"frontmatter 解析失败（疑似破坏性改动）: {e}"
+        if not isinstance(data, dict):
+            return "frontmatter 结构被破坏（非字典）"
+        for key in self._PROTECTED_FRONTMATTER_KEYS:
+            if key in data:
+                return f"保护面违规：Revision 产出包含受保护的 frontmatter 字段 '{key}'"
+        return ""
+
+    def _multi_model_review(
+        self,
+        failed_content: str,
+        revised_content: str,
+        diagnosis,
+    ) -> tuple[bool, str]:
+        """3 LLM 投票审查 Revision 产出，多数通过才允许 deploy。
+
+        采用「同一模型多次采样 + 不同 temperature」模拟多评审视角，
+        避免依赖多个外部模型端点（Hermes 网关单一模型场景也适用）。
+        任一评审判定 revision 存在「逻辑矛盾/未修复根因/引入新风险」则计为反对。
+        """
+        if not revised_content.strip():
+            return False, "revision 内容为空，审查不通过"
+
+        system = (
+            "你是严格的代码/文档审查员。判断下面的修订是否真正修复了失败根因，"
+            "且未引入逻辑矛盾或新风险。仅输出 JSON："
+            '{"verdict": "approve" 或 "reject", "reason": "<简短理由>"}'
+        )
+        user = (
+            f"原始失败内容：\n{failed_content[:1500]}\n\n"
+            f"修订后内容：\n{revised_content[:1500]}\n\n"
+            f"诊断根因：{getattr(diagnosis, 'root_cause', '') or getattr(diagnosis, 'direct_cause', '')}\n\n"
+            "请评审该修订是否合格。"
+        )
+
+        votes: list[str] = []
+        reasons: list[str] = []
+        temps = (0.2, 0.5, 0.8)  # 三个采样视角
+        for t in temps:
+            try:
+                resp = self._llm.chat_completion(
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=t,
+                    max_tokens=300,
+                    response_format={"type": "json_object"},
+                )
+                data = self._llm.parse_json_response(self._llm.extract_content(resp))
+                verdict = str(data.get("verdict", "reject")).lower()
+                votes.append("approve" if "approve" in verdict else "reject")
+                reasons.append(str(data.get("reason", ""))[:80])
+            except Exception as e:
+                votes.append("reject")
+                reasons.append(f"评审异常: {e}")
+
+        approve = votes.count("approve")
+        passed = approve >= 2  # 多数通过（3 票中 ≥2）
+        detail = (
+            f"投票 approve={approve}/3 | "
+            + " ; ".join(f"v{i+1}={v}({r})" for i, (v, r) in enumerate(zip(votes, reasons)))
+        )
+        return passed, detail
 
     # ── LLM-powered internal methods ────────────────────────────
 

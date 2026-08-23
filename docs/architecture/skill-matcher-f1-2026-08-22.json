@@ -1,0 +1,475 @@
+{
+  "meta": {
+    "n_queries": 30,
+    "avg_precision": 0.4222,
+    "avg_recall": 0.6,
+    "avg_f1": 0.4644,
+    "timestamp": "2026-08-22T10:48:25+08:00",
+    "note": "robust harness: per-query 90s timeout, hung queries skipped"
+  },
+  "results": {
+    "skill_01": {
+      "query": "shared-postgres 相关的技术配置",
+      "expected": [
+        "database-migrations",
+        "docker-patterns",
+        "backend-patterns"
+      ],
+      "matched": [
+        "database-migrations",
+        "system-operations-rules",
+        "postgresql-optimization"
+      ],
+      "latency_ms": 13446,
+      "precision": 0.3333,
+      "recall": 0.3333,
+      "f1": 0.3333
+    },
+    "skill_03": {
+      "query": "DeepSeek 模型的调用方式",
+      "expected": [
+        "cost-aware-llm-pipeline",
+        "serving-llms-vllm"
+      ],
+      "matched": [
+        "serving-llms-vllm",
+        "llm-configuration-audit",
+        "hermes-parameter-config"
+      ],
+      "latency_ms": 10541,
+      "precision": 0.3333,
+      "recall": 0.5,
+      "f1": 0.4
+    },
+    "skill_04": {
+      "query": "你读取飞书单聊里面最新对话",
+      "expected": [
+        "lark-im",
+        "lark-shared",
+        "hindsight-memory"
+      ],
+      "matched": [
+        "lark-im",
+        "lark-contact"
+      ],
+      "latency_ms": 551,
+      "precision": 0.5,
+      "recall": 0.3333,
+      "f1": 0.4
+    },
+    "skill_02": {
+      "query": "SiliconFlow API 的使用方法",
+      "expected": [
+        "cost-aware-llm-pipeline"
+      ],
+      "matched": [
+        "lark-skill-maker",
+        "sn-da-image-caption",
+        "sn-search-finance"
+      ],
+      "latency_ms": 59715,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "skill_06": {
+      "query": "你能看看我在hermes cli中正在做到工作吗，把最后一层回复告诉我是什么",
+      "expected": [
+        "session-progress-snapshot",
+        "hindsight-memory",
+        "context-restore"
+      ],
+      "matched": [
+        "session-progress-snapshot",
+        "hindsight-memory",
+        "context-restore"
+      ],
+      "latency_ms": 1003,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "skill_07": {
+      "query": "LiteLLM 配置相关的问题怎么处理",
+      "expected": [
+        "cost-aware-llm-pipeline"
+      ],
+      "matched": [
+        "hermes-infrastructure",
+        "system-operations-rules",
+        "systematic-debugging"
+      ],
+      "latency_ms": 704,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "skill_05": {
+      "query": "moa配置是什么",
+      "expected": [
+        "hermes-enable-skill-correct-way",
+        "hermes-infrastructure"
+      ],
+      "matched": [
+        "hermes-enable-skill-correct-way",
+        "hermes-infrastructure",
+        "ai-coding-agent-config"
+      ],
+      "latency_ms": 49608,
+      "precision": 0.6667,
+      "recall": 1.0,
+      "f1": 0.8
+    },
+    "skill_09": {
+      "query": "Hindsight embedding 模型是什么",
+      "expected": [
+        "hindsight-memory"
+      ],
+      "matched": [
+        "hindsight-memory",
+        "memory-management",
+        "enterprise-ai-infrastructure-architecture"
+      ],
+      "latency_ms": 560,
+      "precision": 0.3333,
+      "recall": 1.0,
+      "f1": 0.5
+    },
+    "skill_10": {
+      "query": "Gateway 启动参数有哪些",
+      "expected": [
+        "hermes-infrastructure",
+        "system-operations-rules"
+      ],
+      "matched": [
+        "system-operations-rules"
+      ],
+      "latency_ms": 394,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6667
+    },
+    "skill_11": {
+      "query": "Kanban worker 的工作流程",
+      "expected": [
+        "kanban-worker"
+      ],
+      "matched": [
+        "kanban-worker",
+        "profile-configuration"
+      ],
+      "latency_ms": 511,
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1": 0.6667
+    },
+    "skill_12": {
+      "query": "Hermes 插件的注册方法",
+      "expected": [
+        "hermes-infrastructure"
+      ],
+      "matched": [
+        "hermes-desktop-plugins"
+      ],
+      "latency_ms": 483,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "skill_13": {
+      "query": "MCP 服务器的配置方式",
+      "expected": [
+        "hermes-infrastructure"
+      ],
+      "matched": [
+        "native-mcp",
+        "system-operations-rules",
+        "hermes-infrastructure"
+      ],
+      "latency_ms": 566,
+      "precision": 0.3333,
+      "recall": 1.0,
+      "f1": 0.5
+    },
+    "skill_14": {
+      "query": "怎么部署插件",
+      "expected": [
+        "land-and-deploy",
+        "setup-deploy",
+        "ship"
+      ],
+      "matched": [
+        "ship",
+        "hermes-agent",
+        "hermes-desktop-plugins"
+      ],
+      "latency_ms": 520,
+      "precision": 0.3333,
+      "recall": 0.3333,
+      "f1": 0.3333
+    },
+    "skill_15": {
+      "query": "如何配置 Hindsight",
+      "expected": [
+        "hindsight-memory",
+        "system-operations-rules"
+      ],
+      "matched": [
+        "hindsight-memory",
+        "hermes-agent"
+      ],
+      "latency_ms": 11901,
+      "precision": 0.5,
+      "recall": 0.5,
+      "f1": 0.5
+    },
+    "skill_08": {
+      "query": "PG 连接错误怎么排查",
+      "expected": [
+        "database-migrations"
+      ],
+      "matched": [
+        "postgresql-optimization",
+        "gateway-platform-troubleshooting",
+        "systematic-debugging"
+      ],
+      "latency_ms": 32198,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "skill_17": {
+      "query": "LLM 路由策略怎么选",
+      "expected": [
+        "cost-aware-llm-pipeline"
+      ],
+      "matched": [
+        "cost-aware-llm-pipeline",
+        "hermes-infrastructure"
+      ],
+      "latency_ms": 486,
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1": 0.6667
+    },
+    "skill_18": {
+      "query": "代码审查的流程是什么",
+      "expected": [
+        "graph-assisted-code-review",
+        "monorepo-code-review",
+        "codebase-inspection"
+      ],
+      "matched": [
+        "github-workflows",
+        "code-development-workflow",
+        "review"
+      ],
+      "latency_ms": 678,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "skill_19": {
+      "query": "Hindsight 的架构是怎样的",
+      "expected": [
+        "hindsight-memory"
+      ],
+      "matched": [
+        "hindsight-memory",
+        "memory-management",
+        "hermes-infrastructure"
+      ],
+      "latency_ms": 515,
+      "precision": 0.3333,
+      "recall": 1.0,
+      "f1": 0.5
+    },
+    "skill_20": {
+      "query": "gateway 为啥崩了",
+      "expected": [
+        "system-health-check"
+      ],
+      "matched": [
+        "gateway-platform-troubleshooting",
+        "system-health-check",
+        "hermes-infrastructure"
+      ],
+      "latency_ms": 500,
+      "precision": 0.3333,
+      "recall": 1.0,
+      "f1": 0.5
+    },
+    "skill_21": {
+      "query": "之前方案结果怎样",
+      "expected": [
+        "hindsight-memory",
+        "session-progress-snapshot"
+      ],
+      "matched": [
+        "session-progress-snapshot",
+        "hindsight-memory",
+        "error-fix-knowledge-base"
+      ],
+      "latency_ms": 503,
+      "precision": 0.6667,
+      "recall": 1.0,
+      "f1": 0.8
+    },
+    "skill_22": {
+      "query": "git 工作流怎么配置",
+      "expected": [
+        "git-workflow",
+        "github-workflows"
+      ],
+      "matched": [
+        "git-workflow"
+      ],
+      "latency_ms": 433,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6667
+    },
+    "skill_23": {
+      "query": "知识树怎么构建和优化",
+      "expected": [
+        "knowledge-tree-builder",
+        "hindsight-memory"
+      ],
+      "matched": [
+        "knowledge-tree-builder",
+        "self-evolving-agents",
+        "error-fix-knowledge-base"
+      ],
+      "latency_ms": 598,
+      "precision": 0.3333,
+      "recall": 0.5,
+      "f1": 0.4
+    },
+    "skill_16": {
+      "query": "用什么工具查日志",
+      "expected": [
+        "system-health-check",
+        "system-operations-rules"
+      ],
+      "matched": [
+        "system-health-check",
+        "system-operations-rules"
+      ],
+      "latency_ms": 8730,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "skill_24": {
+      "query": "写一份技术方案文档",
+      "expected": [
+        "writing-plans",
+        "system-design"
+      ],
+      "matched": [
+        "writing-plans",
+        "document-audit-optimization",
+        "architecture-decision-records"
+      ],
+      "latency_ms": 860,
+      "precision": 0.3333,
+      "recall": 0.5,
+      "f1": 0.4
+    },
+    "skill_26": {
+      "query": "Docker compose 编排微服务",
+      "expected": [
+        "docker-patterns",
+        "backend-patterns"
+      ],
+      "matched": [
+        "docker-patterns",
+        "multica-deployment",
+        "postgresql-optimization"
+      ],
+      "latency_ms": 6891,
+      "precision": 0.3333,
+      "recall": 0.5,
+      "f1": 0.4
+    },
+    "skill_25": {
+      "query": "Python 异步编程的最佳实践",
+      "expected": [
+        "python-patterns",
+        "backend-patterns"
+      ],
+      "matched": [
+        "python-patterns",
+        "hermes-code-rules",
+        "Data Analysis"
+      ],
+      "latency_ms": 10452,
+      "precision": 0.3333,
+      "recall": 0.5,
+      "f1": 0.4
+    },
+    "skill_27": {
+      "query": "系统健康检查怎么做",
+      "expected": [
+        "system-health-check",
+        "system-operations-rules"
+      ],
+      "matched": [
+        "system-health-check",
+        "enterprise-data-governance",
+        "error-fix-knowledge-base"
+      ],
+      "latency_ms": 9119,
+      "precision": 0.3333,
+      "recall": 0.5,
+      "f1": 0.4
+    },
+    "skill_28": {
+      "query": "测试驱动开发的流程",
+      "expected": [
+        "test-driven-development",
+        "e2e-testing"
+      ],
+      "matched": [
+        "test-driven-development",
+        "e2e-testing",
+        "benchmark"
+      ],
+      "latency_ms": 8158,
+      "precision": 0.6667,
+      "recall": 1.0,
+      "f1": 0.8
+    },
+    "skill_29": {
+      "query": "系统调试的方法论",
+      "expected": [
+        "systematic-debugging"
+      ],
+      "matched": [
+        "systematic-debugging",
+        "hermes-infrastructure",
+        "hindsight-memory"
+      ],
+      "latency_ms": 7052,
+      "precision": 0.3333,
+      "recall": 1.0,
+      "f1": 0.5
+    },
+    "skill_30": {
+      "query": "AI 项目可行性评估",
+      "expected": [
+        "ai-project-feasibility-assessment",
+        "researcher"
+      ],
+      "matched": [
+        "enterprise-ai-construction-report",
+        "researcher",
+        "user-preference-driven-solution-evaluation"
+      ],
+      "latency_ms": 34795,
+      "precision": 0.3333,
+      "recall": 0.5,
+      "f1": 0.4
+    }
+  }
+}

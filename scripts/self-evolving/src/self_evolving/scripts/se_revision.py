@@ -94,6 +94,18 @@ Examples:
         action="store_true",
         help="Verbose output"
     )
+    parser.add_argument(
+        "--apply",
+        type=str,
+        metavar="PATH",
+        help="将修订内容写入指定文件（仅当 Ouroboros 审查通过时）"
+    )
+    parser.add_argument(
+        "--git-repo",
+        type=str,
+        default="/mnt/d/HermesProject",
+        help="Git 仓库路径（配合 --apply，自动 commit；默认 /mnt/d/HermesProject）"
+    )
     
     args = parser.parse_args()
     
@@ -179,6 +191,43 @@ Examples:
         print()
         print(f"Overall Confidence: {result.confidence_score:.2f}")
         print("=" * 60)
+
+    # ── Ouroboros Git 追踪（P1-3）：审查通过才允许落盘 + commit ──
+    if args.apply:
+        rejected = getattr(result, "ouroboros_rejected", False)
+        if rejected:
+            print("[ouroboros] ❌ 修订被审查拒绝，不落盘（可 revert 保护生效）", file=sys.stderr)
+            sys.exit(2)
+        apply_path = Path(args.apply)
+        try:
+            apply_path.parent.mkdir(parents=True, exist_ok=True)
+            apply_path.write_text(result.revised_content, encoding="utf-8")
+            print(f"[ouroboros] ✅ 修订已写入: {apply_path}")
+        except Exception as e:
+            print(f"[ouroboros] ❌ 写入失败: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # git commit（需在 git repo 内）
+        import subprocess
+
+        repo = Path(args.git_repo)
+        if not (repo / ".git").exists():
+            print(f"[ouroboros] ⚠️ {repo} 不是 git 仓库，跳过 commit", file=sys.stderr)
+        else:
+            try:
+                rel = apply_path.resolve().relative_to(repo.resolve())
+                commit_msg = f"se-revision: {result.diagnosis.failure_type.value} fix"
+                subprocess.run(["git", "-C", str(repo), "add", "--", str(rel)], check=True, capture_output=True)
+                subprocess.run(
+                    ["git", "-C", str(repo), "commit", "-m", commit_msg, "--", str(rel)],
+                    check=True, capture_output=True,
+                )
+                print(f"[ouroboros] ✅ git commit: {commit_msg}")
+            except subprocess.CalledProcessError as e:
+                if b"nothing to commit" in (e.stderr or b""):
+                    print("[ouroboros] ⚠️ 无变更可提交（内容与 HEAD 相同）", file=sys.stderr)
+                else:
+                    print(f"[ouroboros] ❌ git commit 失败: {e.stderr.decode()[:200]}", file=sys.stderr)
 
 
 if __name__ == "__main__":

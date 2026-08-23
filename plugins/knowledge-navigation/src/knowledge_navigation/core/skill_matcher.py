@@ -24,6 +24,30 @@ import numpy as np
 from knowledge_navigation.config import CONFIG
 from knowledge_navigation.core.env_loader import get_env, get_env_int
 
+# ── SkillRouter 语义召回后端（P0-1，懒加载，失败即降级）──
+# 仅在 KN_SKILL_EMBEDDING_BACKEND=skillrouter 且环境就绪时启用；
+# 导入失败/模型缺失不影响原 API 后端。
+try:
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sr_dir = _Path(__file__).resolve().parents[5] / "scripts" / "skill-router"
+    _sr_dir_str = str(_sr_dir)
+    if _sr_dir_str not in _sys.path:
+        _sys.path.insert(0, _sr_dir_str)
+    from backend import (  # type: ignore
+        embed_texts as _sr_embed_texts,
+        embed_skills_cached as _sr_embed_skills_cached,
+        rerank as _sr_rerank,
+        is_available as _sr_is_available,
+    )
+    _SR_BACKEND_OK = True
+except Exception:  # noqa: BLE001
+    _SR_BACKEND_OK = False
+    _sr_is_available = lambda: False
+    _sr_embed_texts = None
+    _sr_embed_skills_cached = None
+    _sr_rerank = None
+
 logger = logging.getLogger(__name__)
 
 SKILLS_HOME = Path.home() / ".hermes" / "skills"
@@ -113,6 +137,88 @@ _STOPWORDS = {
     "just", "up", "out", "off", "away", "back", "down", "over", "under",
     "don", "now", "get", "got", "go", "going", "make", "made", "like",
 }
+
+# ── 同义词 / 缩写 / 中英对齐扩展表（skill 匹配专用） ──
+# 作用：关键词预筛时把 query 与 skill 的关键词双向展开，捕捉
+# 缩写(PG→postgres)、中英对齐(部署→deploy)、品牌中文(硅基流动→siliconflow)
+# 等字面 2-gram/英文 token 重叠无法覆盖的召回。
+# 仅含强等价（同义/缩写/中英/品牌），避免过度扩展损害 precision。
+_SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
+    # 缩写 ↔ 全称
+    frozenset({"pg", "postgres", "postgresql", "postgre"}),
+    frozenset({"k8s", "kubernetes"}),
+    frozenset({"db", "database", "sql"}),
+    frozenset({"ci", "continuous-integration", "持续集成"}),
+    frozenset({"api", "apis"}),
+    frozenset({"llm", "llms"}),
+    frozenset({"kv", "key-value", "键值"}),
+    frozenset({"tls", "ssl"}),
+    frozenset({"oauth", "jwt", "鉴权", "授权"}),
+    # 中英对齐（中文 query 词 ↔ 英文 skill 名/描述）
+    frozenset({"deploy", "deployment", "部署", "上线", "发布", "ship"}),
+    frozenset({"config", "configuration", "configure", "配置", "设置"}),
+    frozenset({"debug", "debugging", "troubleshoot", "troubleshooting", "调试", "排查", "排错"}),
+    frozenset({"review", "审查", "审核", "评审", "audit", "审计"}),
+    frozenset({"monitor", "monitoring", "监控", "观测", "observability"}),
+    frozenset({"health", "healthcheck", "健康检查"}),
+    frozenset({"log", "logs", "logging", "日志"}),
+    frozenset({"gateway", "网关"}),
+    frozenset({"memory", "memories", "记忆"}),
+    frozenset({"lark", "feishu", "飞书"}),
+    frozenset({"kanban", "看板"}),
+    frozenset({"workflow", "工作流", "流程"}),
+    frozenset({"plan", "plans", "方案", "计划"}),
+    frozenset({"design", "设计", "architecture", "架构"}),
+    frozenset({"doc", "document", "documentation", "文档"}),
+    frozenset({"plugin", "plugins", "插件", "extension"}),
+    frozenset({"knowledge", "知识"}),
+    frozenset({"tree", "树"}),
+    frozenset({"skill", "skills", "技能"}),
+    frozenset({"code", "source", "代码"}),
+    frozenset({"test", "testing", "tdd", "测试", "测试驱动"}),
+    frozenset({"docker", "容器", "container"}),
+    frozenset({"microservice", "microservices", "微服务"}),
+    frozenset({"ai", "人工智能"}),
+    frozenset({"feasibility", "可行性"}),
+    frozenset({"security", "secure", "安全"}),
+    frozenset({"router", "routing", "路由"}),
+    frozenset({"permission", "auth", "authorization", "权限"}),
+    frozenset({"cache", "caching", "缓存"}),
+    frozenset({"queue", "队列"}),
+    frozenset({"message", "messaging", "消息", "mq"}),
+    frozenset({"cluster", "集群"}),
+    frozenset({"performance", "perf", "性能"}),
+    frozenset({"session", "会话", "上下文"}),
+    frozenset({"snapshot", "快照", "进度"}),
+    frozenset({"model", "models", "模型"}),
+    frozenset({"siliconflow", "silicon", "硅基流动"}),
+    frozenset({"backend", "后端"}),
+    frozenset({"frontend", "前端"}),
+    frozenset({"research", "researcher", "研究"}),
+)
+
+# 词 → 同义组（双向映射，每个成员都映射到整组）
+_EXPANSION_MAP: dict[str, set[str]] = {}
+for _grp in _SYNONYM_GROUPS:
+    _members = set(_grp)
+    for _w in _grp:
+        _EXPANSION_MAP[_w] = _members
+
+
+def _expand_keywords(kw_set: set[str]) -> set[str]:
+    """同义/缩写/中英对齐扩展：将每个关键词展开为其同义组并集。
+
+    双方（query 与 skill）都展开后求交集，即可让 'PG' 命中 'postgres'、
+    '部署' 命中 'deploy' 等字面不重叠的召回。
+    """
+    expanded: set[str] = set()
+    for kw in kw_set:
+        expanded.add(kw)
+        grp = _EXPANSION_MAP.get(kw)
+        if grp:
+            expanded |= grp
+    return expanded
+
 
 # ── 模块级缓存 ──
 _skill_index: dict[str, dict[str, Any]] | None = None
@@ -287,6 +393,100 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
     return result
 
 
+# SkillRouter 全量 skill embedding 缓存（模块级，避免每请求重编码）
+# 以全量 skill 文本元组为 key 判断失效；命中缓存时 query 路径仅编码 1 条 + 余弦。
+_SR_ALL_SKILL_TEXTS: tuple = ()
+_SR_ALL_SKILL_EMB: Any = None
+
+
+def _get_skillrouter_embeddings(cand_texts: list[str]) -> Any:
+    """获取候选 skill 的 embedding 矩阵（SkillRouter 后端专用）。
+
+    直接委托 embed_skills_cached，它内部做磁盘缓存 + 增量更新：
+    - 全量命中 → 零编码秒级
+    - 新增/修改 skill → 只编码变化条目
+    """
+    if _sr_embed_skills_cached is None:
+        raise RuntimeError("SkillRouter backend 未加载")
+    return _sr_embed_skills_cached(cand_texts)
+
+
+def _embedding_prescreen_skillrouter(
+    query: str,
+    candidates: list[dict[str, Any]],
+    top_k: int | None = None,
+) -> list[dict[str, Any]]:
+    """SkillRouter 后端：bi-encoder 召回 top-K（可选 cross-encoder 重排）。
+
+    与 API 后端保持相同契约：返回带 _emb_score 的候选列表（_emb_score 取
+    bi-encoder 余弦相似度，供 LLM 精排阶段的预筛分归一化使用）。
+    任何异常都抛出，由 _embedding_prescreen 捕获后回退 API 后端。
+    """
+    if top_k is None:
+        top_k = _get_embedding_top_k()
+
+    if not candidates:
+        return []
+
+    cand_texts = [f"{c.get('name', '')} {c.get('description', '')}" for c in candidates]
+
+    # 1) bi-encoder：候选用缓存 embedding（首次慢，后续秒级），query 仅编码 1 条
+    c_embs = _get_skillrouter_embeddings(cand_texts)       # (N, dim)
+    q_emb = _sr_embed_texts([query], is_query=True)        # (1, dim)
+    sims = c_embs @ q_emb[0]                               # (N,)
+    order = np.argsort(-sims)
+    top_idx = order[:top_k].tolist()
+    top_cands = [candidates[i] for i in top_idx]
+    top_sims = [float(sims[i]) for i in top_idx]
+
+    # 2) cross-encoder 重排（可选）
+    #    - local: 本地 Qwen3-Reranker 0.6B（CPU 太慢，默认关）
+    #    - api: SiliconFlow BGE-reranker-v2-m3（~1s/30候选，推荐）
+    rerank_mode = (get_env("KN_SKILLROUTER_RERANK") or "off").strip().lower()
+    if rerank_mode in ("1", "true", "yes", "on", "local"):
+        try:
+            rk_scores = _sr_rerank(query, [f"{c.get('name','')} {c.get('description','')}" for c in top_cands])
+            rerank_order = sorted(range(len(top_cands)), key=lambda i: -rk_scores[i])
+            top_cands = [top_cands[i] for i in rerank_order]
+            top_sims = [top_sims[i] for i in rerank_order]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SkillRouter local rerank 失败，沿用 bi-encoder 排序: %s", e)
+    elif rerank_mode == "api":
+        import requests as _requests
+
+        try:
+            api_key = get_env("KN_SKILLROUTER_API_KEY", "")
+            api_url = get_env("KN_SKILLROUTER_API_URL", "https://api.siliconflow.cn/v1/rerank")
+            api_model = get_env("KN_SKILLROUTER_API_MODEL", "BAAI/bge-reranker-v2-m3")
+            docs = [f"{c.get('name','')} {c.get('description','')}" for c in top_cands]
+            resp = _requests.post(
+                api_url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": api_model, "query": query, "documents": docs, "top_n": len(docs)},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                # 按 index 映射到 top_cands
+                rk_map = {r["index"]: r["relevance_score"] for r in results}
+                rerank_order = sorted(range(len(top_cands)), key=lambda i: -rk_map.get(i, 0.0))
+                top_cands = [top_cands[i] for i in rerank_order]
+                top_sims = [rk_map.get(i, 0.0) for i in range(len(top_cands))]
+                # 重新对齐 top_sims 到排序后
+                top_sims = [float(rk_map.get(oi, 0.0)) for oi in rerank_order]
+            else:
+                logger.warning("SkillRouter API rerank HTTP %s: %s", resp.status_code, resp.text[:200])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SkillRouter API rerank 失败，沿用 bi-encoder 排序: %s", e)
+
+    result: list[dict[str, Any]] = []
+    for i, c in enumerate(top_cands):
+        cc = dict(c)
+        cc["_emb_score"] = top_sims[i]
+        result.append(cc)
+    return result
+
+
 def _embedding_prescreen(
     query: str,
     candidates: list[dict[str, Any]],
@@ -307,6 +507,14 @@ def _embedding_prescreen(
 
     if not candidates:
         return []
+
+    # 后端选择：SkillRouter 本地推理（bi-encoder 召回 + cross-encoder 重排）
+    backend = (get_env("KN_SKILL_EMBEDDING_BACKEND") or CONFIG.kn_skill_embedding_backend).strip().lower()
+    if backend == "skillrouter" and _SR_BACKEND_OK and _sr_is_available():
+        try:
+            return _embedding_prescreen_skillrouter(query, candidates, top_k)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("SkillRouter 预筛选异常，回退 API 后端: %s", e)
 
     # 熔断检查：连续失败过多时直接跳过
     if _embedding_circuit_breaker():
@@ -633,7 +841,7 @@ def _keyword_prescreen(
     if not index:
         return []
 
-    query_keywords = _extract_keywords(query)
+    query_keywords = _expand_keywords(_extract_keywords(query))
     if not query_keywords:
         result = []
         for s in sorted(index, key=lambda x: x["name"])[:top_k]:
@@ -660,17 +868,17 @@ def _keyword_prescreen(
             score += 10
 
         # Name 关键词重叠
-        name_keywords = _extract_keywords(name)
+        name_keywords = _expand_keywords(_extract_keywords(name))
         name_overlap = query_keywords & name_keywords
         score += len(name_overlap) * 5.0
 
         # Category 关键词重叠
-        cat_keywords = _extract_keywords(category)
+        cat_keywords = _expand_keywords(_extract_keywords(category))
         cat_overlap = query_keywords & cat_keywords
         score += len(cat_overlap) * 3.0
 
         # Description 关键词重叠
-        desc_keywords = _extract_keywords(desc)
+        desc_keywords = _expand_keywords(_extract_keywords(desc))
         desc_overlap = query_keywords & desc_keywords
         score += len(desc_overlap) * 1.0
 
@@ -692,12 +900,26 @@ def _keyword_prescreen(
 # ====================================================================
 
 def _build_skill_prompt(index: list[dict[str, Any]]) -> str:
-    """将 skill 索引格式化为 LLM 可读的列表。
+    """将 skill 候选格式化为 LLM 可读的列表。
 
-    按名称字母序排列。每行 name + 描述（截断到 120 字），过滤归档。
+    排序：优先按预筛相关度（keyword _score 与 embedding _emb_score 归一化后取大）
+    降序排列，使强命中排在 prompt 前部，利用 LLM 的 primacy 偏置提升精排精度。
+    无预筛分数（全量退化模式）时回退按名称字母序。
+    每行 name + 描述（截断到 120 字），过滤归档。
     """
+    def _rel_score(s: dict[str, Any]) -> float:
+        kw = s.get("_score", 0.0)
+        emb = s.get("_emb_score", 0.0) * 50.0  # 归一化到 keyword 量级
+        return max(kw, emb)
+
+    has_score = any(("_score" in s or "_emb_score" in s) for s in index)
+    if has_score:
+        ordered = sorted(index, key=lambda x: (-_rel_score(x), x.get("name", "")))
+    else:
+        ordered = sorted(index, key=lambda x: x.get("name", ""))
+
     lines: list[str] = []
-    for s in sorted(index, key=lambda x: x["name"]):
+    for s in ordered:
         if s.get("category") == ".archive":
             continue
         desc = s.get("description", "")
@@ -754,16 +976,16 @@ def _llm_match(
         "## 关键原则\n\n"
         "1. 技能名称是强信号：name 通常是技能的核心关键词(如 database-migrations git-workflow)。如果用户问题中的词与某个 skill name 直接相关，优先选它。\n"
         "2. 描述中的术语是弱信号：description 提供补充上下文。当 name 不直接匹配时，检查 description 中是否包含问题领域的术语。\n"
-        "3. 宁多选不少选：如果不确定某个技能是否相关，选上它。漏选一个有用技能的代价远大于多选一个无关技能。\n\n"
+        "3. 精准优先于数量：只选择你确信与用户问题直接相关的技能。证据不足的『可能相关』不要选入——多选无关技能会稀释注入质量、干扰下游。在确信相关的前提下最多选 3 个；若只有 1-2 个确信相关，就只返回它们，不要为凑数选弱相关项。\n\n"
         "## 示例\n\n"
         "### 示例 1(工具名匹配 + 语义关联)\n"
         "用户问题：PG 连接错误怎么排查\n"
         "可用技能列表(部分)：\n"
-        "- hermes-fallback-model-troubleshooting: 修复 Hermes 模型 fallback LiteLLM 路由 PG 连接错误等问题\n"
+        "- database-migrations: 安全的数据库 schema 变更与迁移模式\n"
         "- systematic-debugging: 系统化调试方法论\n"
-        "- database-migrations: 安全的数据库 schema 变更模式\n"
+        "- gateway-platform-troubleshooting: 排查网关平台启动/连接/崩溃等问题\n"
         "- docker-patterns: Docker 和 Docker Compose 开发模式\n"
-        "输出：[\"hermes-fallback-model-troubleshooting\", \"systematic-debugging\", \"database-migrations\"]\n\n"
+        "输出：[\"database-migrations\", \"systematic-debugging\"]\n\n"
         "### 示例 2(工作流匹配 + 领域匹配)\n"
         "用户问题：怎么部署插件\n"
         "可用技能列表(部分)：\n"
@@ -785,6 +1007,9 @@ def _llm_match(
         "- database-migrations: 数据库 schema 变更\n"
         "- frontend-patterns: 前端开发模式\n"
         "输出：[]\n\n"
+        "## 候选排序说明\n\n"
+        "下方候选列表已按预筛相关度降序排列（最相关项排在前）。可优先参考排序靠前的候选，"
+        "但最终决策仍以语义匹配为准，排序仅作提示、不构成强制优先级。\n\n"
         "## 可用技能列表\n"
         + skill_text + "\n\n"
         "## 用户问题\n"

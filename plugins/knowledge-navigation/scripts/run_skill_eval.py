@@ -11,6 +11,10 @@
     python3 scripts/run_skill_eval.py
     python3 scripts/run_skill_eval.py --json
     python3 scripts/run_skill_eval.py --compare before.json after.json
+
+稳健化参数（环境变量）：
+    SKILL_EVAL_WORKERS   并发 worker 数（默认 1，降并发防本地 embedding OOM）
+    SKILL_EVAL_TIMEOUT   单条超时秒数（默认 90，超时/异常 skip，不整轮卡死）
 """
 
 import json
@@ -63,8 +67,33 @@ def compute_metrics(results: list[str], expected: list[str]) -> dict:
     }
 
 
+def _skipped_record(item: dict, latency_ms: float, reason: str) -> dict:
+    """构造一条超时/异常 query 的占位结果（计入 results，但不参与均值）"""
+    expected = item.get("expected_skills", [])
+    return {
+        "query": item["query"],
+        "expected": expected,
+        "matched": [],
+        "latency_ms": round(latency_ms, 0),
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "n_expected": len(expected),
+        "n_hit": 0,
+        "n_returned": 0,
+        "skipped": True,
+        "skip_reason": reason,
+    }
+
+
 def run_eval() -> dict:
-    """全量跑评估集，返回结构化结果"""
+    """全量跑评估集，返回结构化结果。
+
+    稳健化（修复 A 项）：逐条 90s 超时兜底 + 逐条进度 + 超时/异常 skip，
+    杜绝原 future.result() 无超时导致的"整轮卡死"。
+    - workers 默认 1：降低对本地 embedding 服务（MX550 2GB）的并发压力，防 OOM。
+    - 单条超时/异常不会中断整轮，被跳过项计入 results（skip_reason 标注）但不参与均值。
+    """
     queries = load_eval_queries()
     if not queries:
         return {}
@@ -74,10 +103,17 @@ def run_eval() -> dict:
         print("⚠️  Skill 索引为空，无法评估")
         return {}
 
-    print(f"  加载 {len(queries)} 条 eval queries...\n", file=sys.stderr)
-
-    workers = max(1, int(os.environ.get("SKILL_EVAL_WORKERS", "4")))
     n_total = len(queries)
+    # 默认 1：降并发，避免本地 embedding 服务（MX550 2GB）瞬时 OOM
+    workers = max(1, int(os.environ.get("SKILL_EVAL_WORKERS", "1")))
+    # 稳健 harness：逐条 90s 超时兜底（生产原 future.result() 无超时 → 整轮卡死）
+    per_query_timeout = float(os.environ.get("SKILL_EVAL_TIMEOUT", "90"))
+
+    print(
+        f"  加载 {n_total} 条 eval queries... (workers={workers}, "
+        f"per_query_timeout={per_query_timeout:.0f}s)\n",
+        file=sys.stderr,
+    )
 
     def _eval_one(item: dict):
         qid = item["query_id"]
@@ -101,32 +137,59 @@ def run_eval() -> dict:
     all_recalls: list[float] = []
     all_f1s: list[float] = []
     total_latency = 0.0
+    n_done = 0
+    n_skipped = 0
 
-    # 并发执行（match_skills 为只读召回，生产 Router 同已并发调用，线程安全），
-    # 避免串行累加倍耗时被 runner 的 300s 子进程超时掐断。
+    # 逐条 result(timeout=...) 兜底：单条挂死最多等 90s 即跳过，绝不整轮卡死。
+    # workers=1 时若某条真挂死，后续条也会因 worker 占满而超时——但均在 90s 内
+    # 返回（不再无限挂），且 meta.n_skipped 会暴露问题；如需更强隔离可调大 SKILL_EVAL_WORKERS。
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_eval_one, item) for item in queries]
-        for future in as_completed(futures):
-            qid, res, latency = future.result()
+        for item, future in zip(queries, futures):
+            qid = item["query_id"]
+            n_done += 1
+            try:
+                qid, res, latency = future.result(timeout=per_query_timeout)
+            except TimeoutError:
+                n_skipped += 1
+                print(f"   ⏱ [{n_done}/{n_total}] {qid} TIMEOUT > {per_query_timeout:.0f}s — skipped",
+                      file=sys.stderr)
+                results_by_id[qid] = _skipped_record(item, per_query_timeout * 1000, "timeout")
+                continue
+            except Exception as e:  # noqa: BLE001 — 兜底单条异常，避免整轮中断
+                n_skipped += 1
+                print(f"   ✗ [{n_done}/{n_total}] {qid} ERROR {type(e).__name__}: {e} — skipped",
+                      file=sys.stderr)
+                results_by_id[qid] = _skipped_record(item, per_query_timeout * 1000,
+                                                      f"error:{type(e).__name__}")
+                continue
             results_by_id[qid] = res
             all_precisions.append(res["precision"])
             all_recalls.append(res["recall"])
             all_f1s.append(res["f1"])
             total_latency += latency
+            print(f"   ✓ [{n_done}/{n_total}] {qid} F1={res['f1']:.3f} {res['latency_ms']:.0f}ms",
+                  file=sys.stderr)
 
-    avg_precision = sum(all_precisions) / n_total
-    avg_recall = sum(all_recalls) / n_total
-    avg_f1 = sum(all_f1s) / n_total
-    avg_latency = total_latency / n_total
+    n_scored = len(all_f1s)
+    avg_precision = sum(all_precisions) / n_scored if n_scored else 0.0
+    avg_recall = sum(all_recalls) / n_scored if n_scored else 0.0
+    avg_f1 = sum(all_f1s) / n_scored if n_scored else 0.0
+    avg_latency = total_latency / n_scored if n_scored else 0.0
 
     return {
         "meta": {
             "n_queries": n_total,
+            "n_scored": n_scored,
+            "n_skipped": n_skipped,
+            "workers": workers,
+            "per_query_timeout_s": per_query_timeout,
             "avg_precision": round(avg_precision, 4),
             "avg_recall": round(avg_recall, 4),
             "avg_f1": round(avg_f1, 4),
             "avg_latency_ms": round(avg_latency, 0),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+08:00"),
+            "note": "稳健 harness 方法：逐条 90s 超时 + 超时/异常 skip，杜绝整轮卡死",
         },
         "results": results_by_id,
     }

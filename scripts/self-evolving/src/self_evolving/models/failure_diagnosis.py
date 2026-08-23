@@ -108,11 +108,18 @@ class RevisionOutput:
     diagnosis: DiagnosisResult
     alternatives: List[AlternativeSolution]
     confidence_score: float
-    
+    # ── Ouroboros 审查闭环字段（P1-3，可选，向后兼容）──
+    ouroboros_rejected: bool = False          # 审查未通过（保护面违规或多模型投票不通过）
+    ouroboros_surface_violation: str = ""     # 保护面违规说明（SKILL.md frontmatter 被改等）
+    ouroboros_review: str = ""                # 多模型审查详情（投票结果摘要）
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "revised_content": self.revised_content,
             "diagnosis": self.diagnosis.to_dict(),
             "alternatives": [a.to_dict() for a in self.alternatives],
             "confidence_score": self.confidence_score,
+            "ouroboros_rejected": self.ouroboros_rejected,
+            "ouroboros_surface_violation": self.ouroboros_surface_violation,
+            "ouroboros_review": self.ouroboros_review,
         }

@@ -65,6 +65,7 @@ declare -A PROJECT_INFO=(
   [p0-benchmark]="P0 基准评估工具 (可选)"
   [recall-eval]="召回评估工具 (可选)"
   [self-evolving]="自进化飞轮项目"
+  [flywheel-scripts]="数据飞轮增强辅助脚本 (skill-router/auto-harness/graphiti-bridge/memory-weeder/p2-eval)"
   [skillopt-runner]="SkillOpt 技能优化运行器"
   [skillopt-sleep]="SkillOpt-Sleep 技能优化引擎"
   [cron-common]="cron 定时任务公共库"

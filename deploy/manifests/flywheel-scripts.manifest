@@ -1,0 +1,19 @@
+# flywheel-scripts 部署清单
+# 源:  scripts/{skill-router,auto-harness,graphiti-bridge,memory-weeder,p2-eval,cognee-setup}/
+# 标:  /root/.hermes/scripts/（保留子目录结构，与 cron-wrappers/system-health-check 共享该目标）
+# 影响: 数据飞轮增强方案新增的 6 个辅助脚本（P0-1/P0-2/P0-3/P1-1/P1-2/P2）
+#
+# 语法: 每行一个 glob 模式（相对项目根 scripts/）；以 ! 开头为排除；# 起始为注释。
+
+# === Include（仅这 6 个飞轮脚本子目录，避免误匹配 scripts/ 下其它项目） ===
+skill-router/**
+auto-harness/**
+graphiti-bridge/**
+memory-weeder/**
+p2-eval/**
+cognee-setup/**
+
+# === Exclude ===
+!**/__pycache__/**
+!**/*.pyc
+!**/*.pyo

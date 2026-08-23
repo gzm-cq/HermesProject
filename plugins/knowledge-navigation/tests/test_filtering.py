@@ -304,18 +304,22 @@ class TestCalculateTimeScore:
 
     def test_old_memory_low_score(self) -> None:
         """测试 90 天前记忆分数接近 0。"""
+        from knowledge_navigation.config import CONFIG
+        from unittest.mock import patch
+
         old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-        score = calculate_time_score(old)
+        with patch.object(CONFIG, "temporal_halflife_days", 30):
+            score = calculate_time_score(old)
         assert score < 0.1
 
     def test_medium_memory(self) -> None:
-            """测试 30 天前记忆分数约 exp(-30/30) ≈ 0.37（halflife 默认 30 天）。"""
-            from knowledge_navigation.config import CONFIG
-            from unittest.mock import patch
-            medium = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-            with patch.object(CONFIG, "temporal_halflife_days", 30):
-                score = calculate_time_score(medium)
-            assert 0.35 < score < 0.38
+        """测试 30 天前记忆分数约 exp(-30/30) ≈ 0.37（halflife 默认 30 天）。"""
+        from knowledge_navigation.config import CONFIG
+        from unittest.mock import patch
+        medium = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        with patch.object(CONFIG, "temporal_halflife_days", 30):
+            score = calculate_time_score(medium)
+        assert 0.35 < score < 0.38
 
     def test_none_returns_mid(self) -> None:
         """测试 None 返回中性值。"""

@@ -449,6 +449,10 @@ class RefinementOperator:
         if self.config.compress_output:
             current_content = self._compress_output(current_content)
 
+        # ── Ouroboros 保护面检查（P1-3）──
+        # Refinement 产出不得改动 SKILL.md frontmatter 保护面
+        surface_violation = self._protected_surface_check(current_content)
+
         return RefinementOutput(
             refined_content=current_content,
             reduction_stats=reduction_stats,
@@ -456,7 +460,39 @@ class RefinementOperator:
             removed_redundancies=removed_redundancies,
             replaced_risky_parts=replaced_risky_parts,
             optimization_log=[s.__dict__ for s in optimization_log],
+            ouroboros_surface_violation=surface_violation,
         )
+
+    # ── Ouroboros 保护面检查（P1-3）─────────────────────────────
+
+    _PROTECTED_FRONTMATTER_KEYS = (
+        "name", "title", "description", "version", "author",
+        "license", "tags", "metadata", "hermes",
+    )
+
+    @staticmethod
+    def _protected_surface_check(content: str) -> str:
+        """检查 Refinement 产出是否改动了 SKILL.md frontmatter 保护面。
+
+        Returns: 违规说明（非空=违规）；空字符串=通过。
+        """
+        if not content.strip().startswith("---"):
+            return ""
+        try:
+            import yaml
+        except Exception:
+            return ""
+        try:
+            fm_text = content.split("---", 2)[1]
+            data = yaml.safe_load(fm_text) or {}
+        except Exception as e:
+            return f"frontmatter 解析失败（疑似破坏性改动）: {e}"
+        if not isinstance(data, dict):
+            return "frontmatter 结构被破坏（非字典）"
+        for key in RefinementOperator._PROTECTED_FRONTMATTER_KEYS:
+            if key in data:
+                return f"保护面违规：产出包含受保护的 frontmatter 字段 '{key}'"
+        return ""
 
     # ── Internal methods ────────────────────────────────────────
 

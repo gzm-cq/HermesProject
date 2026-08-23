@@ -99,7 +99,9 @@ class RefinementOutput:
     removed_redundancies: List[str]
     replaced_risky_parts: List[str]
     optimization_log: List[Dict[str, Any]]
-    
+    # ── Ouroboros 保护面字段（P1-3，可选）──
+    ouroboros_surface_violation: str = ""   # 保护面违规说明（SKILL.md frontmatter 被改等）
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "refined_content": self.refined_content,
@@ -108,4 +110,5 @@ class RefinementOutput:
             "removed_redundancies": self.removed_redundancies,
             "replaced_risky_parts": self.replaced_risky_parts,
             "optimization_log": self.optimization_log,
+            "ouroboros_surface_violation": self.ouroboros_surface_violation,
         }

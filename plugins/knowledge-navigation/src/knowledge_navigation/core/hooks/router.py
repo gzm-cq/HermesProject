@@ -43,6 +43,8 @@ from knowledge_navigation.core.filtering import (
     extract_score,
     filter_by_score,
 )
+from knowledge_navigation.core.vestige import apply_decay as _vestige_apply_decay
+from knowledge_navigation.core.vestige import record_access as _vestige_record_access
 from knowledge_navigation.core.hooks.cache import (
     _compaction,
     _ensure_kt_imported,
@@ -99,6 +101,19 @@ __all__ = [
 _EVAL_PATTERN = re.compile(r"\[EVAL:([^\]]+)\]", re.IGNORECASE)
 _EVAL_CLEAN_PATTERN = re.compile(r"\[EVAL:[^\]]+\]", re.IGNORECASE)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+
+# codegraph 触发关键词（P0-4）：命中即尝试符号级代码召回
+_CODEGRAPH_KEYWORDS = re.compile(
+    r"(函数|方法|类|调用|源码|原码|定义|实现|接口|模块|文件|变量|参数|"
+    r"类图|调用链|调用关系|谁调用|引用|导入|"
+    r"\bdef\b|\bclass\b|\bfunc\b|\bimport\b|\bfunction\b|\bclass\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_code_query(user_message: str) -> bool:
+    """判断 query 是否与代码/符号相关（决定是否触发 codegraph 召回）。"""
+    return bool(_CODEGRAPH_KEYWORDS.search(user_message))
 
 
 # ========== 文本处理 ==========
@@ -411,6 +426,63 @@ def _do_sag_recall(query: str) -> tuple[list[dict], str | None]:
         return [], f"{type(e).__name__}: {e}"
 
 
+def _do_codegraph_recall(query: str) -> tuple[list[dict[str, Any]], str | None]:
+    """符号级代码召回（P0-4）。
+
+    经 subprocess 调 codegraph CLI 做只读查询（WAL 并发对运行中的 MCP server 安全）。
+    返回 (candidates, error)：error=None 表示成功，candidates 为统一候选结构列表。
+    """
+    import subprocess as _subprocess
+
+    bin_path = CONFIG.codegraph_bin
+    project_path = CONFIG.codegraph_project_path
+    try:
+        proc = _subprocess.run(
+            [bin_path, "query", query, "--json", "--limit", str(CONFIG.codegraph_limit), "--path", project_path],
+            capture_output=True, text=True, timeout=CONFIG.codegraph_timeout,
+        )
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+    if proc.returncode != 0:
+        return [], f"exit {proc.returncode}: {(proc.stderr or '').strip()[:200]}"
+
+    try:
+        data = json.loads(proc.stdout)
+    except Exception as e:
+        return [], f"json_parse: {e}"
+
+    if not isinstance(data, list):
+        return [], f"unexpected_format: {type(data).__name__}"
+
+    candidates: list[dict[str, Any]] = []
+    for item in data:
+        node = item.get("node", {})
+        fp = node.get("filePath", "")
+        if not fp:
+            continue
+        name = node.get("name", "")
+        sig = node.get("signature") or node.get("docstring") or ""
+        start_line = node.get("startLine", "")
+        text = f"{fp}:{start_line} — {name}\n{sig}".strip()
+        raw_score = float(item.get("score", 0.0))
+        # codegraph score 量级大（数十~数百），按 /100 收敛到 0~1，便于与其它候选共用分数过滤
+        norm = round(min(1.0, max(0.0, raw_score / 100.0)), 4)
+        candidates.append({
+            "id": str(node.get("id", "")),
+            "text": text,
+            "source": "codegraph",
+            "base_score": norm,
+            "final_score": norm,
+            "rerank_score": norm,
+            "score_source": "codegraph",
+            "kind": node.get("kind", ""),
+            "file_path": fp,
+            "start_line": start_line,
+        })
+    return candidates, None
+
+
 # ========== 候选构建 ==========
 
 
@@ -590,6 +662,8 @@ def _execute_recall(
                         circuit_record_failure("service_error")
                     else:
                         _hs_results = result.get("results", []) if result else []
+                        for _hs_item in _hs_results:
+                            _vestige_record_access(str(_hs_item.get("id", "")))
                         recall_logger.record("hindsight", _hs_results, _hs_latency, session_id=session_id, query=user_message)
                         circuit_record_success()
                 except HindsightClientError as e:
@@ -683,6 +757,8 @@ def _execute_recall(
                     circuit_record_failure("exception")
                 else:
                     _hs_results = result.get("results", []) if result else []
+                    for _hs_item in _hs_results:
+                        _vestige_record_access(str(_hs_item.get("id", "")))
                     recall_logger.record("hindsight", _hs_results, _hs_latency, session_id=session_id, query=user_message)
                     circuit_record_success()
             except HindsightClientError as e:
@@ -751,6 +827,8 @@ def _dedup_and_measure(
     注意：此处**不做**任何 token 预算裁剪，仅统计并记录四路实际消耗。
     """
     _touch_injected_session(session_id)
+    # Vestige 遗忘机制（P0-3）：对 hindsight 候选应用访问衰减（软降权，不删除）
+    kept = _vestige_apply_decay(kept, id_key="id")
     with _injected_lock:
         _session_history = _injected_ids[session_id]
         _turn_dedup_count = 0
@@ -865,6 +943,7 @@ def _assemble_xml_output(
     hs_kept = [r for r in kept if r.get("source", "hindsight") == "hindsight"]
     kt_kept = [r for r in kept if r.get("source") == "knowledge_tree"]
     sag_kept = [r for r in kept if r.get("source") == "sag"]
+    cg_kept = [r for r in kept if r.get("source") == "codegraph"]
 
     context_lines: list[str] = []
 
@@ -907,6 +986,20 @@ def _assemble_xml_output(
             f"</knowledge>"
         )
 
+    if cg_kept:
+        cg_xml = "\n".join(
+            f'  <symbol source="codegraph" kind="{html.escape(str(r.get("kind", "")), quote=True)}" '
+            f'file="{html.escape(str(r.get("file_path", "")), quote=True)}" '
+            f'line="{html.escape(str(r.get("start_line", "")), quote=True)}">'
+            f'{html.escape(str(r.get("text", ""))[:CONFIG.max_text_length], quote=False)}</symbol>'
+            for r in cg_kept
+        )
+        context_lines.append(
+            f'<knowledge source="codegraph" count="{len(cg_kept)}">\n'
+            f"{cg_xml}\n"
+            f"</knowledge>"
+        )
+
     if summary:
         context_lines.append(summary)
 
@@ -943,7 +1036,7 @@ def _assemble_xml_output(
             "injected_count": len(context_lines), "total_chars": sum(len(line) for line in context_lines),
             "has_knowledge_tree": len(kt_raw_results) > 0, "kt_dedup_removed": kt_dedup_removed,
             "latency_ms": latency_ms, "score_comparison": score_comparison,
-            "recalled_ids": recalled_ids, "hs_kept": len(hs_kept), "kt_kept": len(kt_kept), "sag_kept": len(sag_kept),
+            "recalled_ids": recalled_ids, "hs_kept": len(hs_kept), "kt_kept": len(kt_kept), "sag_kept": len(sag_kept), "cg_kept": len(cg_kept),
         }
         if CONFIG.enable_score_span_compress and kept_before_compress > len(kept):
             log_extra["compressed_from"] = kept_before_compress
@@ -1169,6 +1262,8 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
         session_id, user_message, query_trunc, t0, _eval_match,
         s_active=_s_active, sag_active=_sag_active,
     )
+    _code_query_fallback = False  # 代码 query 空召回回退标记（P0-4）
+
     if _pp_result is None:
         if sag_raw_results and _sag_active:
             kept = []
@@ -1182,7 +1277,21 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
             summary = None
             eval_match = _eval_match
         else:
-            return _skill_context if _skill_context else None
+            # 代码 query：即使其它路为空，仍尝试 codegraph 符号级召回，不提前返回
+            if CONFIG.codegraph_enabled and _eval_match is None and _is_code_query(user_message):
+                kept = []
+                latency_ms = int((time.time() - t0) * 1000)
+                raw_results = []
+                excluded_count = 0
+                kept_before_kt = 0
+                kt_dedup_removed = 0
+                score_comparison = {}
+                kept_before_compress = 0
+                summary = None
+                eval_match = _eval_match
+                _code_query_fallback = True
+            else:
+                return _skill_context if _skill_context else None
     else:
         kept = _pp_result
         latency_ms = _pp_meta["latency_ms"]
@@ -1235,7 +1344,32 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
 
         logger.info("SAG recall: %d sections merged (capped to %d)", sag_count, len(sag_candidates), extra={"session_id": session_id, "event": "sag_merge", "count": len(sag_candidates)})
 
+    # ---- codegraph 符号级召回（P0-4）----
+    # 关键词命中（非 eval query）时触发，结果并入 kept 参与去重/度量；timeout 保护不阻塞主链路。
+    if CONFIG.codegraph_enabled and _eval_match is None and _is_code_query(user_message):
+        _cg_t0 = time.time()
+        try:
+            cg_candidates, cg_error = _do_codegraph_recall(user_message)
+            _cg_latency = (time.time() - _cg_t0) * 1000
+            if cg_candidates:
+                kept.extend(cg_candidates)
+                logger.info(
+                    "codegraph recall: %d symbols", len(cg_candidates),
+                    extra={"session_id": session_id, "event": "codegraph_recall", "count": len(cg_candidates), "latency_ms": round(_cg_latency, 1)},
+                )
+            else:
+                logger.debug("codegraph recall: 0 symbols (error=%s)", cg_error)
+            _recall_logger.record("codegraph", cg_candidates, _cg_latency, session_id=session_id, query=user_message, error=cg_error)
+        except Exception as e:
+            _recall_logger.record("codegraph", [], (time.time() - _cg_t0) * 1000, session_id=session_id, query=user_message, error=f"{type(e).__name__}: {e}")
+            logger.debug("codegraph recall error: %s", e)
+
+    # 代码 query 回退分支：若 codegraph 仍无候选且无可注入 skill，回归空召回语义（返回 None）
+    if _code_query_fallback and not kept and not _skill_context:
+        return None
+
     kept, _skill_context = _dedup_and_measure(kept, session_id, _skill_context)
+
 
     return _assemble_xml_output(kept, _skill_context, session_id, user_message, {
         "query_trunc": query_trunc,

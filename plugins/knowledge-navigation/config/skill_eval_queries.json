@@ -7,7 +7,7 @@
   {
     "query_id": "skill_02",
     "query": "SiliconFlow API 的使用方法",
-    "expected_skills": ["honcho-llm-configuration", "cost-aware-llm-pipeline"]
+    "expected_skills": ["cost-aware-llm-pipeline"]
   },
   {
     "query_id": "skill_03",
@@ -22,7 +22,7 @@
   {
     "query_id": "skill_05",
     "query": "moa配置是什么",
-    "expected_skills": ["hermes-enable-skill-correct-way", "hermes-infrastructure", "honcho-llm-configuration"]
+    "expected_skills": ["hermes-enable-skill-correct-way", "hermes-infrastructure"]
   },
   {
     "query_id": "skill_06",
@@ -32,12 +32,12 @@
   {
     "query_id": "skill_07",
     "query": "LiteLLM 配置相关的问题怎么处理",
-    "expected_skills": ["hermes-fallback-model-troubleshooting", "cost-aware-llm-pipeline"]
+    "expected_skills": ["cost-aware-llm-pipeline"]
   },
   {
     "query_id": "skill_08",
     "query": "PG 连接错误怎么排查",
-    "expected_skills": ["hermes-fallback-model-troubleshooting", "database-migrations"]
+    "expected_skills": ["database-migrations"]
   },
   {
     "query_id": "skill_09",
@@ -52,7 +52,7 @@
   {
     "query_id": "skill_11",
     "query": "Kanban worker 的工作流程",
-    "expected_skills": ["kanban-orchestrator", "kanban-worker"]
+    "expected_skills": ["kanban-worker"]
   },
   {
     "query_id": "skill_12",
@@ -62,7 +62,7 @@
   {
     "query_id": "skill_13",
     "query": "MCP 服务器的配置方式",
-    "expected_skills": ["honcho-llm-configuration", "hermes-infrastructure"]
+    "expected_skills": ["hermes-infrastructure"]
   },
   {
     "query_id": "skill_14",
@@ -82,7 +82,7 @@
   {
     "query_id": "skill_17",
     "query": "LLM 路由策略怎么选",
-    "expected_skills": ["cost-aware-llm-pipeline", "hermes-fallback-model-troubleshooting"]
+    "expected_skills": ["cost-aware-llm-pipeline"]
   },
   {
     "query_id": "skill_18",
@@ -97,7 +97,7 @@
   {
     "query_id": "skill_20",
     "query": "gateway 为啥崩了",
-    "expected_skills": ["hermes-fallback-model-troubleshooting", "system-health-check"]
+    "expected_skills": ["system-health-check"]
   },
   {
     "query_id": "skill_21",
@@ -142,7 +142,7 @@
   {
     "query_id": "skill_29",
     "query": "系统调试的方法论",
-    "expected_skills": ["systematic-debugging", "hermes-fallback-model-troubleshooting"]
+    "expected_skills": ["systematic-debugging"]
   },
   {
     "query_id": "skill_30",

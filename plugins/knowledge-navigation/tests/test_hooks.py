@@ -1024,18 +1024,21 @@ class TestSagRecall:
 
     def test_sag_result_default_score(self) -> None:
         """SAG 结果无 score 字段时使用默认值 0.5。"""
+        from knowledge_navigation.config import CONFIG
+
         sag_sections = [
             {"chunk_id": "c1", "content": "无分数内容", "document_id": "doc-1"},
         ]
 
-        with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
-            with patch("requests.post") as mock_post:
-                mock_resp = MagicMock()
-                mock_resp.status_code = 200
-                mock_resp.json.return_value = {"sections": sag_sections}
-                mock_post.return_value = mock_resp
+        with patch.object(CONFIG, "sag_min_score", 0.35):
+            with patch.object(kn_router, "_router_route", return_value={"h": False, "kt": False, "s": False, "sag": True}):
+                with patch("requests.post") as mock_post:
+                    mock_resp = MagicMock()
+                    mock_resp.status_code = 200
+                    mock_resp.json.return_value = {"sections": sag_sections}
+                    mock_post.return_value = mock_resp
 
-                result = pre_llm_call("sess-default", self.LONG_QUERY, platform="cli")
+                    result = pre_llm_call("sess-default", self.LONG_QUERY, platform="cli")
 
         assert result is not None
         assert "无分数内容" in result

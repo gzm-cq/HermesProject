@@ -187,6 +187,13 @@ class KnowledgeNavigationConfig:
     kn_skill_embedding_api_key: str = field(default="")
     kn_skill_embedding_top_k: int = field(default=30)  # embedding 筛选后的候选数：默认 20→30，减少预筛阶段把潜在匹配技能过滤掉的概率
 
+    # SkillRouter 语义召回后端（P0-1，自实现）
+    # embedding 后端切换：api=远端 embedding API（默认，零风险）；skillrouter=本地 SkillRouter 0.6B 专用模型
+    # 默认 api：生产行为完全不变；仅当显式置为 skillrouter 且环境就绪（模型+transformers）时才启用本地推理。
+    kn_skill_embedding_backend: str = field(default="api")
+    kn_skillrouter_embedding_dir: str = field(default="/root/.hermes/models/skillrouter/embedding")
+    kn_skillrouter_reranker_dir: str = field(default="/root/.hermes/models/skillrouter/reranker")
+
     # SAG API configuration
     sag_api_url: str = field(default="http://127.0.0.1:4173")
     sag_auth_token: str = field(default="")  # Bearer token for SAG v1.5.3+
@@ -200,6 +207,15 @@ class KnowledgeNavigationConfig:
     # 注：token 预算控制已于 2026-08-10 移除（只记录实际消耗，不做裁剪）。
     # 原 enable_token_budget / token_budget_total / token_budget_*_ratio 已删除。
     skill_max_chars_per_skill: int = field(default=4000)  # 单条 skill 注入字符上限（替代 router.py 内硬编码 4000）
+
+    # Codegraph 符号级召回（P0-4）
+    # 代码相关 query 经 subprocess 调 codegraph CLI 返回符号级结果（文件路径/行号/签名），
+    # 不取 MCP 工具的 Tool Registry（hook 阶段无法作为 MCP 调用方）。
+    codegraph_enabled: bool = field(default=True)  # 代码关键词命中时触发 codegraph 召回
+    codegraph_bin: str = field(default="/root/.local/bin/codegraph")  # CLI 绝对路径（WSL 侧，非登录 shell 不在 PATH）
+    codegraph_project_path: str = field(default="/mnt/d/HermesProject")  # 与 codegraph MCP 服务共用同一索引
+    codegraph_timeout: int = field(default=5)  # subprocess 超时上限，绝不阻塞主召回链路
+    codegraph_limit: int = field(default=5)  # 单次返回符号数量上限
 
     # Memory use log (P2-2 Phase A)
     enable_use_log: bool = field(default=True)
@@ -392,6 +408,12 @@ class KnowledgeNavigationConfig:
             values["kn_skill_embedding_api_key"] = env
         if env := os.getenv("KN_SKILL_EMBEDDING_TOP_K"):
             values["kn_skill_embedding_top_k"] = int(env)
+        if env := os.getenv("KN_SKILL_EMBEDDING_BACKEND"):
+            values["kn_skill_embedding_backend"] = env.strip().lower()
+        if env := os.getenv("KN_SKILLROUTER_EMBEDDING_DIR"):
+            values["kn_skillrouter_embedding_dir"] = env.strip()
+        if env := os.getenv("KN_SKILLROUTER_RERANKER_DIR"):
+            values["kn_skillrouter_reranker_dir"] = env.strip()
         # KN_ENABLE_TOKEN_BUDGET / KN_TOKEN_BUDGET_* 已废弃（2026-08-10 移除预算控制）。
         # 若 .env 中仍残留这些变量，此处静默忽略，不影响启动。
         if env := os.getenv("KN_SKILL_MAX_CHARS_PER_SKILL"):
@@ -433,6 +455,17 @@ class KnowledgeNavigationConfig:
             values["use_log_path"] = env
         if env := os.getenv("KN_SKILL_INDEX_INCREMENTAL"):
             values["skill_index_incremental"] = env.lower() in ("1", "true", "yes")
+        # Codegraph (P0-4)
+        if env := os.getenv("KN_CODEGRAPH_ENABLED"):
+            values["codegraph_enabled"] = env.lower() in ("1", "true", "yes")
+        if env := os.getenv("KN_CODEGRAPH_BIN"):
+            values["codegraph_bin"] = env
+        if env := os.getenv("KN_CODEGRAPH_PROJECT_PATH"):
+            values["codegraph_project_path"] = env
+        if env := os.getenv("KN_CODEGRAPH_TIMEOUT"):
+            values["codegraph_timeout"] = int(env)
+        if env := os.getenv("KN_CODEGRAPH_LIMIT"):
+            values["codegraph_limit"] = int(env)
         return cls(**values)
 
 

@@ -12,12 +12,16 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 from knowledge_navigation.core.skill_matcher import (
     _TOP_K,
     _PRESCREEN_TOP_K,
+    _get_prescreen_top_k,
     _parse_frontmatter,
     strip_frontmatter,
     ensure_index,
@@ -614,8 +618,16 @@ def test_single_stage_match_without_prescreen(mock_ensure: MagicMock) -> None:
     sm._skill_index = None
 
 
-def test_prescreen_top_k_default() -> None:
-    assert _PRESCREEN_TOP_K == 30
+def test_prescreen_top_k_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """无 env 覆盖时，_get_prescreen_top_k 返回默认 30。"""
+    monkeypatch.delenv("KN_SKILL_PRESCREEN_TOP_K", raising=False)
+    # 隔离 ~/.hermes/.env 兜底（env_loader 60s TTL 缓存）
+    monkeypatch.setattr("knowledge_navigation.core.env_loader._env_cache", {})
+    monkeypatch.setattr(
+        "knowledge_navigation.core.env_loader._read_env_file",
+        lambda: {},
+    )
+    assert _get_prescreen_top_k() == 30
 
 
 # ====================================================================
