@@ -1,6 +1,6 @@
 # 知识导航插件（knowledge_navigation）
 
-> 自动 recall Hindsight 经验记忆并融合知识树知识点与 SAG 梦境反思，通过 LLM Router 智能决策**五路召回（Hindsight / 知识树 / SAG / Skill / CodeGraph）**，采用**三级混合筛选架构**提升召回质量与效率
+> 自动 recall Hindsight 经验记忆并融合知识树知识点与 SAG 梦境反思，通过 LLM Router 智能决策**五路召回（Hindsight / 知识树 / SAG / Skill / CodeGraph）**，采用**双路预筛 + LLM 精排架构**提升召回质量与效率
 
 ## ✨ 插件简介
 
@@ -8,7 +8,7 @@
 
 **核心特性**：
 - 🧠 **LLM Router 智能决策**：基于 need analysis 判断 **H（经验）/ KT（知识）/ SAG（梦境反思）/ S（技能）四路**是否需要注入（mask 决策）；另按代码关键词触发 **CodeGraph 符号级召回（第 5 路）**；支持 confidence 置信度字段，低置信度（<0.5）时自动保守 fallback 全开
-- 🔍 **三级混合筛选**：Skill 匹配采用"关键词粗筛（Top-30）→ Embedding 语义精筛（Top-20）→ LLM 精排（Top-3）"三级漏斗，平衡召回率与效率
+- 🔍 **双路预筛 + LLM 精排**：Skill 匹配采用关键词预筛（Top-30）与 Embedding 预筛（Top-20，**独立从全量**召回）**并行取并集**，再交 LLM 精排（Top-3），平衡召回率与效率
 - ⚡ **高性能**：内置连接池、超时控制与熔断器；mask 四路按条件**超时隔离真并行**执行（每路独立截止时间，互不连坐阻塞）；CodeGraph 路 subprocess 只读查询（timeout 5s）不阻塞主链路；Router 缓存（TTL 5 分钟，64 条目上限），同 session 相同消息复用决策
 - 📊 **可观测性**：结构化 JSON 日志（含 router_mask 事件），支持监控与基线对比；fallback 原因分类统计（json_parse/api_401/api_timeout/api_error/api_other）；调用耗时记录
 - 🛡️ **高可靠**：熔断器防级联故障 + 飞书告警通知；Router 异常自动 fallback 全开；Embedding 调用失败自动降级；401 Unauthorized 自动重试（刷新 API key）
@@ -71,7 +71,7 @@ hooks:
 | `router_max_retries` | `KN_ROUTER_MAX_RETRIES` | `2` | Router 调用总次数（含首次）；超时/5xx 指数退避重试 |
 | `router_backoff_base` | `KN_ROUTER_BACKOFF_BASE` | `0.5` | 超时重试指数退避基数（秒），第 n 次等待 = base × 2^(n-1) |
 
-### Skill 匹配 Embedding 配置（三级筛选专用）
+### Skill 匹配 Embedding 配置（双路预筛专用）
 
 | 配置项 | 环境变量 | 默认值 | 说明 |
 |--------|---------|--------|------|
@@ -80,7 +80,7 @@ hooks:
 | `embedding_api_key` | `KN_SKILL_EMBEDDING_API_KEY` | `""` | Embedding API Key（空时 fallback 到 `SILICONFLOW_API_KEY`） |
 | `embedding_model` | `KN_SKILL_EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding 模型 |
 | `prescreen_top_k` | `KN_SKILL_PRESCREEN_TOP_K` | `30` | 关键词预筛选保留数量 |
-| `embedding_top_k` | `KN_SKILL_EMBEDDING_TOP_K` | `20` | Embedding 精筛保留数量 |
+| `embedding_top_k` | `KN_SKILL_EMBEDDING_TOP_K` | `20` | Embedding 预筛保留数量（独立从全量召回） |
 | `embedding_batch_size` | `KN_SKILL_EMBEDDING_BATCH_SIZE` | `20` | Embedding API 批量调用大小 |
 | `embedding_circuit_threshold` | `KN_SKILL_EMBEDDING_CB_THRESHOLD` | `3` | Embedding 熔断阈值 |
 | `embedding_circuit_cooldown` | `KN_SKILL_EMBEDDING_CB_COOLDOWN` | `300` | Embedding 熔断冷却时间（秒） |
@@ -114,25 +114,26 @@ LLM Router → {h: bool, kt: bool, s: bool, sag: bool}
       ├─ h   → _do_hindsight_recall()      （经验域）
       ├─ kt  → _do_kt_recall() → multi_hop_expand()（实体多跳关联展开，知识域）
       ├─ sag → _do_sag_recall()            （SAG 梦境反思召回，反思域）
-      └─ s   → _do_skill_match()           （三级混合筛选，能力域）
+      └─ s   → _do_skill_match()           （双路预筛+LLM 精排，能力域）
   ↓
 CodeGraph 符号级召回（第 5 路，代码 query 关键词触发，subprocess 只读查询）
   ↓
 后处理（过滤/去重/融合/标签化注入）
 ```
 
-### Skill 三级混合筛选
+### Skill 双路预筛 + LLM 精排
 
 ```
-Stage 1: 关键词预筛选（<1ms，345 → Top-30）
+Stage 1: 关键词预筛选（<1ms，全量 → Top-30）
          └─ 基于 skill name/description 的关键词匹配
 
-Stage 1.5: Embedding 余弦相似度（<10ms，30 → Top-20）
-         └─ 向量化后计算余弦相似度，语义精筛
+Stage 1.5: Embedding 预筛（独立从全量召回，全量 → Top-20）
+         └─ 向量化后计算余弦相似度，与关键词结果取并集
          └─ 失败时自动降级到关键词结果
 
-Stage 2: LLM 精排（~500ms，20 → Top-3）
-         └─ 调用 LLM 对候选 skill 进行相关性打分
+Stage 2: LLM 精排（~500ms，union ≤50 → Top-3）
+         └─ 调用 LLM 对并集候选进行相关性打分
+         └─ LLM 失败时 fallback 到 union top-K
 ```
 
 ---

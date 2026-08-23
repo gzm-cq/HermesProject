@@ -8,7 +8,7 @@ HermesProject 是 Hermes 智能体平台的**开发主仓库**，包含 17+ 独�
 
 | # | 项目 | 路径 | 类型 | 简介 |
 |---|------|------|------|------|
-| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | LLM Router **五路召回**（Hindsight 经验 + 知识树 + SAG 反思 + Skill + CodeGraph 符号级），pre_llm_call 智能召回，Skill 三级混合筛选（关键词预筛→Embedding精筛→LLM精排） |
+| 1 | **知识导航插件** | `plugins/knowledge-navigation/` | 插件 | LLM Router **五路召回**（Hindsight 经验 + 知识树 + SAG 反思 + Skill + CodeGraph 符号级），pre_llm_call 智能召回，Skill 双路预筛（关键词 Top-30 ∪ Embedding Top-20）→ LLM 精排 Top-3 |
 | 2 | **知识树在线插件** | `plugins/knowledge-tree-plugin/` | 插件 | 知识树 pre_llm_call recall + post_llm_call 增量学习 |
 | 3 | **飞轮健康报告 & Auto-Tuner** | `scripts/flywheel-health-report/` | Cron | 每日健康巡检（12 analyzer 聚合）+ KN LLM Judge（mask 级评分）+ 参数自优化 |
 | 4 | **SkillOpt 增量优化** | `scripts/skillopt-runner/` | Cron | 基于对话负反馈自动优化 skill 文档 |
@@ -77,8 +77,8 @@ Hermes 采用 **5 层记忆体系** + **五路召回**（Hindsight 经验 + 知�
 │                    ┌──────────────┐                   │             │               │
 │                    │  Skill 匹配   │────────────────────             │               │
 │                    │  (能力域)     │ 自动注入 <auto_loaded_skills>   │               │
-│                    │  三级混合筛选  │ 到用户消息                        │               │
-│                    │  (关键词预筛→Embedding精筛→LLM精排) │                   │             │               │
+│                    │  双路预筛→精排  │ 到用户消息                        │               │
+│                    │ 关键词∪Embed   │ 到用户消息                        │               │
 │                    └──────────────┘                   │             │               │
 └──────────────────────────┬───────────────────────────────┬──────────────────────────┘
                            │ 语义检索                       │
@@ -115,7 +115,7 @@ Router 飞轮（决策）：决策 → 执行 → 健康巡检 → 更精准
 **设计目标**：
 - **五层记忆分层**：按生命周期（会话 / 跨会话 / 持久 / 长期经验 / 长期知识）分层治理，各层独立维护，控制 token 开销
 - **知识导航（五路召回）**：LLM Router 按 mask 动态决策（Hindsight 经验 L4、知识树 L5、SAG 反思、Skill 能力四路）+ CodeGraph 符号级召回（代码 query 关键词触发），避免 LLM 不主动提取记忆/技能/代码符号的问题
-- **技能强制注入**：Skill 三级混合筛选（关键词预筛→Embedding精筛→LLM精排），自动匹配相关 skill 并注入全文到 `<auto_loaded_skills>`，匹配不到不强行注入，解决 LLM 不主动 `skill_view()` 的问题
+- **技能强制注入**：Skill 双路预筛（关键词 Top-30 ∪ Embedding Top-20，并行召回取并集）→ LLM 精排 Top-3，自动匹配相关 skill 并注入全文到 `<auto_loaded_skills>`，匹配不到不强行注入，解决 LLM 不主动 `skill_view()` 的问题
 - **聚类分析**：优化 RAG 库结构（HDBSCAN + 因果链），最大化提升召回记忆的有效性与 recall 率
 - **记忆清理**：精简核心记忆，控制 token 开销，其余降级到 RAG 按需召回
 - **数据飞轮闭环**：知识生产 → 组织 → 消费 → 闭环优化，下一轮召回更精准
@@ -368,7 +368,7 @@ LLM 驱动的智能记忆管理（MEMORY.md + USER.md）：
 - **H（经验域）**：从 Hindsight 召回相关记忆
 - **KT（知识域）**：通过 knowledge-tree-plugin 召回知识树，沿 `kt_entity_links` 表展开共享实体的关联知识点（实体多跳）
 - **SAG（反思域）**：SAG 梦境反思召回，将对话沉淀的结构化知识/公理回流到下一轮上下文
-- **S（能力域）**：Skill 三级混合筛选（关键词预筛 Top-30 → Embedding 余弦相似度精筛 Top-20 → LLM 精排 Top-3），自动注入
+- **S（能力域）**：Skill 双路预筛（关键词 Top-30 ∪ Embedding Top-20，并行取并集）→ LLM 精排 Top-3，自动注入
 - **CG（代码域）**：代码相关 query 经 `_is_code_query` 关键词触发 CodeGraph 符号级召回（subprocess 调 `codegraph query`，返回文件/行号/签名），结果并入 `<knowledge source="codegraph">`
 - 动态执行：mask 四路按条件超时隔离真并行（每路独立截止时间，互不连坐），单路则串行；CodeGraph 路独立触发（timeout 5s），绝不阻塞主链路
 - H/KT/SAG 三路各带独立熔断器（阈值 3 / 冷却 90s）+ 飞书告警 + Router 异常 fallback 全开；Embedding 调用失败自动降级

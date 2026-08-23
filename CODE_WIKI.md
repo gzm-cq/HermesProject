@@ -54,7 +54,7 @@
 
 **核心能力**：
 - **知识导航**：LLM Router 五路召回（Hindsight 经验 + 知识树 + SAG 反思 + Skill + CodeGraph 符号级），确保有效记忆/代码符号主动召回
-- **技能强制注入**：三级混合筛选（关键词预筛 → Embedding 精筛 → LLM 精排）
+- **技能强制注入**：双路预筛（关键词 Top-30 ∪ Embedding Top-20，并行取并集）→ LLM 精排 Top-3
 - **聚类分析**：优化 RAG 库结构，提升召回率
 - **记忆清理**：精简核心记忆，控制 token 开销
 - **自进化**：SE-Agent 三层进化算子 + 反思回路
@@ -90,8 +90,8 @@
 │                    ┌──────────────┐                   │             │               │
 │                    │  Skill 匹配   │────────────────────             │               │
 │                    │  (能力域)     │ 自动注入 <auto_loaded_skills>   │               │
-│                    │  三级混合筛选  │ 到用户消息                        │               │
-│                    │  (关键词预筛→Embedding精筛→LLM精排) │                   │               │
+│                    │  双路预筛→精排  │ 到用户消息                        │               │
+│                    │ 关键词∪Embed   │ 到用户消息                        │               │
 │                    └──────────────┘                   │             │               │
 └──────────────────────────┬───────────────────────────────┬──────────────────────────┘
                            │ 语义检索                       │
@@ -277,7 +277,7 @@ def register(ctx) -> None:
 - **H（经验域）**：从 Hindsight 召回相关记忆
 - **KT（知识域）**：通过 knowledge-tree-plugin 召回知识树
 - **SAG（反思域）**：SAG 梦境反思召回，将对话沉淀的结构化知识/公理回流到下一轮上下文
-- **S（能力域）**：Skill 三级混合筛选（关键词预筛 Top-30 → Embedding 精筛 Top-20 → LLM 精排 Top-3）
+- **S（能力域）**：Skill 双路预筛（关键词 Top-30 ∪ Embedding Top-20，并行取并集）→ LLM 精排 Top-3
 - **CG（代码域）**：代码相关 query 关键词触发 CodeGraph 符号级召回（文件/行号/签名），结果并入 `<knowledge source="codegraph">`
 
 #### 核心目录结构
@@ -302,7 +302,7 @@ plugins/knowledge-navigation/
 │       │   └── router.py    # LLM Router 路由决策（mask 解析）
 │       ├── filtering.py     # 召回结果过滤与格式化
 │       ├── router.py        # Router 核心
-│       ├── skill_matcher.py # Skill 三级混合筛选
+│       ├── skill_matcher.py # Skill 双路预筛（关键词∪Embedding）+ LLM 精排
 │       ├── circuit_breaker.py # 熔断器
 │       ├── recall_logger.py # 召回日志记录
 │       ├── env_loader.py    # 环境变量热加载（60s TTL）
@@ -323,7 +323,7 @@ plugins/knowledge-navigation/
 | `KnowledgeNavigationConfig` | `config.py` | 配置类，定义 Hindsight API、召回行为、性能参数等，支持 ENV 覆盖 |
 | `pre_llm_call()` | `core/hooks/__init__.py` | 核心钩子，在 LLM 调用前执行五路召回逻辑 |
 | `HindsightClient` | `adapters/hindsight.py` | Hindsight 服务客户端，封装 recall API 请求 |
-| `SkillMatcher` | `core/skill_matcher.py` | Skill 三级混合筛选：关键词预筛 → Embedding 精筛 → LLM 精排 |
+| `SkillMatcher` | `core/skill_matcher.py` | Skill 双路预筛（关键词 ∪ Embedding，并行取并集）→ LLM 精排 |
 | `Router` | `core/router.py` | LLM Router 决策，返回 `{h, kt, s, sag}` mask，含三层 JSON 解析兜底 |
 | `CircuitBreaker` | `core/circuit_breaker.py` | 熔断器，连续 3 次失败熔断 120s，状态持久化至 `circuit_breaker.json` |
 | `filter_and_format()` | `core/filtering.py` | 召回后处理：去重、Compaction、HitCounter、时态衰减、跨域去重、XML 格式化 |

@@ -22,7 +22,7 @@
 │    ├─ 4 路并行召回                                                       │
 │    │   ├─ Hindsight（经验记忆：bge-m3 + BM25 + RRF）                     │
 │    │   ├─ 知识树 KT（结构化知识 + 实体多跳展开）                           │
-│    │   ├─ Skill（三级筛选：关键词 → Embedding → LLM 精排）                │
+│    │   ├─ Skill（双路预筛：关键词 ∪ Embedding → LLM 精排）               │
 │    │   └─ SAG（合成记忆搜索，独立熔断器）                                  │
 │    ├─ 跨域去重 + 实际 token 消耗观测（预算截断已移除）                      │
 │    ├─ XML 组装 → 注入 LLM 上下文                                         │
@@ -146,7 +146,7 @@ def _do_kt_recall(session_id: str, query: str) -> list[dict]:
 - **容错**：懒加载模块，异常时降级为空列表
 - **关键参数**：`KN_MIN_SCORE`、`KN_MAX_RESULTS`
 
-#### Route 3：Skill（三级混合筛选）
+#### Route 3：Skill（双路预筛 + LLM 精排）
 
 **函数**：`_do_skill_match` — [router.py L280-318](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks/router.py#L280-L318)
 
@@ -161,11 +161,12 @@ def _do_skill_match(query: str) -> str:
 ```
 
 - **数据源**：`~/.hermes/skills/` 目录下的 skill 文件
-- **三级筛选流程**：
-  1. **关键词预筛**（`KN_SKILL_KEYWORD_PRESCREEN`）：top-30 候选
-  2. **Embedding 预筛**（`KN_SKILL_EMBEDDING_PRESCREEN`）：bge-m3 向量 top-20
-  3. **LLM 精排**：DeepSeek 对候选集打分，返回 top-K
-- **关键参数**：`KN_SKILL_EMBEDDING_TOP_K`、`KN_SKILL_KEYWORD_PRESCREEN`
+- **双路预筛 + LLM 精排流程**（[skill_matcher.py `match_skills`](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/skill_matcher.py#L1117-L1252)）：
+  1. **关键词预筛**（`KN_SKILL_KEYWORD_PRESCREEN`）：从全量 skill 库取 top-30 候选
+  2. **Embedding 预筛**（`KN_SKILL_EMBEDDING_PRESCREEN`）：**独立从全量** skill 库取 top-20 候选（bge-m3 向量，非对关键词结果二次精筛）
+  3. **取并集去重**：两路候选 union（≤50），keyword 优先、embedding 补充漏筛
+  4. **LLM 精排**：DeepSeek 对并集候选打分，返回 top-K；LLM 失败时 fallback 到 union top-K
+- **关键参数**：`KN_SKILL_EMBEDDING_TOP_K`、`KN_SKILL_KEYWORD_PRESCREEN`、`KN_SKILL_PRESCREEN_TOP_K`
 
 #### Route 4：SAG（合成记忆搜索）
 
@@ -687,7 +688,7 @@ ExecStart=/root/.hermes/...
 | [router.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/hooks/router.py) | 4 路召回 + pre_llm_call + 去重 + XML 组装 |
 | [config.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/config.py) | from_env() + setup_logging() + JSONFormatter |
 | [filtering.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/filtering.py) | 去重/过滤工具（`apply_token_budget` 已随预算移除而删除） |
-| [skill_matcher.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/skill_matcher.py) | Skill 三级筛选 |
+| [skill_matcher.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/core/skill_matcher.py) | Skill 双路预筛（关键词∪Embedding）→ LLM 精排 |
 | [turn_gate.py](file:///d:/HermesProject/plugins/knowledge-navigation/src/knowledge_navigation/turn_gate.py) | 门控规则 |
 
 ### 知识树插件
