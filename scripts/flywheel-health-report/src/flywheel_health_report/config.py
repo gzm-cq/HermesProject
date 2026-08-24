@@ -103,10 +103,10 @@ ACTIVE_CRON_JOBS = frozenset({
     # 核心飞轮
     "memory-cleanup",
     "skillopt-nightly-run",
-    "kn-router-health-check",
     "daily-learn",
     "knowledge-tree-consolidate",
     "knowledge-tree-kvector",
+    "kn-router-health-check",
     # 新增：之前未跟踪的 job
     "dream-daily",
     "每周深度研究-知识树学习",
@@ -118,7 +118,6 @@ ACTIVE_CRON_JOBS = frozenset({
 # 已知的非飞轮 state 文件白名单（cron 基础设施 job，不纳入巡检报告）
 EXCLUDED_STATE_FILES = frozenset({
     "cron-boot-detect",
-    "cron-periodic-detect",
     "cron-periodic-dedup",
     "flywheel-health-report",
     "deploy-cleanup-health-check",
@@ -128,7 +127,6 @@ EXCLUDED_STATE_FILES = frozenset({
 # 注：knowledge-navigation-baseline / run-skill-eval 已合并进 runner 内部执行，
 #     不再出现在 cron state / jobs.json 中；clustering-analysis 已取消。
 _CRON_TO_FLYWHEEL = {
-    "kn-router-health-check": "Router",
     "skillopt-nightly-run": "Skill",
     "memory-cleanup": "记忆",
     "knowledge-tree-consolidate": "知识树",
@@ -137,6 +135,7 @@ _CRON_TO_FLYWHEEL = {
     "dream-daily": "知识路",
     "每周深度研究-知识树学习": "知识树",
     "system-health-check": "系统",
+    "kn-router-health-check": "Router",
     "self-evolving-nightly": "能力飞轮",
 }
 

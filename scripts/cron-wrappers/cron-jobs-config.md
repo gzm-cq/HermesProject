@@ -10,7 +10,7 @@
 
 ## 任务一览
 
-> 真相源：`~/.hermes/cron/jobs.json`。本表与 jobs.json 的 `name` 字段、`schedule.expr` 字段保持一致。共 16 个任务：14 no_agent 脚本 + 2 agent 任务。
+> 真相源：`~/.hermes/cron/jobs.json`。本表与 jobs.json 的 `name` 字段、`schedule.expr` 字段保持一致。共 16 个任务：13 no_agent 脚本 + 3 agent 任务。
 
 | # | name | schedule | 类型 | script | workdir |
 |---|------|----------|------|--------|---------|
@@ -27,7 +27,7 @@
 | 11 | 知识导航 Router 健康巡检 | `0 14 * * *` | no_agent | `kn-router-health-check.sh` | — |
 | 12 | skillopt-nightly-run | `0 15 * * *` | no_agent | `skillopt-runner/skillopt-nightly-run.sh` | `/root/.hermes/skillopt-runner` |
 | 13 | dream-daily | `0 16 * * *` | no_agent | `dream-synth/scripts/dream-daily.sh` | `/root/.hermes/scripts/dream-synth` |
-| 14 | cron-periodic-detect | `0 * * * *` | no_agent | `cron-periodic-detect.sh` | — |
+| 14 | system-health-self-heal | `0 * * * *`（每小时整点）| agent（LLM prompt 驱动，自愈+补跑）| —（见 SPEC-system-health-self-heal.md 的 Agent Prompt）| — |
 | 15 | 论文投稿提醒-改投 | once 2026-08-06 09:00 | agent | —（LLM prompt 驱动） | — |
 | 16 | self-evolving-nightly | `30 17 * * *` | no_agent | `self-evolving/self-evolving-nightly.sh` | `/root/.hermes/scripts/self-evolving` |
 
@@ -40,7 +40,7 @@
 - 工作日 08:00 同时间段两个 job：system-health-check（仅 1-5）+ flywheel-health-report（每日），周末仅 flywheel-health-report
 - 周一上午链式排班：clustering-analysis(10:00) → 知识树维护(11:00) → 评估基线+Skill Eval(12:00)
 - agent 类型任务没有 script，由 Hermes cron 调度 LLM 代理执行 prompt
-- cron-periodic-detect 每小时整点运行，独立于飞轮 14 任务，负责失败 job 检测与去重告警
+- system-health-self-heal 每小时整点运行，agent 驱动，执行基础设施健康检查+自愈+失败 job 补跑（详见 SPEC-system-health-self-heal.md）
 - 论文投稿提醒-改投是一次性任务（2026-08-06 09:00），到期后由 Hermes 自动归档
 - self-evolving-nightly(17:30) 在 skillopt(15:00) 之后运行，消费其失败轨迹（failed_tasks）做 Revision→Refinement，并自动写回对应 SKILL.md（F-5 闭环 + B 自动回写）；排在 dream-daily(16:00) 之后避开 LLM 网关高峰。部署目标/工作目录为 `/root/.hermes/scripts/self-evolving`（与 self-evolving.manifest 一致）。运行时需在 `~/.hermes/cron/jobs.json` 同步新增同名 `self-evolving-nightly` 条目，`schedule.expr="30 17 * * *"`，`script="self-evolving/self-evolving-nightly.sh"`，`workdir="/root/.hermes/scripts/self-evolving"`，`no_agent=true`。
 
@@ -56,13 +56,12 @@
 | 知识导航评估基线 | `knowledge-navigation-baseline` |
 | Skill Eval 评估 | `run-skill-eval` |
 | skillopt-nightly-run | `skillopt-nightly-run` |
-| 知识导航 Router 健康巡检 | `kn-router-health-check` |
 | 每日在线学习 | `daily-learn` |
 | clustering-analysis | `clustering-analysis` |
 | 知识树维护每日 | `knowledge-tree-consolidate` |
 | 知识树k_vector每周兜底维护 | `knowledge-tree-kvector` |
 
-未在 ACTIVE_CRON_JOBS 中的 job（system-health-check / flywheel-health-report / dream-daily / cron-periodic-detect / 2 个 agent 任务）不写入飞轮 state 文件，由各自 wrapper 直接落盘日志。
+未在 ACTIVE_CRON_JOBS 中的 job（system-health-check / flywheel-health-report / dream-daily / system-health-self-heal / 3 个 agent 任务）不写入飞轮 state 文件，由各自 wrapper 直接落盘日志。
 
 ---
 
