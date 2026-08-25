@@ -198,6 +198,33 @@ cmd_deploy() {
     echo "$tgt_abs" | sudo tee -a "$backup_dir/.deployed-files" >/dev/null
   done <<<"$files"
 
+  # Python 字节码缓存清理：本次部署的 .py 若在目标目录有对应 __pycache__/*.pyc，
+  # 必须删除，否则两次部署间隔短时 .pyc mtime ≥ .py，Python 会信任旧字节码。
+  # Python __pycache__ 命名规则：连字符→下划线、去 .py、加 cpython-XX.pyc
+  # （如 health-check-all.py → health_check_all.cpython-311.pyc）。
+  if [[ "$total" -gt 0 ]]; then
+    local pycache_dir="$PROJECT_TGT/__pycache__"
+    if [[ -d "$pycache_dir" ]]; then
+      local pycache_count=0
+      while IFS= read -r rel; do
+        [[ "$rel" == *.py ]] || continue
+        local stem; stem=$(basename "$rel"); stem="${stem%.*}"
+        stem="${stem//-/_}"
+        local stale_pyc; stale_pyc=$(sudo find "$pycache_dir" -maxdepth 1           \( -name "${stem}.cpython-*.pyc" \) ! -name '*.opt-1.pyc'           ! -name '*.opt-2.pyc' ! -name '*-unoptimized-*' ! -name '*-debug-*'           2>/dev/null)
+        if [[ -n "${stale_pyc:-}" ]]; then
+          while IFS= read -r pc; do
+            [[ -z "$pc" ]] && continue
+            sudo rm -f -- "$pc"
+            pycache_count=$((pycache_count+1))
+          done <<<"$stale_pyc"
+        fi
+      done <<<"$files"
+      [[ $pycache_count -gt 0 ]] && log "已清理 Python 字节码缓存: $pycache_count .pyc ($PROJECT_NAME)"
+      unset stem stale_pyc pc || true
+    fi
+    unset pycache_dir pycache_count || true
+  fi
+
   # 元信息
   {
     echo "project=$PROJECT_NAME"

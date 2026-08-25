@@ -68,10 +68,10 @@ def format_summary(data: dict) -> tuple[str, bool]:
             detail = f"进程 {checks.get('process_count', '?')} 个 {alive} | API {api}"
         elif svc == "bifrost":
             alive = '✅' if checks.get('process_alive') else '❌'
-            container = str(checks.get('container_status',''))
-            cok = '✅' if container == 'healthy' else '❌'
+            svc_state = str(checks.get('service_state',''))
+            sok = '✅' if svc_state == 'active' else '❌'
             models = checks.get('models_online', '?')
-            detail = f"容器 {alive} | 健康 {cok} | 模型 {models} 个在线"
+            detail = f"进程 {alive} | 服务 {sok} | 模型 {models} 个在线"
         elif svc == "hindsight":
             alive = '✅' if checks.get('process_alive') else '❌'
             health_raw = str(checks.get('health_endpoint',''))

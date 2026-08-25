@@ -85,7 +85,7 @@ Hermes cron 的 `get_due_jobs` 在 Gateway 启动后第一次 tick 自动检查�
 运行 `python3 /root/.hermes/scripts/health-check-all.py`，输出为 JSON。
 它检查以下服务（已有）：
 - hermes（进程 + Bifrost API 端口 4142 连通性）
-- bifrost（Docker 容器 + 健康状态 + 模型数）
+- bifrost（systemd 服务 + API 健康 + 模型数，2026-08-24 从 Docker 迁移到原生二进制）
 - hindsight（进程 + 健康 endpoint + PG 连接）
 - sag（进程 + 健康 endpoint）
 - postgres（Docker 容器 + PG 连接）
@@ -108,9 +108,14 @@ agent 额外执行以下检查，每项都直接决定系统能否正常使用�
 | wsl-keepalive.service 活跃 | systemctl is-active wsl-keepalive | systemctl restart wsl-keepalive |
 | postgres-mcp SSE 端口通 | ss -tlnp | grep -q :4145 | systemctl restart postgres-mcp |
 | axiom-wiki SSE 端口通 | ss -tlnp | grep -q :4143 | systemctl restart axiom-wiki-mcp-sse |
-| Bifrost LLM 可用（关键） | curl http://127.0.0.1:4142/v1/models 返回200+有模型 | docker restart bifrost |
+| Bifrost LLM 可用（关键） | curl http://127.0.0.1:4142/v1/models 返回200+有模型 | systemctl restart bifrost.service |
 | Hindsight recall 可用（关键） | curl http://127.0.0.1:9177/health 含 healthy | systemctl restart hindsight-daemon |
 | postgres Docker 容器（如 health-check-all 报 fail） | docker ps --filter name=shared-postgres --format '{{.Status}}' | docker restart shared-postgres |
+
+> **2026-08-24 Bifrost 迁移说明**：Bifrost 已从 Docker 容器迁移为 systemd 原生服务
+> （`bifrost.service`，端口仍为 4142）。修复动作一律用 `systemctl restart bifrost.service`，
+> **不再使用 `docker restart bifrost`**。health-check-all.py 的 check_bifrost() 已同步改为
+> `systemctl is-active bifrost.service` + API /health + config.json 模型数。
 
 **Rate limit**：同一服务 10 分钟内不重复重启。读 /root/.hermes/lib/cron-state/self-heal-ratelimit.json 判断。
 

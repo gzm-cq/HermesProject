@@ -186,13 +186,15 @@ def check_hermes():
 # 2. Bifrost（替代 LiteLLM，2026-08-02 迁移）
 # ============================================
 def check_bifrost():
-    # Bifrost 是 Docker 容器（network host），不是 systemd 进程
-    out, _, _ = run("docker ps --filter name=^bifrost$ --format '{{.Names}}'")
-    proc_alive = "bifrost" in out
+    # Bifrost 现在是 systemd 服务（2026-08-24 从 Docker 迁移到原生二进制）
+    out, _, _ = run("systemctl is-active bifrost.service 2>/dev/null || echo 'inactive'")
+    svc_state = out.strip()
+    proc_alive = svc_state == "active"
 
-    # Docker 健康状态（仅作参考，不以此定状态——Docker healthcheck 可能因配置错误误报）
-    out, _, _ = run("docker inspect bifrost --format '{{.State.Health.Status}}' 2>/dev/null")
-    health_status = out.strip() or "unknown"
+    # 进程级保底检查（systemd 状态可能短暂不准）
+    if not proc_alive:
+        out2, _, _ = run("pgrep -x bifrost || true")
+        proc_alive = len(out2.strip()) > 0
 
     # API 健康——真实信号
     out, _, _ = run(["curl", "-s", "http://127.0.0.1:4142/health", "--max-time", "5"], shell=False)
@@ -223,7 +225,7 @@ def check_bifrost():
 
     write_check("bifrost", st, {
         "process_alive": proc_alive,
-        "container_status": health_status,
+        "service_state": svc_state,
         "api_health": api_health,
         "models_online": models_online,
         "model_count_source": "config.json",
