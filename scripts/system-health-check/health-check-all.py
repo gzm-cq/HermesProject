@@ -81,7 +81,7 @@ def get_systemd_pids():
         return _SYSTEMD_PIDS
     out, _, _ = run(
         "for svc in hermes-gateway hindsight-daemon hermes-dashboard "
-        "axiom-wiki-mcp-sse codegraph-mcp postgres-mcp sag; do "
+        "axiom-wiki-mcp-sse codegraph-mcp postgres-mcp sag sag-mcp-bridge; do "
         "systemctl show -P MainPID \"$svc\" 2>/dev/null; done || true"
     )
     pids = set()
@@ -301,24 +301,22 @@ def check_sag():
     sag_api_http = out.strip() if out and rc == 0 else "000"
     sag_api_reachable = sag_api_http not in ("000", "")
 
-    # SAG MCP (v1.6.8+: embedded in 4173/mcp/, no separate 4175 service)
-    # Probe with token from .sag_token to verify auth works end-to-end
-    sag_mcp_auth = "skip"
-    try:
-        tok = open("/root/.hermes/.sag_token").read().strip()
-        if tok:
-            out, _, rc = run(
-                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                 "-X", "POST", "http://127.0.0.1:4173/mcp/",
-                 "-H", "Authorization: Bearer " + tok,
-                 "-H", "Content-Type: application/json",
-                 "-d", '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"hc","version":"0"}}}',
-                 "--max-time", "8"],
-                shell=False,
-            )
-            sag_mcp_auth = out.strip() if out and rc == 0 else "000"
-    except Exception:
-        sag_mcp_auth = "err"
+    # SAG MCP bridge (port 4176) — auto JWT refresh proxy to SAG :4173/mcp/
+    # Bridge reads .sag_token on every request; auto-refreshes on 401
+    out, _, _ = run("systemctl is-active sag-mcp-bridge.service 2>/dev/null || echo inactive")
+    bridge_active = out.strip() == "active"
+
+    # Probe bridge endpoint (no token needed — bridge injects it)
+    out, _, rc = run(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+         "-X", "POST", "http://127.0.0.1:4176/mcp/",
+         "-H", "Accept: text/event-stream",
+         "-H", "Content-Type: application/json",
+         "-d", '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"hc","version":"0"}}}',
+         "--max-time", "8"],
+        shell=False,
+    )
+    sag_mcp_auth = out.strip() if out and rc == 0 else "000"
 
     # DB connectivity (sag_lite database in shared-postgres:5434)
     out, _, rc = _psql("sag_lite", "SELECT 1 AS alive")
@@ -327,6 +325,7 @@ def check_sag():
     st = "ok"
     if not sag_alive: st = "fail"
     elif not sag_api_reachable: st = "warn"
+    elif not bridge_active: st = "warn"
     elif sag_mcp_auth not in ("skip", "406", "200"): st = "warn"
     elif not sag_pg_ok: st = "warn"
 
@@ -334,6 +333,7 @@ def check_sag():
         "sag_process_alive": sag_alive,
         "sag_api_reachable": sag_api_reachable,
         "sag_api_http": sag_api_http,
+        "sag_mcp_bridge_active": bridge_active,
         "sag_mcp_auth": sag_mcp_auth,
         "sag_pid": sag_pid,
         "pg_connection": sag_pg_ok,
@@ -411,6 +411,9 @@ def check_mcp():
     # sag checked via systemd (not an SSE bridge process pattern)
     out, _, _ = run("systemctl is-active sag.service 2>/dev/null || echo inactive")
     server_counts["sag"] = 1 if out.strip() == "active" else 0
+    # sag-mcp-bridge also via systemd
+    out, _, _ = run("systemctl is-active sag-mcp-bridge.service 2>/dev/null || echo inactive")
+    server_counts["sag-mcp-bridge"] = 1 if out.strip() == "active" else 0
 
     # List all MCP PIDs excluding self & parent
     out, _, _ = run("ps -eo pid=,args= 2>/dev/null || true")
