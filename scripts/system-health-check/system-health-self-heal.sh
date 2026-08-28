@@ -138,51 +138,156 @@ with open(rl_file, 'w') as f:
 " 2>/dev/null || true
 }
 
-for svc in ${FAILED_SERVICES}; do
-    unit="${SVC_MAP[$svc]:-$svc}"
-    
+# P0-2: 轮询等待 systemd 单元 active（替代固定 sleep 3，适配启动慢的服务）
+# 返回 0=active, 1=超时仍非 active
+wait_unit_active() {
+    local unit="$1"
+    local max_wait="${2:-60}"
+    local waited=0
+    while [ "${waited}" -lt "${max_wait}" ]; do
+        if systemctl is-active --quiet "${unit}" 2>/dev/null; then
+            return 0
+        fi
+        # Restart=on-failure 会在退出后自动拉起；等 systemd 调度
+        sleep 3
+        waited=$(( waited + 3 ))
+    done
+    return 1
+}
+
+# P0-1: 修复后重新验证服务健康 — 重跑 health-check-all.py 读取该服务最新状态
+# 返回 0=验证通过(ok), 1=验证失败(fail/warn/unreachable), 2=无法校验(服务不在健康检查清单)
+verify_service_health() {
+    local svc="$1"
+    local vjson
+    vjson="$(python3 "${SCRIPT_DIR}/health-check-all.py" 2>/dev/null || echo '{}')"
+    if [ -z "${vjson}" ] || [ "${vjson}" = "{}" ]; then
+        return 2
+    fi
+    local vstatus
+    vstatus="$(python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    info = data.get('${svc}', {})
+    if isinstance(info, dict):
+        print(info.get('status', 'unknown'))
+    else:
+        print('unknown')
+except:
+    print('unknown')
+" <<< "${vjson}" 2>/dev/null || echo "unknown")"
+    if [ "${vstatus}" = "ok" ]; then
+        return 0
+    elif [ "${vstatus}" = "unknown" ]; then
+        return 2
+    else
+        return 1
+    fi
+}
+
+# P1-5: restart 失败时 SIGKILL fallback（仅对已知 SIGTERM 卡顿的服务）
+# hermes-gateway 对 SIGTERM 有时不响应（graceful drain 卡住），用 SIGKILL + systemd 自动拉起
+restart_with_fallback() {
+    local unit="$1"
+    if systemctl restart "${unit}" 2>/dev/null; then
+        return 0
+    fi
+    case "${unit}" in
+        hermes-gateway)
+            cron_warn "systemctl restart ${unit} failed, trying SIGKILL fallback"
+            systemctl kill --signal=SIGKILL "${unit}" 2>/dev/null
+            sleep 5
+            # systemd Restart=on-failure 自动拉起，等待 active
+            if wait_unit_active "${unit}" 60; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# P0-1/P0-2: 完整修复流程 — restart + 轮询等待 + 重验健康
+# 返回 0=修复成功, 1=修复失败(仍 inactive), 2=进程 active 但健康重验未过/无法校验
+heal_service() {
+    local svc="$1"
+    local unit="$2"
+    local detail="${3:-}"
+
     if ! check_rate_limit "${unit}"; then
         cron_warn "Rate-limited: skipping restart of ${unit} (within 10min window)"
         push_manual "rate_limited:${unit}"
-        continue
+        return 3
     fi
-    
-    cron_ok "Attempting systemctl restart of ${unit}..."
-    
-case "${unit}" in
 
-    docker)
-        # For postgres/docker, restart the container instead of systemd unit
-        docker restart shared-postgres 2>/dev/null && {
+    cron_ok "Attempting to heal ${svc} (${unit})..."
+
+    local restart_ok=0
+    if [ "${unit}" = "docker" ]; then
+        docker restart shared-postgres 2>/dev/null && restart_ok=0 || restart_ok=1
+        if [ "${restart_ok}" = "0" ]; then
             cron_ok "Restarted docker container: shared-postgres"
-            push_action "restarted:shared-postgres"
-            update_rate_limit "${unit}"
-        } || {
+        else
             cron_err "Failed to restart shared-postgres container"
             push_manual "restart_failed:shared-postgres"
-        }
-        ;;
-    *)
-        # Standard systemctl restart
-        if systemctl restart "${unit}" 2>/dev/null; then
-            sleep 3
-            if systemctl is-active --quiet "${unit}" 2>/dev/null; then
-                cron_ok "Successfully restarted ${unit}"
-                push_action "restarted:${unit}"
-                update_rate_limit "${unit}"
-            else
-                cron_err "${unit} still inactive after restart"
-                push_manual "still_inactive:${unit}"
-                update_rate_limit "${unit}"
-            fi
+            update_rate_limit "${unit}"
+            return 1
+        fi
+    else
+        if restart_with_fallback "${unit}"; then
+            cron_ok "Restarted ${unit}"
         else
-            cron_err "systemctl restart failed for ${unit}"
+            cron_err "Restart failed for ${unit}"
             push_manual "restart_failed:${unit}"
             update_rate_limit "${unit}"
+            return 1
         fi
-        ;;
-esac
+    fi
 
+    # P0-2: 轮询等待 active（不再固定 sleep 3）
+    if ! wait_unit_active "${unit}" 60; then
+        cron_err "${unit} still inactive after restart"
+        push_manual "still_inactive:${unit}"
+        update_rate_limit "${unit}"
+        return 1
+    fi
+
+    update_rate_limit "${unit}"
+
+    # P0-1: 重验健康 — 重跑 health-check-all.py 确认服务真正恢复
+    case "${svc}" in
+        hermes|bifrost|hindsight|sag|postgres|dashboard|mcp|memory_files|orphan_scan)
+            if verify_service_health "${svc}"; then
+                cron_ok "Verified ${svc} healthy after restart"
+                push_action "healed:${svc}${detail:+(${detail})}"
+                return 0
+            else
+                cron_err "${svc} still unhealthy after restart (recheck failed)"
+                push_manual "recheck_failed:${svc}"
+                return 2
+            fi
+            ;;
+        *)
+            # 不在健康检查清单的服务（如 sag-mcp-bridge）：以进程 active 为准
+            push_action "healed:${svc}${detail:+(${detail})}"
+            return 0
+            ;;
+    esac
+}
+
+for svc in ${FAILED_SERVICES}; do
+    unit="${SVC_MAP[$svc]:-$svc}"
+    heal_service "${svc}" "${unit}"
+done
+
+# P1-4: WARN_SERVICES 策略 — 不自动重启（可能是瞬时抖动），记录到 needs_manual 提示
+for svc in ${WARN_SERVICES}; do
+    unit="${SVC_MAP[$svc]:-$svc}"
+    cron_warn "Warn service ${svc} (${unit}) not auto-restarted (conservative policy)"
+    push_manual "warn_observed:${svc}"
 done
 
 cron_section "Step D: Extra checks (smb-mounts, wsl-keepalive, mountpoints, sag-mcp-bridge, Bifrost LLM, Hindsight recall)"
@@ -229,32 +334,14 @@ else
     EXTRA_CHECKS="${EXTRA_CHECKS} mnt_d:not_present"
 fi
 
-# D5: sag-mcp-bridge.service
+# D5: sag-mcp-bridge.service — 检测到 inactive 时用 heal_service 统一闭环（轮询等待 + 重验）
 if systemctl is-active --quiet sag-mcp-bridge.service 2>/dev/null; then
     EXTRA_CHECKS="${EXTRA_CHECKS} sag-mcp-bridge:ok"
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} sag-mcp-bridge:fail"
-    cron_warn "sag-mcp-bridge.service not active, attempting restart..."
-    if check_rate_limit "sag-mcp-bridge"; then
-        if systemctl restart sag-mcp-bridge.service 2>/dev/null; then
-            sleep 3
-            if systemctl is-active --quiet sag-mcp-bridge.service 2>/dev/null; then
-                cron_ok "Restarted sag-mcp-bridge.service"
-                push_action "restarted:sag-mcp-bridge"
-                update_rate_limit "sag-mcp-bridge"
-            else
-                cron_err "sag-mcp-bridge still inactive after restart"
-                push_manual "still_inactive:sag-mcp-bridge"
-                update_rate_limit "sag-mcp-bridge"
-            fi
-        else
-            cron_err "Failed to restart sag-mcp-bridge.service"
-            push_manual "restart_failed:sag-mcp-bridge"
-        fi
-    else
-        cron_warn "Rate-limited: skipping sag-mcp-bridge restart"
-        push_manual "rate_limited:sag-mcp-bridge"
-    fi
+    cron_warn "sag-mcp-bridge.service not active, attempting heal..."
+    heal_service "sag-mcp-bridge" "sag-mcp-bridge.service"
+    # heal_service 内部已处理 rate limit / restart / 轮询等待 / 重验；此处标记状态降级
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 
@@ -280,8 +367,33 @@ BIFROST_MODELS_N="${BIFROST_INFO##*|}"
 if [ -n "${BIFROST_STATUS}" ] && [ "${BIFROST_STATUS}" = "ok" ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} bifrost_llm:ok(${BIFROST_MODELS_N}_models)"
 else
+    # P0-3: bifrost_llm 非 ok → 尝试修复（rate limit + restart + 轮询等待 + 重验）
     EXTRA_CHECKS="${EXTRA_CHECKS} bifrost_llm:${BIFROST_STATUS:-unknown}"
-    cron_warn "Bifrost LLM check not ok: status=${BIFROST_STATUS} models=${BIFROST_MODELS_N}"
+    cron_warn "Bifrost LLM check not ok: status=${BIFROST_STATUS} models=${BIFROST_MODELS_N}, attempting heal..."
+    heal_service "bifrost" "bifrost"
+    # P1-6: 修复后刷新状态
+    NEW_BIFROST_INFO="$(python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    b = data.get('bifrost', {})
+    if isinstance(b, dict):
+        st = b.get('status', 'unknown')
+        models = b.get('checks', {}).get('models_online', 0)
+        print(f'{st}|{models}')
+    else:
+        print('unknown|0')
+except:
+    print('unknown|0')
+" <<< "$(python3 "${SCRIPT_DIR}/health-check-all.py" 2>/dev/null || echo '{}')" 2>/dev/null || echo "unknown|0")"
+    NEW_BIFROST_STATUS="${NEW_BIFROST_INFO%%|*}"
+    NEW_BIFROST_MODELS_N="${NEW_BIFROST_INFO##*|}"
+    if [ "${NEW_BIFROST_STATUS}" = "ok" ]; then
+        EXTRA_CHECKS="${EXTRA_CHECKS} bifrost_llm_after_heal:ok(${NEW_BIFROST_MODELS_N}_models)"
+    else
+        EXTRA_CHECKS="${EXTRA_CHECKS} bifrost_llm_after_heal:${NEW_BIFROST_STATUS:-unknown}"
+        INFRA_STATUS="fail"
+    fi
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 
@@ -307,8 +419,34 @@ HINDSIGHT_STATUS="${HINDSIGHT_INFO%%|*}"
 if [ -n "${HINDSIGHT_STATUS}" ] && [ "${HINDSIGHT_STATUS}" = "ok" ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} hindsight_recall:ok(${HINDSIGHT_INFO#*|})"
 else
+    # P0-3: hindsight_recall 非 ok → 尝试修复（rate limit + restart + 轮询等待 + 重验）
     EXTRA_CHECKS="${EXTRA_CHECKS} hindsight_recall:${HINDSIGHT_STATUS:-unknown}"
-    cron_warn "Hindsight recall check not ok: ${HINDSIGHT_INFO}"
+    cron_warn "Hindsight recall check not ok: ${HINDSIGHT_INFO}, attempting heal..."
+    heal_service "hindsight" "hindsight-daemon"
+    # P1-6: 修复后刷新状态
+    NEW_HINDSIGHT_INFO="$(python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    h = data.get('hindsight', {})
+    if isinstance(h, dict):
+        st = h.get('status', 'unknown')
+        checks = h.get('checks', {})
+        pg = checks.get('pg_connection', False)
+        sysd = checks.get('systemd_active_state', 'unknown')
+        print(f'{st}|pg={pg}|sysd={sysd}')
+    else:
+        print('unknown|pg=False|sysd=unknown')
+except:
+    print('unknown|pg=False|sysd=unknown')
+" <<< "$(python3 "${SCRIPT_DIR}/health-check-all.py" 2>/dev/null || echo '{}')" 2>/dev/null || echo "unknown|pg=False|sysd=unknown")"
+    NEW_HINDSIGHT_STATUS="${NEW_HINDSIGHT_INFO%%|*}"
+    if [ "${NEW_HINDSIGHT_STATUS}" = "ok" ]; then
+        EXTRA_CHECKS="${EXTRA_CHECKS} hindsight_recall_after_heal:ok(${NEW_HINDSIGHT_INFO#*|})"
+    else
+        EXTRA_CHECKS="${EXTRA_CHECKS} hindsight_recall_after_heal:${NEW_HINDSIGHT_STATUS:-unknown}"
+        INFRA_STATUS="fail"
+    fi
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 
