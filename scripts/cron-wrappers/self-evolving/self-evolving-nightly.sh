@@ -7,6 +7,22 @@
 #              且避开 dream-daily 16:00 的 LLM 网关高峰）
 #
 # 作用：把 SkillOpt 的失败轨迹喂给 Revision→Refinement 算子，完成能力飞轮闭环。
+#
+# 2026-08-29 A+B 改造（驱动脚本侧）：
+#   - 队列消费：处理过的 task 从 state.json 的 failed_tasks 移除，
+#     不再每晚重跑同一批（此前连续四天跑的是完全相同的 10 个任务）。
+#   - 全局去重：同一 task_id 挂在多个 skill 下只处理一次。
+#   - 并发：默认 3 路，单项超时 900s（此前纯串行，单夜最长 5704s）。
+#   - 写回护栏：SKILL.md 超 30000 字符、或待复核 SE 块达 8 个，
+#     则该 skill 的 task 在前置阶段跳过（不调 LLM），需人工整合后自动恢复。
+#
+# 可调参数（环境变量或命令行，均可在 .env 下发）：
+#   SE_MAX_WORKERS=3            LLM 并发度
+#   SE_ITEM_TIMEOUT=900         单项 revise→refine 超时秒数
+#   SE_SIMILARITY_THRESHOLD=0.9 与上次产出相似度超过此值则跳过写回
+#   SE_SKILL_SOFT_MAX=12000     SKILL.md 软上限（超过仅告警）
+#   SE_SKILL_HARD_MAX=30000     SKILL.md 硬上限（超过拒绝写回）
+#   SE_MAX_BLOCK_COUNT=8        待复核 SE 块数量上限
 
 set -euo pipefail
 

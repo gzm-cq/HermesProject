@@ -95,20 +95,25 @@ def _get_cached_conn(db_url: str, pg_module) -> "psycopg2.extensions.connection 
 
 
 def _batch_embed(texts: list[str]) -> list[list[float]] | None:
-    """调用 SiliconFlow embedding API（bge-m3），供 cross_domain_dedup 使用。"""
+    """调用本地 embedding API（bge-m3），供 cross_domain_dedup 使用。
+
+    URL/model 从环境变量读取，与 skill_matcher 共享配置：
+      KN_SKILL_EMBEDDING_URL (默认 http://127.0.0.1:8082/v1)
+      KN_SKILL_EMBEDDING_MODEL (默认 BAAI/bge-m3)
+      KN_SKILL_EMBEDDING_API_KEY 或 SILICONFLOW_API_KEY (本地服务不校验 key)
+    """
     if _requests is None:
         logger.debug("_batch_embed: requests 模块不可用")
         return None
-    api_key = get_env("SILICONFLOW_API_KEY", "")
-    if not api_key:
-        logger.debug("_batch_embed: SILICONFLOW_API_KEY 未设置")
-        return None
+    base_url = get_env("KN_SKILL_EMBEDDING_URL", "http://127.0.0.1:8082/v1")
+    model = get_env("KN_SKILL_EMBEDDING_MODEL", "BAAI/bge-m3")
+    api_key = get_env("KN_SKILL_EMBEDDING_API_KEY", "") or get_env("SILICONFLOW_API_KEY", "")
     try:
         resp = _requests.post(
-            "https://api.siliconflow.cn/v1/embeddings",
-            json={"model": "BAAI/bge-m3", "input": texts},
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10,
+            f"{base_url.rstrip('/')}/embeddings",
+            json={"model": model, "input": texts},
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            timeout=30,
         )
         if resp.status_code != 200:
             logger.debug("_batch_embed: HTTP %s — %s", resp.status_code, resp.text[:200])

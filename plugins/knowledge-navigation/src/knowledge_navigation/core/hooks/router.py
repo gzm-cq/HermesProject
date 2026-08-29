@@ -375,23 +375,31 @@ def _do_sag_recall(query: str) -> tuple[list[dict], str | None]:
     t0 = time.time()
     query = _truncate_recall_query(query)
     try:
-        import requests as _req
+        # 公共层：hermes_common.sag_client.SagClient 负责「先取 token → 注入 Bearer
+        # → 调接口 → 401 自动换发 token 并重试一次」。本函数只保留返回契约
+        # (results, error) 与熔断器语义（4xx 不熔断 / 5xx 熔断 / 异常熔断）。
+        from hermes_common.sag_client import SagClient
+
         source_ids = [s.strip() for s in CONFIG.sag_source_ids.split(",") if s.strip()]
+        client = SagClient(
+            base_url=CONFIG.sag_api_url,
+            token=CONFIG.sag_auth_token,
+            source_ids=source_ids,
+            timeout=CONFIG.sag_search_timeout,
+        )
         payload = {
             "query": query,
             "top_k": CONFIG.sag_search_top_k,
             "strategy": "vector",
             "source_ids": source_ids,
+            # KN 只消费 sections，从不读 summary；SAG 侧生成摘要需整轮 LLM
+            # （实测占总耗时 ~90%）。关闭后 /search 从 ~3.9s 降到 ~0.2s，
+            # 同时消除 LLM 长尾（SAG_LLM_TIMEOUT_MS=130s）撑爆 30s 预算导致熔断的风险。
+            # 未打该补丁的 SAG 会忽略此字段（Pydantic 默认 extra=ignore），行为不变。
+            "include_summary": False,
         }
-        headers = {}
-        if CONFIG.sag_auth_token:
-            headers["Authorization"] = f"Bearer {CONFIG.sag_auth_token}"
-        resp = _req.post(
-            f"{CONFIG.sag_api_url}{CONFIG.sag_api_search_path}",
-            json=payload,
-            headers=headers or None,
-            timeout=CONFIG.sag_search_timeout,
-        )
+        # 公共方法：先取 token → 注入 Bearer → 调接口；遇 401 自动换发并重试一次
+        resp = client.request("POST", CONFIG.sag_api_search_path, json=payload)
         if resp.status_code != 200:
             # 4xx = 客户端错误（如 query 超长被拒 422），不触发服务熔断；
             # 5xx = 服务端故障，计入熔断

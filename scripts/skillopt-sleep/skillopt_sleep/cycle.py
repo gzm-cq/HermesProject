@@ -198,6 +198,8 @@ def run_sleep_cycle(
     report.candidate_score = result.candidate_score
     report.accepted = result.accepted
     report.gate_action = result.gate_action
+    # A方案: 基线有效性（getattr 兼容未升级的 ConsolidationResult）
+    report.baseline_valid = getattr(result, "baseline_valid", True)
     report.edits = result.applied_edits
     report.rejected_edits = result.rejected_edits
     report.tokens_used = backend.tokens_used()

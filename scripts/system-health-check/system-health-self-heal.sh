@@ -14,7 +14,12 @@ SCRIPT_DIR="/root/.hermes/scripts"
 STATE_DIR="/root/.hermes/lib/cron-state"
 LOG_DIR="/root/.hermes/logs/cron"
 RL_FILE="${STATE_DIR}/self-heal-ratelimit.json"
+FAIL_STATE_FILE="${STATE_DIR}/self-heal-failcount.json"
+NOTIFY_STATE_FILE="${STATE_DIR}/self-heal-notify.json"
 REPORT_FILE="${LOG_DIR}/system-health-self-heal-latest.json"
+
+# P1-8: 连续失败升级阈值 — 同一服务连续失败达到该次数（每小时 1 次 cron）即停止自动修复转人工
+MAX_CONSECUTIVE_FAILS=3
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
 
@@ -84,9 +89,61 @@ if [ -n "${WARN_SERVICES}" ]; then
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 
+# P1-8: 连败计数 — 记录每个服务的连续失败次数（用于升级到人工处理）
+# 时间衰减：距上次失败超过 24h 视为归零，避免历史失败长期累积导致误 escalate
+get_fail_count() {
+    local svc="$1"
+    python3 -c "
+import json, os
+path = '${FAIL_STATE_FILE}'
+try:
+    data = json.load(open(path))
+except:
+    data = {}
+rec = data.get('${svc}', {})
+count = rec.get('count', 0)
+ts = rec.get('ts', 0)
+if ${NOW_EPOCH} - ts > 86400:
+    count = 0
+print(count)
+" 2>/dev/null || echo 0
+}
+
+set_fail_count() {
+    local svc="$1"; local n="$2"
+    python3 -c "
+import json, os
+path = '${FAIL_STATE_FILE}'
+try:
+    data = json.load(open(path))
+except:
+    data = {}
+data['${svc}'] = {'count': ${n}, 'ts': ${NOW_EPOCH}}
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+" 2>/dev/null || true
+}
+
+# P0-2: 轮询等待 shared-postgres 容器内 PG 就绪（替代等 docker.service — docker 服务常驻但容器可能未起）
+# 返回 0=PG ready, 1=超时仍不可用
+wait_postgres_ready() {
+    local max_wait="${1:-90}"
+    local waited=0
+    while [ "${waited}" -lt "${max_wait}" ]; do
+        if docker exec shared-postgres pg_isready -U postgres -h 127.0.0.1 -q 2>/dev/null; then
+            return 0
+        fi
+        sleep 3
+        waited=$(( waited + 3 ))
+    done
+    return 1
+}
+
 cron_section "Step C: Attempt self-healing (systemctl restart with rate limit)"
 
 # Map health-check service names to systemd unit names
+# postgres 跑在 docker 容器 shared-postgres；unit 用 "docker" 标记，修复走 docker start + pg_isready 轮询（P0-2）
 declare -A SVC_MAP=(
     ["hermes"]="hermes-gateway"
     ["bifrost"]="bifrost"
@@ -160,7 +217,8 @@ wait_unit_active() {
 verify_service_health() {
     local svc="$1"
     local vjson
-    vjson="$(python3 "${SCRIPT_DIR}/health-check-all.py" 2>/dev/null || echo '{}')"
+    # P1-7: 单服务重查（--service 只跑该 check），避免每次重跑全量 8 项巡检
+    vjson="$(python3 "${SCRIPT_DIR}/health-check-all.py" --service "${svc}" 2>/dev/null || echo '{}')"
     if [ -z "${vjson}" ] || [ "${vjson}" = "{}" ]; then
         return 2
     fi
@@ -217,6 +275,15 @@ heal_service() {
     local unit="$2"
     local detail="${3:-}"
 
+    # P1-8: 连败升级 — 连续失败达阈值则停止自动修复，转人工
+    local fails
+    fails="$(get_fail_count "${svc}")"
+    if [ "${fails}" -ge "${MAX_CONSECUTIVE_FAILS}" ]; then
+        cron_warn "${svc}: ${fails} consecutive failures, escalating to manual (no auto-restart)"
+        push_manual "escalated:${svc}"
+        return 4
+    fi
+
     if ! check_rate_limit "${unit}"; then
         cron_warn "Rate-limited: skipping restart of ${unit} (within 10min window)"
         push_manual "rate_limited:${unit}"
@@ -227,6 +294,17 @@ heal_service() {
 
     local restart_ok=0
     if [ "${unit}" = "docker" ]; then
+        # P0-2: postgres 在 docker 容器；先确保 docker 服务本身 active，再重启容器
+        if ! systemctl is-active --quiet docker 2>/dev/null; then
+            cron_warn "docker.service not active, starting it..."
+            if ! systemctl start docker 2>/dev/null; then
+                cron_err "Failed to start docker.service (needed for postgres)"
+                push_manual "restart_failed:docker"
+                update_rate_limit "${unit}"
+                set_fail_count "${svc}" $(( fails + 1 ))
+                return 1
+            fi
+        fi
         docker restart shared-postgres 2>/dev/null && restart_ok=0 || restart_ok=1
         if [ "${restart_ok}" = "0" ]; then
             cron_ok "Restarted docker container: shared-postgres"
@@ -234,6 +312,7 @@ heal_service() {
             cron_err "Failed to restart shared-postgres container"
             push_manual "restart_failed:shared-postgres"
             update_rate_limit "${unit}"
+            set_fail_count "${svc}" $(( fails + 1 ))
             return 1
         fi
     else
@@ -243,35 +322,48 @@ heal_service() {
             cron_err "Restart failed for ${unit}"
             push_manual "restart_failed:${unit}"
             update_rate_limit "${unit}"
+            set_fail_count "${svc}" $(( fails + 1 ))
             return 1
         fi
     fi
 
-    # P0-2: 轮询等待 active（不再固定 sleep 3）
-    if ! wait_unit_active "${unit}" 60; then
+    # P0-2: 轮询等待就绪 — postgres 等容器内 pg_isready，其余等 systemd 单元 active
+    if [ "${unit}" = "docker" ]; then
+        if ! wait_postgres_ready 90; then
+            cron_err "PostgreSQL not ready after container restart"
+            push_manual "still_inactive:postgres"
+            update_rate_limit "${unit}"
+            set_fail_count "${svc}" $(( fails + 1 ))
+            return 1
+        fi
+    elif ! wait_unit_active "${unit}" 60; then
         cron_err "${unit} still inactive after restart"
         push_manual "still_inactive:${unit}"
         update_rate_limit "${unit}"
+        set_fail_count "${svc}" $(( fails + 1 ))
         return 1
     fi
 
     update_rate_limit "${unit}"
 
-    # P0-1: 重验健康 — 重跑 health-check-all.py 确认服务真正恢复
+    # P0-1: 重验健康 — 单服务重查 health-check-all.py 确认服务真正恢复
     case "${svc}" in
         hermes|bifrost|hindsight|sag|postgres|dashboard|mcp|memory_files|orphan_scan)
             if verify_service_health "${svc}"; then
                 cron_ok "Verified ${svc} healthy after restart"
+                set_fail_count "${svc}" 0
                 push_action "healed:${svc}${detail:+(${detail})}"
                 return 0
             else
                 cron_err "${svc} still unhealthy after restart (recheck failed)"
                 push_manual "recheck_failed:${svc}"
+                set_fail_count "${svc}" $(( fails + 1 ))
                 return 2
             fi
             ;;
         *)
             # 不在健康检查清单的服务（如 sag-mcp-bridge）：以进程 active 为准
+            set_fail_count "${svc}" 0
             push_action "healed:${svc}${detail:+(${detail})}"
             return 0
             ;;
@@ -290,17 +382,52 @@ for svc in ${WARN_SERVICES}; do
     push_manual "warn_observed:${svc}"
 done
 
+# P2: 通知冷却 — 同类告警（fail/warn/healed）在冷却期内不重复轰炸飞书
+NOTIFY_COOLDOWN_SECS=21600  # 6 小时
+
+check_notify_cooldown() {
+    local level="$1"
+    python3 -c "
+import json, os
+path = '${NOTIFY_STATE_FILE}'
+try:
+    data = json.load(open(path))
+except:
+    data = {}
+last = data.get('${level}', 0)
+print(0 if ${NOW_EPOCH} - last >= ${NOTIFY_COOLDOWN_SECS} else 1)
+" 2>/dev/null || echo 0
+}
+
+update_notify_ts() {
+    local level="$1"
+    python3 -c "
+import json, os
+path = '${NOTIFY_STATE_FILE}'
+try:
+    data = json.load(open(path))
+except:
+    data = {}
+data['${level}'] = ${NOW_EPOCH}
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+" 2>/dev/null || true
+}
+
 cron_section "Step D: Extra checks (smb-mounts, wsl-keepalive, mountpoints, sag-mcp-bridge, Bifrost LLM, Hindsight recall)"
 
 EXTRA_CHECKS=""
 
-# D1: smb-mounts.service
+# D1: smb-mounts.service — 检测到 inactive 时用 heal_service 自动修复
 if systemctl is-active --quiet smb-mounts.service 2>/dev/null; then
     EXTRA_CHECKS="${EXTRA_CHECKS} smb-mounts:ok"
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} smb-mounts:fail"
-    cron_warn "smb-mounts.service not active"
-    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+    cron_warn "smb-mounts.service not active, attempting heal..."
+    if ! heal_service "smb-mounts" "smb-mounts.service"; then
+        [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+    fi
 fi
 
 # D2: wsl-keepalive.service
@@ -312,23 +439,27 @@ else
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 
-# D3: /mnt/c mountpoint check
+# D3: /mnt/c mountpoint check — 检测到未挂载时重启 smb-mounts.service 修复
 if mountpoint -q /mnt/c 2>/dev/null; then
     EXTRA_CHECKS="${EXTRA_CHECKS} mnt_c:ok"
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} mnt_c:fail"
-    cron_err "/mnt/c is not a valid mountpoint"
-    INFRA_STATUS="fail"
+    cron_err "/mnt/c is not a valid mountpoint, attempting heal..."
+    if ! heal_service "smb-mounts" "smb-mounts.service"; then
+        INFRA_STATUS="fail"
+    fi
 fi
 
-# D4: /mnt/d mountpoint check (may not exist on all systems)
+# D4: /mnt/d mountpoint check — 检测到未挂载时重启 smb-mounts.service 修复
 if [ -d /mnt/d ]; then
     if mountpoint -q /mnt/d 2>/dev/null; then
         EXTRA_CHECKS="${EXTRA_CHECKS} mnt_d:ok"
     else
         EXTRA_CHECKS="${EXTRA_CHECKS} mnt_d:not_mounted"
-        cron_warn "/mnt/d exists but is not a valid mountpoint (may be normal)"
-        [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+        cron_warn "/mnt/d not a valid mountpoint, attempting heal..."
+        if ! heal_service "smb-mounts" "smb-mounts.service"; then
+            [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+        fi
     fi
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} mnt_d:not_present"
@@ -340,9 +471,10 @@ if systemctl is-active --quiet sag-mcp-bridge.service 2>/dev/null; then
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} sag-mcp-bridge:fail"
     cron_warn "sag-mcp-bridge.service not active, attempting heal..."
-    heal_service "sag-mcp-bridge" "sag-mcp-bridge.service"
-    # heal_service 内部已处理 rate limit / restart / 轮询等待 / 重验；此处标记状态降级
-    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+    # P1-6: 修复成功则不再降级 INFRA_STATUS；失败（含限流/升级）才降级为 warn
+    if ! heal_service "sag-mcp-bridge" "sag-mcp-bridge.service"; then
+        [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+    fi
 fi
 
 # D6: Bifrost LLM check — 复用 health-check-all.py 权威结果（config.json 统计模型数，16 个）
@@ -394,7 +526,7 @@ except:
         EXTRA_CHECKS="${EXTRA_CHECKS} bifrost_llm_after_heal:${NEW_BIFROST_STATUS:-unknown}"
         INFRA_STATUS="fail"
     fi
-    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+    # P1-6: 修复成功（NEW=ok）保持原状态，不再无条件降级 warn
 fi
 
 # D7: Hindsight recall endpoint check — 复用 health-check-all.py 权威结果（process + /health + PG）
@@ -447,13 +579,24 @@ except:
         EXTRA_CHECKS="${EXTRA_CHECKS} hindsight_recall_after_heal:${NEW_HINDSIGHT_STATUS:-unknown}"
         INFRA_STATUS="fail"
     fi
-    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+    # P1-6: 修复成功（NEW=ok）保持原状态，不再无条件降级 warn
 fi
 
 cron_section "Step E: Check enabled cron jobs for last_status=error"
 
 CRON_ERRORS=""
-SELF_JOB_ID="9536bea31957"
+# P0-1: 动态解析本 job 的 id（按 name 匹配），避免硬编码过期导致"跳过自己"失效；取不到时兜底当前 id
+SELF_JOB_ID="$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('/root/.hermes/cron/jobs.json'))
+except:
+    print('746e0cb6039b'); sys.exit(0)
+for job in data.get('jobs', []):
+    if job.get('name') == 'system-health-self-heal':
+        print(job.get('id', '746e0cb6039b')); sys.exit(0)
+print('746e0cb6039b')
+" 2>/dev/null || echo "746e0cb6039b")"
 JOBS_FILE="/root/.hermes/cron/jobs.json"
 
 if [ -f "${JOBS_FILE}" ]; then
@@ -553,14 +696,24 @@ NOTIFY_TITLE=""
 NOTIFY_BODY=""
 
 if [ "${INFRA_STATUS}" = "fail" ]; then
-    SHOULD_NOTIFY=true
-    NOTIFY_TITLE="[FAIL] System Health Self-Heal Report"
+    if [ "$(check_notify_cooldown fail)" = "0" ]; then
+        SHOULD_NOTIFY=true
+        NOTIFY_TITLE="[FAIL] System Health Self-Heal Report"
+        update_notify_ts fail
+    fi
 elif [ "${INFRA_STATUS}" = "warn" ]; then
-    SHOULD_NOTIFY=true
-    NOTIFY_TITLE="[WARN] System Health Self-Heal Report"
+    if [ "$(check_notify_cooldown warn)" = "0" ]; then
+        SHOULD_NOTIFY=true
+        NOTIFY_TITLE="[WARN] System Health Self-Heal Report"
+        update_notify_ts warn
+    fi
 elif [ -n "${ACTIONS_TAKEN}" ]; then
-    SHOULD_NOTIFY=true
-    NOTIFY_TITLE="[HEALED] System Health Self-Heal Report"
+    # 成功修复值得通知，但同样走冷却避免每轮轰炸
+    if [ "$(check_notify_cooldown healed)" = "0" ]; then
+        SHOULD_NOTIFY=true
+        NOTIFY_TITLE="[HEALED] System Health Self-Heal Report"
+        update_notify_ts healed
+    fi
 fi
 
 if [ "${SHOULD_NOTIFY}" = true ]; then

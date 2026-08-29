@@ -167,7 +167,7 @@ class KnowledgeNavigationConfig:
     feishu_home_channel: str = field(default="")
 
     # LLM Router
-    router_model: str = field(default="sensenova-6.8-flash-lite")
+    router_model: str = field(default="agnes-2.5-flash")
     router_api_url: str = field(default="http://127.0.0.1:4142/v1")
     router_api_key: str = field(default="")
     router_timeout: int = field(default=15)  # 5s 太紧，15s 减少超时率
@@ -199,7 +199,10 @@ class KnowledgeNavigationConfig:
     sag_auth_token: str = field(default="")  # Bearer token for SAG v1.5.3+
     sag_api_search_path: str = field(default="/api/v1/search")  # SAG v1.5.3 API path
     sag_search_top_k: int = field(default=3)
-    sag_search_timeout: int = field(default=30)  # SAG v1.5.3 单 worker 响应慢(~21s)，10s 不够
+    # 宽裕上限（非"必须 30s"）。旧注"单 worker 响应慢 ~21s"已过时：sag.service 现为
+    # --workers 2，瓶颈一直是 LLM 答案合成而非 worker 数。KN 侧已传 include_summary=False
+    # 跳过该合成，/search 实测由 ~3.9s 降至 ~0.15s，故 30s 留有极大余量。
+    sag_search_timeout: int = field(default=30)
     sag_source_ids: str = field(default="89a9a04d295c4206b35706a09ffb43e8")
     sag_max_inject: int = field(default=3)  # merge 时最多注入条数（SAG topK 只控 vector 路，multi-hop 不受控）
     sag_pointer_threshold: int = field(default=300)  # content 超过此字符数时改注入指针，LLM 按需查全文

@@ -134,6 +134,9 @@ class SleepReport:
     baseline_score: float = 0.0
     candidate_score: float = 0.0
     accepted: bool = False
+    # A方案 (2026-08-29): 基线有效性。False = 基线为 0（val 上 baseline 全错 /
+    # val 为空 / replay 全失败），candidate 的正分不构成相对改进，禁止 accept。
+    baseline_valid: bool = True
     gate_action: str = ""
     edits: List[EditRecord] = field(default_factory=list)
     rejected_edits: List[EditRecord] = field(default_factory=list)

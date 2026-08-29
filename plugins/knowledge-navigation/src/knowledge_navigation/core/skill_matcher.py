@@ -9,6 +9,7 @@ enable_keyword_prescreen=True 时三级筛选全部生效；关闭则退化为�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -228,10 +229,26 @@ _skill_index: dict[str, dict[str, Any]] | None = None
 """
 
 # ── Embedding 缓存（LRU 淘汰，防止内存泄漏） ──
-_EMBEDDING_CACHE_MAX = 512  # skill embedding 缓存上限
+# 上限必须显著大于 skill 总数：一旦被击穿就会 LRU 抖动，导致每次请求重编码全量 skill
+# （实测在 2GB 显存的 MX550 上约 145-215s）。当前 skill 库约 426 个，故留足余量。
+_EMBEDDING_CACHE_MAX = 2000  # skill embedding 缓存上限（原 512，2026-08-29 上调）
 _QUERY_EMBEDDING_CACHE_MAX = 256  # query embedding 缓存上限
 _embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()  # skill_path → embedding vector
+# skill_path → 生成该 embedding 时所用文本的 hash；skill 文本变更即判定缓存失效
+_embedding_text_hash: dict[str, str] = {}
 _query_embedding_cache: OrderedDict[str, tuple[float, np.ndarray]] = OrderedDict()  # query → (timestamp, embedding)
+
+# ── Embedding 磁盘缓存（跨进程复用，消除冷启动重算） ──
+# 背景：embedding 服务跑在 MX550(2GB) 上且已被 bge-m3 吃满（util 峰值 100%、显存 1613/2048MB），
+# 服务端无加速空间；而 skill 文本几乎不变，每次进程重启都重算全量 skill 属纯浪费
+# （实测冷启动 145-215s，远超 skill_timeout_seconds=60，导致重启后前若干次请求 skill 路超时）。
+# 故把 embedding 落到磁盘，按「模型 + 服务地址 + 文本 hash」三重校验失效。
+_EMBEDDING_DISK_CACHE_PATH = Path(
+    get_env("KN_SKILL_EMBEDDING_CACHE_PATH")
+    or str(Path.home() / ".hermes" / "cache" / "skill_embeddings.npz")
+)
+_embedding_disk_cache_loaded = False
+_embedding_disk_lock = threading.Lock()  # 磁盘缓存读写保护（锁序：disk → cache）
 
 # ── Embedding 熔断机制（线程安全） ──
 _embedding_fail_count: int = 0  # 连续失败次数
@@ -339,22 +356,124 @@ def _get_query_embedding(query: str, model: str, url: str, api_key: str) -> np.n
         return None
 
 
+def _hash_skill_text(text: str) -> str:
+    """skill 文本指纹，用于判定内存/磁盘缓存是否仍然有效。"""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _embedding_disk_fingerprint(model: str, url: str) -> str:
+    """模型 + 服务地址指纹。
+
+    换模型或换服务地址都意味着向量空间不同，此时磁盘缓存必须整体失效，
+    否则会拿旧向量与新 query 向量算余弦，得到无意义的相似度。
+    """
+    return f"{model}@{url.rstrip('/')}"
+
+
+def _load_embedding_disk_cache(model: str, url: str) -> None:
+    """把磁盘缓存灌入内存 LRU（每个进程只试一次，失败静默降级为空缓存）。"""
+    global _embedding_cache, _embedding_disk_cache_loaded
+
+    with _embedding_disk_lock:
+        if _embedding_disk_cache_loaded:
+            return
+        # 无论成败都只尝试一次，避免每次请求都产生磁盘 IO
+        _embedding_disk_cache_loaded = True
+
+        if not _EMBEDDING_DISK_CACHE_PATH.exists():
+            return
+        try:
+            with np.load(_EMBEDDING_DISK_CACHE_PATH, allow_pickle=True) as data:
+                fingerprint = str(data["fingerprint"])
+                paths = [str(p) for p in data["paths"]]
+                hashes = [str(h) for h in data["hashes"]]
+                embs = data["embs"]
+
+            if fingerprint != _embedding_disk_fingerprint(model, url):
+                logger.info("Skill embedding 磁盘缓存已失效（模型/地址变更），本次忽略")
+                return
+            if not (len(paths) == len(hashes) == len(embs)):
+                logger.warning("Skill embedding 磁盘缓存结构异常（长度不一致），本次忽略")
+                return
+
+            with _embedding_cache_lock:
+                loaded = 0
+                for p, h, emb in zip(paths, hashes, embs):
+                    if p in _embedding_cache:
+                        continue
+                    _embedding_cache[p] = np.asarray(emb, dtype=np.float32)
+                    _embedding_text_hash[p] = h
+                    loaded += 1
+                while len(_embedding_cache) > _EMBEDDING_CACHE_MAX:
+                    evicted, _ = _embedding_cache.popitem(last=False)
+                    _embedding_text_hash.pop(evicted, None)
+            logger.info(
+                "Skill embedding 磁盘缓存载入 %d 条 (共 %d) 来自 %s",
+                loaded, len(paths), _EMBEDDING_DISK_CACHE_PATH,
+            )
+        except Exception as e:
+            logger.debug("Skill embedding 磁盘缓存载入失败（忽略）: %s", e)
+
+
+def _save_embedding_disk_cache(model: str, url: str) -> None:
+    """把内存缓存快照写回磁盘（先写临时文件再原子替换，避免写坏缓存）。"""
+    with _embedding_disk_lock:
+        try:
+            with _embedding_cache_lock:
+                paths = list(_embedding_cache.keys())
+                embs = [_embedding_cache[p] for p in paths]
+                hashes = [_embedding_text_hash.get(p, "") for p in paths]
+            if not paths:
+                return
+            # 维度不一致无法 stacked，放弃本次落盘（不阻断主流程）
+            dim = embs[0].shape
+            if any(np.shape(e) != dim for e in embs):
+                logger.warning("Skill embedding 维度不一致，跳过本次落盘")
+                return
+
+            _EMBEDDING_DISK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            # 注意：np.savez* 会对不以 ".npz" 结尾的路径自动追加 ".npz"，
+            # 故临时文件名必须以 .npz 收尾，否则 os.replace 会因找不到源文件而失败。
+            tmp_path = _EMBEDDING_DISK_CACHE_PATH.with_name(_EMBEDDING_DISK_CACHE_PATH.name + ".tmp.npz")
+            np.savez_compressed(
+                tmp_path,
+                fingerprint=np.array(_embedding_disk_fingerprint(model, url)),
+                paths=np.array(paths, dtype=object),
+                hashes=np.array(hashes, dtype=object),
+                embs=np.asarray(embs, dtype=np.float32),
+            )
+            os.replace(tmp_path, _EMBEDDING_DISK_CACHE_PATH)
+            logger.info("Skill embedding 磁盘缓存写入 %d 条 → %s", len(paths), _EMBEDDING_DISK_CACHE_PATH)
+        except Exception as e:
+            # 落盘失败的代价是每次重启重算全量 skill（~200s），必须可见，不能只落 debug
+            logger.warning("Skill embedding 磁盘缓存写入失败（本次不阻断）: %s", e)
+
+
 def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, api_key: str) -> dict[str, np.ndarray]:
-    """获取 skill 列表的 embedding，只对缺失的进行 API 调用，分批避免 token 超限。"""
+    """获取 skill 列表的 embedding，只对缺失的进行 API 调用，分批避免 token 超限。
+
+    跨进程复用：首次调用时从磁盘缓存恢复，使重启后无需重算全量 skill
+    （冷启动 145-215s → 秒级）。缓存按「模型 + 服务地址 + skill 文本 hash」失效。
+    """
     global _embedding_cache
 
+    _load_embedding_disk_cache(model, url)
+
     result = {}
-    texts_to_fetch: list[tuple[str, str]] = []
+    # (path, text, text_hash)：带 hash 以便写回时记录"该向量由哪份文本生成"
+    texts_to_fetch: list[tuple[str, str, str]] = []
 
     with _embedding_cache_lock:
         for skill in skills:
             path = skill.get("path", "")
-            if path in _embedding_cache:
+            text = f"{skill.get('name', '')} {skill.get('description', '')}"
+            digest = _hash_skill_text(text)
+            # 命中条件：有向量 且 文本未变更（防止 skill 改名/改描述后仍用旧向量）
+            if path in _embedding_cache and _embedding_text_hash.get(path) == digest:
                 result[path] = _embedding_cache[path]
                 _embedding_cache.move_to_end(path)
             else:
-                text = f"{skill.get('name', '')} {skill.get('description', '')}"
-                texts_to_fetch.append((path, text))
+                texts_to_fetch.append((path, text, digest))
 
     if not texts_to_fetch:
         return result
@@ -362,10 +481,12 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
     import httpx
 
     batch_size = _get_embedding_batch_size()
+    fetched_any = False
     for i in range(0, len(texts_to_fetch), batch_size):
         batch = texts_to_fetch[i:i + batch_size]
-        paths = [p for p, _ in batch]
-        texts = [t for _, t in batch]
+        paths = [p for p, _, _ in batch]
+        texts = [t for _, t, _ in batch]
+        digests = [d for _, _, d in batch]
 
         try:
             resp = httpx.post(
@@ -384,11 +505,18 @@ def _get_skill_embeddings(skills: list[dict[str, Any]], model: str, url: str, ap
                         path = paths[idx]
                         emb = np.array(item["embedding"], dtype=np.float32)
                         _embedding_cache[path] = emb
+                        _embedding_text_hash[path] = digests[idx]
                         result[path] = emb
                 while len(_embedding_cache) > _EMBEDDING_CACHE_MAX:
-                    _embedding_cache.popitem(last=False)
+                    evicted, _ = _embedding_cache.popitem(last=False)
+                    _embedding_text_hash.pop(evicted, None)
+            fetched_any = True
         except Exception as e:
             logger.debug("Embedding 批量获取失败 (batch %d-%d): %s", i, i + len(batch), e)
+
+    # 仅在实际编码出新向量时才落盘：稳态全量命中时不产生任何磁盘写入
+    if fetched_any:
+        _save_embedding_disk_cache(model, url)
 
     return result
 

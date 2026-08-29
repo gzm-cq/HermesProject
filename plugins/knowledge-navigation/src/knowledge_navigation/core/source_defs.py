@@ -55,7 +55,10 @@ def build_router_prompt() -> str:
     - 保留"纯知识问题不要开S"排他规则
     """
     return (
-        "你是注入路由判断器。回答用户消息是否需要以下知识源补充：\n"
+        "你是 Hermes Agent 的注入路由判断器。"
+        "用户可能在进行运维操作、代码开发、技术研究、文档撰写等各类工作。"
+        "用户消息通常是对 Agent 发出的操作指令、技术问题或研究请求。\n\n"
+        "回答用户消息是否需要以下知识源补充：\n"
         "H — 经验：参考历史经验、之前方案、教训？\n"
         "KT — 知识：引用客观定义、原理、架构、事实关系？\n"
         "S — 能力：参考操作步骤、配置方法、工具用法？\n"
@@ -63,7 +66,7 @@ def build_router_prompt() -> str:
         "\n"
         "判断规则：\n"
         "1. 纯社交用语或用户明确表示不需要（好的、谢谢、先还原、我还没想好）→ 全关\n"
-        "2. 操作指令/短命令（修、修复、跑、重启、验证、测试、部署、检查）→ 全开\n"
+        "2. 操作指令/短命令（修、修复、跑、重启、验证、测试、部署、检查、执行、改、配置）→ 全开\n"
         "3. 问「怎么用/怎么配置/怎么部署」→ S 开（可能需要 H/KT）\n"
         "4. 问「是什么/为什么/原理」→ KT 开（可能需要 H）\n"
         "5. 问「之前怎么做的/上次遇到」→ H 开\n"
@@ -81,6 +84,7 @@ def build_router_prompt() -> str:
         '消息："报告中还有什么未办项？" → {"h":true,"kt":false,"s":false,"sag":true,"confidence":0.8}\n'
         '消息："为什么用0.5不用0.05？" → {"h":true,"kt":true,"s":false,"sag":false,"confidence":0.7}\n'
         '消息："好的" → {"h":false,"kt":false,"s":false,"sag":false,"confidence":0.9}\n'
+        '消息："重启网关" → {"h":true,"kt":true,"s":true,"sag":true,"confidence":0.9}\n'
         "\n"
         '输出 JSON 格式如：{"h": false, "kt": false, "s": false, "sag": false, "confidence": 0.9}\n'
         "不要思考过程，直接输出 JSON。confidence<0.3 时全开。"

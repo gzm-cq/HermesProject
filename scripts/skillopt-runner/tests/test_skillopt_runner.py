@@ -334,6 +334,23 @@ class TestSplitConfig:
 
 class TestRankSkills:
 
+    @pytest.fixture(autouse=True)
+    def _stub_skill_index(self, monkeypatch):
+        """把「僵尸过滤」这一维度从排名用例中隔离出去。
+
+        rank_skills 会查真实 SKILL.md 索引，剔除找不到文件的僵尸技能（生产上
+        这是必须的：这类技能无法被优化，负反馈永不清零，会永久霸占名额）。
+        但本用例用的是假 skill 名，在真实索引里必然查不到 → 会被全部过滤掉，
+        使排名断言失去意义。这里注入一张只包含用例 skill 名的假索引；
+        僵尸过滤本身有专门的用例覆盖。
+        """
+        names = ["skill-a", "skill-b", "local-skill", "agent-skill", "skill-x"]
+        names += [f"skill-{i}" for i in range(12)]
+        monkeypatch.setattr(
+            sr, "build_skill_path_index",
+            lambda: {n: pathlib.Path("/tmp/fake/SKILL.md") for n in names},
+        )
+
     def test_empty_inputs(self):
         top, state, _ss = rank_skills([], [], {}, top_k=5)
         assert top == []
@@ -341,26 +358,52 @@ class TestRankSkills:
         assert state.get("skill_neg_feedback", {}) == {}
         assert state.get("skill_total_mentions", {}) == {}
 
+    def test_no_session_means_not_actionable(self):
+        """0 session 的 skill 不入选 —— 没有 session 就 mine 不出 task，必然空转。
+
+        这是「每晚选 3 个、全都跳过」的直接原因：负反馈来自历史累积而非当前
+        痛点，选中后 _optimize_one_skill 直接 skip，白烧 12~1148 秒。
+        """
+        eligible = [("skill-a", {"use_count": 10})]
+        top, state, _ss = rank_skills(eligible, [], {}, top_k=2)
+        assert top == []
+        # 空转会被记入 streak，连续多轮后进冷宫
+        assert state["zero_session_streak"]["skill-a"] == 1
+
     def test_basic_ranking_by_activity(self):
-        """No digests → ranking purely by activity."""
+        """同等负反馈下，按活跃度排序（活跃度已不含 patch_count）。"""
+        from conftest import MockSessionDigest
         eligible = [
             ("skill-a", {"use_count": 10, "view_count": 0, "patch_count": 0}),
             ("skill-b", {"use_count": 2, "view_count": 0, "patch_count": 0}),
         ]
-        digests = []
+        digests = [MockSessionDigest(
+            session_id="s1",
+            user_prompts=["skill-a is broken", "skill-b is broken"],
+            tools_used=[],
+            ended_at="2026-06-17T00:00:00",
+        )]
         top, state, _ss = rank_skills(eligible, digests, {}, top_k=2)
         assert top[0][0] == "skill-a"  # higher activity
         assert top[0][2] > top[1][2]   # higher score
 
     def test_agent_bonus(self):
         """Agent-created skills get 2x activity multiplier."""
+        from conftest import MockSessionDigest
         eligible = [
             ("local-skill", {"use_count": 10, "view_count": 0, "patch_count": 0}),
             ("agent-skill", {"use_count": 5, "view_count": 0, "patch_count": 0, "created_by": "agent"}),
         ]
+        # 两者负反馈相同（各 1 次），活跃度项决定排序：
         # local: 10 * 0.5 * 1.0 = 5.0
         # agent: 5 * 0.5 * 2.0 = 5.0  (tie)
-        top, _, _ss = rank_skills(eligible, [], {}, top_k=2)
+        digests = [MockSessionDigest(
+            session_id="s1",
+            user_prompts=["local-skill is broken", "agent-skill is broken"],
+            tools_used=[],
+            ended_at="2026-06-17T00:00:00",
+        )]
+        top, _, _ss = rank_skills(eligible, digests, {}, top_k=2)
         assert abs(top[0][2] - top[1][2]) < 0.1
 
     def test_negative_feedback_boost(self):
@@ -407,8 +450,16 @@ class TestRankSkills:
 
     def test_top_k_limit(self):
         """Only top_k skills are returned."""
+        from conftest import MockSessionDigest
         eligible = [(f"skill-{i}", {"use_count": i}) for i in range(10)]
-        top, _, _ss = rank_skills(eligible, [], {}, top_k=3)
+        # 让 10 个 skill 都产生负反馈 session，否则会被 session gate 全部剔除
+        digests = [MockSessionDigest(
+            session_id="s1",
+            user_prompts=[" ".join(f"skill-{i} is broken" for i in range(10))],
+            tools_used=[],
+            ended_at="2026-06-17T00:00:00",
+        )]
+        top, _, _ss = rank_skills(eligible, digests, {}, top_k=3)
         assert len(top) == 3
 
 
@@ -751,7 +802,13 @@ class TestPatchSkillHermes:
         assert result is False
 
     def test_successful_patch(self, tmp_hermes):
-        """Successful patch: backup created, file written correctly, neg feedback cleared."""
+        """Successful patch: backup created, file written correctly.
+
+        ⚠️ F-7 之后 patch_skill_hermes **不再**清零负反馈 —— 它只负责写文件 +
+        记账本，清零统一由主线程 _phase_optimize 合并 delta 时完成（避免子线程
+        并发 mutate 共享 state）。这里断言 state 保持原值，防止有人又把清零
+        逻辑塞回写文件路径里。
+        """
         skill_dir = tmp_hermes / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
@@ -763,7 +820,7 @@ class TestPatchSkillHermes:
         }
         result = sr.patch_skill_hermes("test-skill", "# Updated", state)
         assert result is True
-        assert state["skill_neg_feedback"]["test-skill"] == 0
+        assert state["skill_neg_feedback"]["test-skill"] == 5  # F-7: 主线程清零
         assert skill_md.read_text(encoding="utf-8") == self.SKILL_WITH_FM_UPDATED
         backups = list((tmp_hermes / "skillopt" / "backups").glob("test-skill_*.md.bak"))
         assert len(backups) == 1

@@ -43,6 +43,10 @@ class ConsolidationResult:
     rejected_edits: List[EditRecord]
     holdout_baseline: float
     holdout_candidate: float
+    # A方案 (2026-08-29): 基线是否有效。无效基线（baseline=0，即 val 切片上
+    # baseline 全错 / val 为空 / replay 全失败）下任何 candidate 正分都不是
+    # 「相对改进」，禁止 accept。默认 True 以保持向后兼容。
+    baseline_valid: bool = True
 
 
 def _split(tasks: List[TaskRecord]) -> Tuple[List[TaskRecord], List[TaskRecord]]:
@@ -207,12 +211,28 @@ def consolidate(
         accepted = bool(all_applied)
         action = "greedy_applied" if all_applied else "greedy_noop"
         base_gate_score = 0.0
+        # greedy 模式是调用方显式选择的「不做 val 打分」路径（设计如此），
+        # 不套用基线有效性校验，保留原行为。
+        baseline_valid = True
     else:
         # scored on the VAL slice (the gate reference) — reuse gate's last score to avoid redundant replay
         final_hard, final_soft = _gate_last_hard, _gate_last_soft
         final_score = select_gate_score(final_hard, final_soft, gate_metric, gate_mixed_weight)
         base_gate_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
-        if _HAVE_REPO_GATE and evaluate_gate is not None:
+
+        # ── A方案⑤: 基线有效性校验（2026-08-29）──────────────────────────
+        # baseline=0 意味着 val 切片上 baseline 全部答错（或 val 为空 / replay
+        # 全失败）。此时任何 candidate 正分都不是「相对改进」，而是从全错到
+        # 部分对的统计噪声。生产日志中大量 `baseline=0.000 candidate=0.000
+        # gate=reject`，偶发 `0.000 → 1.000` 被判 accept —— 等于没有对照组，
+        # 未经验证的改写被直接推上生产。故一律 reject。
+        baseline_valid = bool(val_tasks) and base_gate_score > 0.0
+        if not baseline_valid:
+            action = "reject_invalid_baseline"
+            accepted = False
+            all_rejected.extend(all_applied)
+            all_applied = []
+        elif _HAVE_REPO_GATE and evaluate_gate is not None:
             gate = evaluate_gate(
                 candidate_skill=cand_skill,
                 cand_hard=final_hard,
@@ -243,4 +263,5 @@ def consolidate(
         rejected_edits=all_rejected,
         holdout_baseline=base_hard,
         holdout_candidate=final_hard,
+        baseline_valid=baseline_valid,
     )

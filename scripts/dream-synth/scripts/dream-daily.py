@@ -362,26 +362,38 @@ def save_last_run_ts(ts: float):
 # SAG sourceId（与 knowledge-navigation 插件共用同一个源）
 SAG_SOURCE_ID = "89a9a04d295c4206b35706a09ffb43e8"
 
-# SAG Bearer token（从文件读取，避免硬编码）
+# SAG Bearer token 文件路径（公共客户端会先读进程内缓存 → 环境变量 → 该文件）
 _SAG_TOKEN_PATH = "/root/.hermes/.sag_token"
 
-def _get_sag_token() -> str:
-    """读取 SAG Bearer token"""
-    try:
-        with open(_SAG_TOKEN_PATH) as f:
-            return f.read().strip()
-    except IOError:
-        return ""
+# 共享 SAG 客户端（公共层 hermes_common.sag_client）：统一「先取 token → 注入 Bearer
+# → 调接口 → 401 自动换发重试」。复用全局 requests.Session 做连接池。
+_sag_client = None
+_sag_client_lock = threading.Lock()
 
-def _sag_auth_headers() -> dict:
-    """SAG 认证 headers"""
-    token = _get_sag_token()
-    return {"Authorization": f"Bearer {token}"} if token else {}
+
+def _get_sag_client():
+    """获取共享 SAG 客户端（懒初始化，线程安全）。"""
+    global _sag_client
+    if _sag_client is None:
+        with _sag_client_lock:
+            if _sag_client is None:
+                from hermes_common.sag_client import SagClient
+
+                base_url = CFG.get("sag", {}).get("base_url") or None
+                _sag_client = SagClient(
+                    base_url=base_url,
+                    source_ids=[SAG_SOURCE_ID],
+                    token_path=_SAG_TOKEN_PATH,
+                    session=_get_sag_session(),
+                )
+    return _sag_client
 
 
 def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False,
                max_retries: int = 3, base_delay: float = 5.0) -> str | None:
     """写入 SAG，返回 documentId（成功）或 None（失败）。
+
+    委托公共 SagClient.ingest：5xx/超时指数退避重试；遇 401 自动换发 token 重试一次。
 
     Args:
         max_retries: 5xx 错误和超时的重试次数
@@ -390,54 +402,13 @@ def sag_ingest(title: str, content: str, metadata: dict, dry_run: bool = False,
     if dry_run:
         return "dry-run-doc-id"
 
-    base_url = CFG["sag"]["base_url"]
-    payload = {
-        "title": title,
-        "text": content,
-        "metadata": metadata,
-        "chunking": {
-            "maxTokens": 8192,
-        },
-    }
-
-    session = _get_sag_session()
-    last_error = ""
-
-    for attempt in range(max_retries):
-        t0 = time.time()
-        try:
-            resp = session.post(f"{base_url}/api/v1/sources/{SAG_SOURCE_ID}/documents/ingest",
-                                json=payload, headers=_sag_auth_headers(), timeout=180)
-            elapsed_ms = (time.time() - t0) * 1000
-            if resp.status_code in (200, 201):
-                doc_id = resp.json().get("documentId") or resp.json().get("id", "")
-                return doc_id if doc_id else None
-            if 500 <= resp.status_code < 600:
-                last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                    print(f"  SAG ingest 5xx ({resp.status_code}), {elapsed_ms:.0f}ms, 重试 {attempt+1}/{max_retries} ({delay:.1f}s)...", file=sys.stderr)
-                    time.sleep(delay)
-                    continue
-                print(f"  SAG ingest 最终失败: {last_error}", file=sys.stderr)
-                return None
-            last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
-            print(f"  SAG ingest failed: {last_error}", file=sys.stderr)
-            return None
-        except requests.exceptions.Timeout as e:
-            last_error = f"Timeout: {e}"
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                print(f"  SAG ingest 超时, 重试 {attempt+1}/{max_retries} ({delay:.1f}s)...", file=sys.stderr)
-                time.sleep(delay)
-                continue
-            print(f"  SAG ingest 最终超时", file=sys.stderr)
-            return None
-        except Exception as e:
-            last_error = f"{type(e).__name__}: {e}"
-            print(f"  SAG ingest error: {last_error}", file=sys.stderr)
-            return None
-    return None
+    doc_id = _get_sag_client().ingest(
+        title, content, metadata=metadata, source_id=SAG_SOURCE_ID,
+        timeout=180.0, max_retries=max_retries, base_delay=base_delay,
+    )
+    if doc_id is None:
+        print("  SAG ingest failed", file=sys.stderr)
+    return doc_id
 
 
 def sag_health_check(timeout: float = 5.0) -> bool:
@@ -445,43 +416,30 @@ def sag_health_check(timeout: float = 5.0) -> bool:
     base_url = CFG.get("sag", {}).get("base_url", "")
     if not base_url:
         return False
-    session = _get_sag_session()
-    try:
-        resp = session.get(f"{base_url}/api/v1/system/health", timeout=timeout)
-        return resp.status_code == 200
-    except Exception:
-        pass
-    try:
-        resp = session.get(f"{base_url}/", timeout=timeout)
-        return resp.status_code < 500
-    except Exception:
-        return False
+    return _get_sag_client().health_check(timeout=timeout)
 
 
 def sag_search(query: str, top_k: int = 50, source_filter: str | None = None) -> list[dict]:
     """从 SAG 搜索文档（REST API /search），返回 sections 列表。
 
+    委托公共 SagClient.search，字段对齐服务端契约（top_k / strategy / source_ids）；
+    此前使用的 topK / searchMode / sourceIds 并非服务端字段、会被静默忽略，收敛后修正。
+    source_filter 按 metadata.source 做结果后过滤。
+
     Args:
         source_filter: 按 metadata.source 过滤，None 返回全部
     """
-    base_url = CFG["sag"]["base_url"]
-    payload = {
-        "query": query,
-        "topK": top_k,
-        "searchMode": "fast",
-        "sourceIds": [SAG_SOURCE_ID],
-    }
     try:
-        session = _get_sag_session()
-        resp = session.post(f"{base_url}/api/v1/search", json=payload, headers=_sag_auth_headers(), timeout=15)
-        if resp.status_code == 200:
-            sections = resp.json().get("sections", [])
-            if source_filter:
-                return [s for s in sections if s.get("metadata", {}).get("source") == source_filter]
-            return sections
+        sections = _get_sag_client().search(
+            query, top_k=top_k, source_ids=[SAG_SOURCE_ID],
+            strategy="vector", timeout=15,
+        )
     except Exception as e:
         print(f"  SAG search error: {e}", file=sys.stderr)
-    return []
+        return []
+    if source_filter:
+        return [s for s in sections if s.get("metadata", {}).get("source") == source_filter]
+    return sections
 
 
 def _load_cached_reflections() -> list[dict]:

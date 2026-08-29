@@ -117,6 +117,8 @@ def load_config(config_path: str) -> dict[str, Any]:
         "llm_model": "KT_LLM_MODEL",
         "llm_api_key": "LITELLM_MASTER_KEY",
         "embed_api_key": "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+        "embed_base_url": "KT_EMBED_BASE_URL",
+        "embed_model": "KT_EMBED_MODEL",
         # Phase A 新增
         "max_candidates_per_article": "KT_MAX_CANDIDATES_PER_ARTICLE",
         "split_max_rounds": "KT_SPLIT_MAX_ROUNDS",

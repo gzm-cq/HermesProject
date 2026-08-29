@@ -572,6 +572,77 @@ def get_skill_path(skill_name: str) -> pathlib.Path | None:
     return None
 
 
+def build_skill_path_index() -> dict[str, pathlib.Path]:
+    """一次性扫描 skills 目录，构建 name -> SKILL.md 映射。
+
+    ``get_skill_path()`` 每次调用都要 rglob 整棵树；在 rank_skills 里对上百个
+    候选逐个调用是 O(候选数 × 目录树)，会显著拖慢每晚运行。这里扫一遍建索引，
+    key 同时支持简单名与二级名，与原 rglob 语义一致。
+    """
+    index: dict[str, pathlib.Path] = {}
+    base = HERMES_HOME / 'skills'
+    if not base.exists():
+        return index
+    for md in base.rglob('SKILL.md'):
+        try:
+            parts = md.parent.relative_to(base).parts
+        except ValueError:
+            continue
+        index['/'.join(parts)] = md
+        if parts:
+            index.setdefault(parts[-1], md)
+        if len(parts) >= 2:
+            index.setdefault('/'.join(parts[-2:]), md)
+    return index
+
+
+def merge_skill_variants(
+    eligible: list[tuple[str, dict]],
+    path_index: dict[str, pathlib.Path],
+) -> tuple[list[tuple[str, dict]], dict[str, list[str]]]:
+    """把指向同一份 SKILL.md 的变体名合并为一个条目。
+
+    同一个 skill 常被 usage 记成两个名字（如 ``system-health-check`` 与
+    ``devops/system-health-check``），两者 ``get_skill_path()`` 解析到同一文件。
+    实测 9 组这样的变体，全部指向同一份 SKILL.md。后果有三：
+
+      1) 排行榜出现同一 skill 的两个条目，白白占用每晚仅有的 3 个名额；
+      2) 负反馈信号被拆成两半，各自排名都比合并后低；
+      3) 最严重 —— 优化成功后只清零其中一个 key，另一个变体的累积值原封
+         不动，该 skill 永远清不干净、永远排在前面。
+
+    合并规则：同一 SKILL.md 路径归为一组，代表名取最短（裸名更短更可读），
+    计数取组内**最大值**而非求和 —— 同一条负反馈消息会被两个变体各记一次
+    （实测 ``native-mcp`` 与 ``mcp/native-mcp`` 计数完全同步），求和会翻倍。
+
+    Returns:
+        (merged_eligible, variant_map) — variant_map 为「代表名 -> 全部变体名」
+    """
+    groups: dict[str, list[tuple[str, dict]]] = {}
+    for name, rec in eligible:
+        p = path_index.get(name)
+        # 无 SKILL.md 的（僵尸）不参与合并，保持独立条目，交由后续僵尸过滤剔除
+        key = str(p) if p is not None else f'__no_path__::{name}'
+        groups.setdefault(key, []).append((name, rec))
+
+    merged: list[tuple[str, dict]] = []
+    variant_map: dict[str, list[str]] = {}
+    for _key, rows in groups.items():
+        if len(rows) == 1:
+            name, rec = rows[0]
+            merged.append((name, rec))
+            variant_map[name] = [name]
+            continue
+        rep = min((n for n, _ in rows), key=lambda n: (len(n), n))
+        # usage 记录取使用量最大的（变体间高度重叠，求和会重复计算）
+        rep_rec = max(
+            rows, key=lambda nr: (nr[1].get('use_count') or 0)
+                                 + (nr[1].get('view_count') or 0))[1]
+        merged.append((rep, rep_rec))
+        variant_map[rep] = sorted(n for n, _ in rows)
+    return merged, variant_map
+
+
 RUNNER_CONFIG_KEYS = {
     'top_k',
     'denylist_patterns',
@@ -618,6 +689,135 @@ def message_mentions_skill(message: str, skill_name: str) -> bool:
     return all(re.search(r'(?<![a-z0-9])' + re.escape(t) + r'(?![a-z0-9])', lower) for t in tokens)
 
 
+# ── A方案 (2026-08-29): 排行榜去僵化三件套 ──────────────────────────────
+#   症状：每晚 TOP3 永远是同几个 skill；7 天只成功改写 2 次。
+#   根因：a) 累积负反馈只增不减 → 退化为「历史词频排序」
+#        b) activity 含 patch_count → 越优化越容易再被选中（自增强死循环）
+#        c) 无 SKILL.md / 0 session 的僵尸永久占据名额（负反馈只在成功时清零）
+#   对策：a) 负反馈改 EMA 半衰期衰减  b) activity 去 patch_count
+#        c) 僵尸过滤 + 连续空转进冷宫
+
+NEG_HALFLIFE_DAYS_DEFAULT = 14.0     # 负反馈半衰期（天）
+ZERO_SESSION_STREAK_LIMIT = 2        # 连续 N 轮 0 session → 进冷宫
+ZERO_SESSION_COOLDOWN_DAYS = 7       # 冷宫时长（天）
+
+
+def _skillopt_param(name: str) -> str:
+    """读取 SkillOpt 参数：进程环境变量优先，其次 HERMES_HOME/.env。
+
+    与 F-2 的控制环保持一致 —— auto-tuner 是往 .env 写 SKILLOPT_* 的，
+    只认 os.environ 会导致 .env 下发的调优值在 cron 环境下失效。
+    """
+    raw = os.environ.get(name, '')
+    if raw:
+        return raw
+    try:
+        return _load_skillopt_env_overrides().get(name, '')
+    except Exception:
+        return ''
+
+
+def _neg_halflife_days() -> float:
+    """负反馈半衰期（天），可用 SKILLOPT_NEG_HALFLIFE_DAYS 覆盖。"""
+    raw = _skillopt_param('SKILLOPT_NEG_HALFLIFE_DAYS')
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return NEG_HALFLIFE_DAYS_DEFAULT
+
+
+def _apply_neg_decay(state: dict, new_neg: dict[str, int]) -> dict[str, float]:
+    """负反馈指数衰减（EMA），返回衰减后的分值表。
+
+    ``ema_new = ema_old * 0.5 ** (days_since_last_decay / halflife) + new_neg``
+
+    解决的问题：``skill_neg_feedback`` 是只增不减的累积计数（清理前 197 个技能
+    累积 37424 次，从 6 月攒到现在从未清理）。排序实际已退化为「历史词频排序」，
+    当前痛点永远挤不进 TOP。EMA 半衰期 14 天后，两周前的痛点权重减半，
+    新痛点有明确上升通道。
+
+    本轮未出现的技能也要衰减（否则残留僵尸值永远不降）。
+    """
+    now = datetime.now(timezone.utc)
+    last_ts = _parse_iso_to_timestamp(state.get('last_decay_iso'))
+    days = 0.0 if last_ts is None else max(0.0, (now.timestamp() - last_ts) / 86400.0)
+    halflife = _neg_halflife_days()
+    decay = 0.5 ** (days / halflife)
+
+    raw_ema = state.get('skill_neg_ema')
+    if not raw_ema:
+        # 冷启动：state 里还没有 EMA 字段时，用（清理后的）累积值做初值，
+        # 保留历史相对强度；此后每轮按半衰期衰减。
+        raw_ema = state.get('skill_neg_feedback') or {}
+    ema: dict[str, float] = {k: float(v) for k, v in raw_ema.items()}
+    for name in list(ema):
+        if name not in new_neg:
+            ema[name] = ema[name] * decay
+    for name, inc in new_neg.items():
+        ema[name] = ema.get(name, 0.0) * decay + float(inc)
+
+    # 收敛清理：低于阈值的条目移除，避免表无限膨胀
+    ema = {k: v for k, v in ema.items() if v >= 0.5}
+
+    state['skill_neg_ema'] = ema
+    state['last_decay_iso'] = now.isoformat()
+    print(f'负反馈衰减: 半衰期 {halflife:g}天 | 距上次 {days:.2f}天 | '
+          f'decay={decay:.4f} | 有效技能 {len(ema)} 个')
+    return ema
+
+
+def _apply_session_gate(
+    scored: list[tuple[str, dict, float, float, int]],
+    skill_sessions: dict[str, list],
+    state: dict,
+) -> tuple[list, list[tuple[str, str]]]:
+    """剔除空转候选：0 session 的 skill 无法 mine 出 task，必然跳过。
+
+    连续多轮入选但 0 session（说明负反馈来自历史累积而非当前痛点）
+    → 进冷宫 ZERO_SESSION_COOLDOWN_DAYS 天，不再占用每晚有限的名额。
+
+    Returns:
+        (actionable, skipped) — skipped 为 (name, reason) 列表，仅用于日志。
+    """
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cooldown: dict = state.setdefault('skill_cooldown_until', {})
+    streak: dict = state.setdefault('zero_session_streak', {})
+
+    # 清理过期冷宫
+    for name in list(cooldown):
+        until = _parse_iso_to_timestamp(cooldown.get(name))
+        if until is None or until <= now_ts:
+            cooldown.pop(name, None)
+            streak.pop(name, None)
+
+    actionable: list = []
+    skipped: list[tuple[str, str]] = []
+    for row in scored:
+        name = row[0]
+        if name in cooldown:
+            skipped.append((name, f'冷宫至 {cooldown[name][:10]}'))
+            continue
+        if not skill_sessions.get(name):
+            n = int(streak.get(name, 0)) + 1
+            streak[name] = n
+            if n >= ZERO_SESSION_STREAK_LIMIT:
+                until_iso = _timestamp_to_iso(now_ts + ZERO_SESSION_COOLDOWN_DAYS * 86400)
+                cooldown[name] = until_iso
+                skipped.append((name, f'连续 {n} 轮 0 session → 冷宫 '
+                                      f'{ZERO_SESSION_COOLDOWN_DAYS} 天'))
+            else:
+                skipped.append((name, f'0 session（连续 {n}/'
+                                      f'{ZERO_SESSION_STREAK_LIMIT} 轮）'))
+            continue
+        streak.pop(name, None)
+        actionable.append(row)
+    return actionable, skipped
+
+
 def rank_skills(
     eligible: list[tuple[str, dict]],
     digests: list[SessionDigest],
@@ -640,6 +840,44 @@ def rank_skills(
     skill_neg = defaultdict(int, state.get('skill_neg_feedback', {}))
     skill_total = defaultdict(int, state.get('skill_total_mentions', {}))
 
+    # ── 变体合并：指向同一份 SKILL.md 的多个名字合成一个条目 ──
+    # 必须在僵尸过滤之前做（合并依赖 path_index，且合并后的代表名一定有 path）。
+    path_index = build_skill_path_index()
+    eligible, variant_map = merge_skill_variants(eligible, path_index)
+    state['skill_name_variants'] = variant_map
+
+    dup_groups = {r: v for r, v in variant_map.items() if len(v) > 1}
+    if dup_groups:
+        print(f'变体合并: {len(dup_groups)} 组重复记账 → '
+              f'释放 {sum(len(v) - 1 for v in dup_groups.values())} 个名额')
+        for rep, variants in sorted(
+            dup_groups.items(),
+            key=lambda kv: -max(skill_neg.get(v, 0) for v in kv[1]),
+        )[:5]:
+            vals = ' / '.join(f'{v}({skill_neg.get(v, 0)})' for v in variants)
+            print(f'    - {vals} → {rep}')
+        # 计数：取组内最大值（同一条负反馈被两个变体各记一次，求和会翻倍）
+        for rep, variants in dup_groups.items():
+            skill_neg[rep] = max(skill_neg.get(v, 0) for v in variants)
+            skill_total[rep] = max(skill_total.get(v, 0) for v in variants)
+            for v in variants:
+                if v != rep:
+                    skill_neg.pop(v, None)
+                    skill_total.pop(v, None)
+
+    # ── A方案③a: 剔除无 SKILL.md 的僵尸 ──
+    # 无 SKILL.md → get_skill_path 返回 None → 优化必然跳过 → 负反馈永不清零
+    # → 永久霸占 TOP 名额（清理前 `review` 累积 2273 次，7 天雷打不动第 1，
+    #   每晚 3 个名额里有 1~2 个被这类僵尸吃掉）。
+    no_skill_md = [name for name, _ in eligible if name not in path_index]
+    if no_skill_md:
+        killed = set(no_skill_md)
+        eligible = [(n, r) for n, r in eligible if n not in killed]
+        print(f'僵尸过滤: 剔除 {len(no_skill_md)} 个无 SKILL.md 的技能'
+              f'（累积负反馈合计 {sum(skill_neg.get(n, 0) for n in no_skill_md)} 次）')
+        for n in sorted(no_skill_md, key=lambda x: -skill_neg.get(x, 0))[:5]:
+            print(f'    - {n} ({skill_neg.get(n, 0)} 次)')
+
     eligible_names = [name for name, _ in eligible]
     # ★ 收集每个 skill 关联的负反馈 session（用于后续 per-skill mine）
     skill_sessions: dict[str, list[SessionDigest]] = {n: [] for n in eligible_names}
@@ -648,6 +886,7 @@ def rank_skills(
     #   逐条检测用户消息中的负反馈，仅当某条消息实际包含负反馈时，
     #   该消息中提及的技能才计为负反馈。避免尾端正反馈稀释整 session 标签。
     new_neg = 0
+    new_neg_map: dict[str, int] = defaultdict(int)   # A方案: 供 EMA 衰减使用
     for d in digests:
         # 预处理：用户消息逐条检测负反馈
         prompt_feedback = []
@@ -671,6 +910,7 @@ def rank_skills(
                     if has_neg:
                         skill_neg[name] += 1
                         new_neg += 1
+                        new_neg_map[name] += 1
                         # ── 只收集有负反馈的 session ──
                         if (not skill_sessions[name] or
                             skill_sessions[name][-1].session_id != d.session_id):
@@ -683,6 +923,7 @@ def rank_skills(
                 if session_has_neg:
                     skill_neg[name] += tool_count
                     new_neg += tool_count
+                    new_neg_map[name] += tool_count
                     # ── 工具路径也要收集 session（与文本路径对称）──
                     if (not skill_sessions[name] or
                         skill_sessions[name][-1].session_id != d.session_id):
@@ -694,34 +935,48 @@ def rank_skills(
     state['skill_neg_feedback'] = dict(skill_neg)
     state['skill_total_mentions'] = dict(skill_total)
 
-    # 评分（使用累积数据）
+    # ── A方案①: 负反馈 EMA 衰减（替代只增不减的累积计数）──
+    ema = _apply_neg_decay(state, new_neg_map)
+
+    # 评分（衰减后负反馈 + 真实活跃度）
     scored = []
     for name, rec in eligible:
-        neg = skill_neg.get(name, 0)
+        neg = ema.get(name, 0.0)
+        # A方案②: activity 去掉 patch_count —— 否则每优化一次活跃度永久 +1，
+        # 形成「越优化 → 越容易再被选中 → 再优化」的自增强死循环。
         activity = (
             (rec.get('use_count') or 0) +
-            (rec.get('view_count') or 0) +
-            (rec.get('patch_count') or 0)
+            (rec.get('view_count') or 0)
         )
         bonus = 2.0 if rec.get('created_by') == 'agent' else 1.0
         score = neg * 3.0 + activity * 0.5 * bonus
-        scored.append((name, rec, round(score, 1), neg, activity))
+        scored.append((name, rec, round(score, 2), round(neg, 1), activity))
 
     scored.sort(key=lambda x: x[2], reverse=True)
-    top = scored[:top_k]
+
+    # ── A方案③b: 剔除 0 session 候选（无法 mine 出 task，必然空转跳过）──
+    actionable, skipped = _apply_session_gate(scored, skill_sessions, state)
+    top = actionable[:top_k]
 
     # 打印精排结果
-    print(f'\n{"="*65}')
-    print(f'  精排 TOP {top_k} ｜ 评分 = 负反馈×3 + 活跃度×0.5 + agent 加成')
-    print(f'  (累积负反馈数据, 共 {sum(skill_neg.values())} 次负反馈)')
-    print(f'{"="*65}')
-    print(f'{"#":>3s} {"Skill":42s} {"Score":>8s} {"负反馈":>6s} {"活跃度":>6s}')
-    print('-'*65)
+    print(f'\n{"="*72}')
+    print(f'  精排 TOP {top_k} ｜ 评分 = 衰减后负反馈×3 + 活跃度×0.5 + agent 加成')
+    print(f'  (衰减后合计 {sum(ema.values()):.1f} ｜ 累积原始 '
+          f'{sum(skill_neg.values())} 次 ｜ 候选 {len(scored)} 个)')
+    print(f'{"="*72}')
+    print(f'{"#":>3s} {"Skill":42s} {"Score":>8s} {"负反馈":>8s} {"活跃度":>6s}')
+    print('-'*72)
     for i, (name, _, sc, neg, act) in enumerate(top, 1):
         marker = ' ★' if neg > 0 else '  '
-        print(f'{i:>3d}{marker} {name:42s} {sc:>8.1f} {neg:>6d} {act:>6d}')
-    print(f'{"-"*65}')
-    print(f'  (淘汰 {len(scored) - top_k} 个技能, 共 {len(scored)} 个候选)')
+        print(f'{i:>3d}{marker} {name:42s} {sc:>8.1f} {neg:>8.1f} {act:>6d}')
+    print('-'*72)
+    if skipped:
+        print(f'  空转剔除 {len(skipped)} 个（0 session / 冷宫）:')
+        for name, reason in skipped[:10]:
+            print(f'    - {name:44s} {reason}')
+        if len(skipped) > 10:
+            print(f'    ... 其余 {len(skipped) - 10} 个')
+    print(f'  可优化 {len(actionable)} 个 ｜ 淘汰 {len(scored) - len(top)} 个')
     print()
 
     return top, state, skill_sessions
@@ -809,10 +1064,86 @@ def validate_patched_skill(content: str) -> tuple[bool, str]:
     return True, 'OK'
 
 
-def patch_skill_hermes(skill_name: str, new_content: str, neg_before: Any | None = None) -> bool:
+# ── A方案④ (2026-08-29): patch 由「纯 append」改为「有上限的修订」──────────
+# 症状：历史 26 个 skill 累计 +66714 字符（system-operations-rules 4.9万→7.1万、
+#       hindsight-memory 8.4万→10.2万），而全库 SKILL.md 中位数仅 8614 字符。
+#       LLM 产出的 6 个 edit 全部是 `add`（纯追加）—— 规则只堆不整合 →
+#       互相矛盾 + 注意力稀释 → 越优化越难用（「质量下滑」的直接机制）。
+# 对策：按 edit.op 分派 add / replace / delete；add 受长度上限约束，
+#       超限拒绝并转人工，不再无条件追加。
+
+SKILL_SOFT_MAX_CHARS = 12000   # 软上限：超过仅告警（仍允许 add）
+SKILL_HARD_MAX_CHARS = 30000   # 硬上限：超过直接拒绝并转人工
+
+
+def _skill_char_limits() -> tuple[int, int]:
+    """SKILL.md 长度软/硬上限，可用 SKILLOPT_SKILL_SOFT_MAX / _HARD_MAX 覆盖。"""
+    def _int(name: str, default: int) -> int:
+        raw = _skillopt_param(name)
+        if raw:
+            try:
+                v = int(raw)
+                if v > 0:
+                    return v
+            except ValueError:
+                pass
+        return default
+    return (_int('SKILLOPT_SKILL_SOFT_MAX', SKILL_SOFT_MAX_CHARS),
+            _int('SKILLOPT_SKILL_HARD_MAX', SKILL_HARD_MAX_CHARS))
+
+
+def _apply_edit_op(body: str, op: str, content: str, anchor: str) -> tuple[str, bool, str]:
+    """按 edit.op 对 SKILL.md 正文施加修订，返回 (new_body, ok, reason)。
+
+    与旧逻辑（无条件拼到正文末尾）的关键差异：
+      - ``replace`` / ``delete`` 会真正改动原文 → 文档可被「整合」，不再只增不减
+      - ``add`` 受软/硬长度上限约束 → 膨胀到硬上限后停止自动改写，转人工
+
+    anchor 缺失或无法唯一定位时**不降级为 append**——旧逻辑正是靠无脑 append
+    把文档堆到 10 万字符的。
+    """
+    soft_max, hard_max = _skill_char_limits()
+    op = (op or 'add').strip().lower()
+
+    if op in ('replace', 'delete'):
+        if not anchor or not anchor.strip():
+            return body, False, (
+                f'{op} 操作缺少 anchor，拒绝降级为 append（避免文档继续膨胀）')
+        n = body.count(anchor)
+        if n == 0:
+            return body, False, f'{op} 的 anchor 在正文中未找到'
+        if n > 1:
+            return body, False, f'{op} 的 anchor 在正文中出现 {n} 次，无法唯一定位'
+        if op == 'delete':
+            return body.replace(anchor, '', 1), True, 'OK'
+        return body.replace(anchor, (content or '').strip(), 1), True, 'OK'
+
+    # ---- add（默认，同时也是未知 op 的安全回落）----
+    new_content = (content or '').strip()
+    if not new_content:
+        return body, False, 'add 操作内容为空'
+    body_clean = body.lstrip('\n').rstrip('\n')
+    projected = len(body_clean) + len(new_content)
+    if projected > hard_max:
+        return body, False, (
+            f'add 后长度 {projected} > 硬上限 {hard_max}，拒绝自动追加'
+            f'（转人工：请先用 replace/delete 精简，再继续优化）')
+    if projected > soft_max:
+        print(f'BLOAT WARNING: add 后长度 {projected} > 软上限 {soft_max}，'
+              f'建议改用 replace 整合而非继续追加')
+    return '\n\n' + body_clean + '\n\n' + new_content + '\n', True, 'OK'
+
+
+def patch_skill_hermes(skill_name: str, new_content: str, neg_before: Any | None = None,
+                       *, op: str = 'add', anchor: str = '') -> bool:
     """Patch skill via Hermes skill_manage tool — merge edit into existing SKILL.md.
-    安全特性：保留 frontmatter + append 到正文 + atomic write + security scan + 回滚。
-    部署成功 → 负反馈清零由主线程统一完成（F-7），此处仅记录账本事件。"""
+    安全特性：保留 frontmatter + 按 op 修订正文 + atomic write + security scan + 回滚。
+    部署成功 → 负反馈清零由主线程统一完成（F-7），此处仅记录账本事件。
+
+    Args:
+        op: edit 类型 — ``add`` / ``replace`` / ``delete``（见 ``_apply_edit_op``）。
+        anchor: ``replace`` / ``delete`` 定位原文所需的锚点文本。
+    """
     # 0. 安全扫描（先于文件操作，避免先备份后拒绝）
     is_safe, reason = _security_scan(new_content)
     if not is_safe:
@@ -853,9 +1184,12 @@ def patch_skill_hermes(skill_name: str, new_content: str, neg_before: Any | None
     frontmatter = existing[:fm_end]
     body = existing[fm_end:]
 
-    # 将 edit 内容追加到正文（作为新规则段落）
-    body_clean = body.lstrip('\n').rstrip('\n')
-    merged = frontmatter + '\n\n' + body_clean + '\n\n' + new_content.strip() + '\n'
+    # ── A方案④: 按 op 施加修订（replace/delete 真正改动原文，add 受长度上限）──
+    new_body, ok, reason = _apply_edit_op(body, op, new_content, anchor)
+    if not ok:
+        print(f'PATCH: 拒绝改写 {skill_name} (op={op}): {reason}')
+        return False
+    merged = frontmatter + new_body
 
     # ── P2-3 写回前自动验证：结构完整性检查，失败不写、不产生审计产物 ──
     is_valid, v_reason = validate_patched_skill(merged)
@@ -1002,6 +1336,28 @@ def _phase_rank(
     return top_scored, skill_sessions
 
 
+def _is_batch_acceptable(report: Any) -> tuple[bool, str]:
+    """判定一个 batch 的结果是否允许被应用到生产（A方案⑤）。
+
+    除 gate 的 accepted 之外，额外要求**基线有效**：
+
+    ``baseline=0`` 意味着 val 切片上 baseline 全部答错（或 val 为空 / replay
+    全失败）。此时 candidate 的任何正分都不是「相对改进」，而是从全错到部分对
+    的统计噪声。生产日志里出现过的 ``baseline=0.000 candidate=1.000
+    gate=accept`` 就属于此类 —— 没有对照组，改写被直接推上生产。
+
+    Returns:
+        (acceptable, reason) — reason 仅在不可接受时有意义，用于日志。
+    """
+    if not getattr(report, 'accepted', False):
+        return False, 'gate 未通过'
+    if not getattr(report, 'baseline_valid', True):
+        return False, (f'基线无效（baseline='
+                       f'{getattr(report, "baseline_score", 0.0):.3f}），'
+                       f'无对照组，拒绝应用')
+    return True, 'OK'
+
+
 def _optimize_one_skill(
     skill_name: str,
     skill_last_run_ts: str | None,
@@ -1071,13 +1427,22 @@ def _optimize_one_skill(
         cfg = load_config(**per_cfg)
         result = run_sleep_cycle(cfg=cfg, seed_tasks=batch_tasks, dry_run=dry_run)
 
+        # A方案⑤: gate 通过还不够，基线必须有效（sleep 侧已判，这里是双保险，
+        # 防止未来改动或未升级的 sleep 版本绕过）。baseline=0 的「改进」没有
+        # 对照组，推上生产等于拿真实用户做实验。
+        acceptable, _reason = _is_batch_acceptable(result.report)
+        baseline_valid = getattr(result.report, 'baseline_valid', True)
         print(f'  [{skill_name}] Batch {batch_idx}/{len(batches)}: '
               f'replayed={result.report.n_replayed} '
               f'baseline={result.report.baseline_score:.3f} '
               f'candidate={result.report.candidate_score:.3f} '
-              f'gate={result.report.gate_action}')
+              f'gate={result.report.gate_action} '
+              f'baseline_valid={baseline_valid}')
 
-        if not result.report.accepted:
+        if result.report.accepted and not baseline_valid:
+            print(f'  [{skill_name}] → {_reason}')
+
+        if not acceptable:
             # ── Gate reject — append（含去重+cap+retry_count 递增） ──
             new_tasks = [t.to_dict() for t in batch_tasks if hasattr(t, 'to_dict')]
             existing = failed_tasks.get(skill_name, [])
@@ -1110,7 +1475,13 @@ def _optimize_one_skill(
         print(f'  [{skill_name}] ✅ Batch {batch_idx} passed!')
         applied = 0
         for edit in result.report.edits:
-            ok = patch_skill_hermes(skill_name, edit.content, neg_before=neg_before)
+            # A方案④: 透传 op/anchor，使 replace/delete 能真正改动原文，
+            # 而不是一律降级为 append 把文档越堆越长。
+            ok = patch_skill_hermes(
+                skill_name, edit.content, neg_before=neg_before,
+                op=getattr(edit, 'op', 'add') or 'add',
+                anchor=getattr(edit, 'anchor', '') or '',
+            )
             if ok:
                 print(f'  [{skill_name}] ✅ Applied: {edit.target}/{edit.op}')
                 applied += 1
@@ -1204,7 +1575,12 @@ def _phase_optimize(
                 if res.get('skill_last_run_ts'):
                     skill_last_run[name] = res['skill_last_run_ts']
                 if res.get('neg_cleared'):
-                    state.setdefault('skill_neg_feedback', {})[name] = 0
+                    # 变体同步清零：优化成功后必须把该 skill 的**所有**变体名
+                    # 一并清零，否则另一个变体的累积值原封不动，排行榜里它
+                    # 永远清不掉（这正是变体重复记账最严重的后果）。
+                    variants = state.get('skill_name_variants', {}).get(name, [name])
+                    for v in variants:
+                        state.setdefault('skill_neg_feedback', {})[v] = 0
                 ft = res.get('failed_tasks')
                 if ft is not None:
                     state.setdefault('failed_tasks', {})[name] = ft

@@ -8,6 +8,12 @@
     - 按 task_id 去重：同一失败任务重复跑只保留一份应用记录，避免无限堆积。
     - 原子写：先备份，写盘失败回滚备份。
 
+2026-08-29 A+B 改造补充（与 skillopt 的护栏对齐）：
+    - 长度上限：软 12k / 硬 30k 字符，超硬上限拒绝写回（提示需人工整合）。
+      此前本模块无上限，导致 hindsight-memory 被堆到 12 万字符（全库中位数 8.6k）。
+    - 空变更跳过：新内容与已有 SE-APPLIED 块逐字相同时不写盘、不产生备份。
+      此前每晚重跑同一批 task 都会重写文件并留下备份。
+
 注意：本模块刻意放在 self-evolving 本地（scripts/self-evolving/scripts/）。
 LLM 护栏统一来自部署到生产机的 hermes_common（路径 /root/.hermes/lib/hermes_common，
 经 `deploy.sh deploy hermes-common` 部署）；self-evolving 的各 LLM 客户端通过
@@ -20,8 +26,24 @@ import datetime
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
+
+# ── SKILL.md 长度上限（与 skillopt_runner 的护栏对齐）──────────────────────
+# 软上限：超过只 WARN，仍允许写回。
+# 硬上限：超过直接拒绝写回。此时该 skill 需要人工整合，而不是继续机器追加。
+# 可用环境变量 SE_SKILL_SOFT_MAX / SE_SKILL_HARD_MAX 覆盖。
+SOFT_MAX_CHARS = 12000
+HARD_MAX_CHARS = 30000
+
+# 「待人工复核」的 SE 块累积数量上限。
+# 绝对长度会误伤「本来就大」的文档（如 hermes-agent 8.6 万字符、0 个 SE 块）；
+# 占比规则会误伤小文档（163 字符的文档加一个 80 字符的块就是 50%）。
+# 块数最能表达真实意图：这些块标题都写着「待人工复核」，若累积到 8 个仍无人
+# 复核，继续追加只会加重欠账，应当停下等人。
+# 可用环境变量 SE_MAX_BLOCK_COUNT 覆盖。
+MAX_BLOCK_COUNT = 8
 
 
 def security_scan(content: str) -> Tuple[bool, str]:
@@ -103,30 +125,101 @@ _SE_BLOCK_RE = re.compile(
 )
 
 
-def patch_skill_md(
+@dataclass
+class PatchResult:
+    """写回结果。ok=True 表示目标状态已达成（含「内容未变、无需重写」）。"""
+    ok: bool
+    status: str = ''      # applied | unchanged | rejected
+    reason: str = ''
+    size: int = 0         # 写回后（或未变更时的）文件总字符数
+
+
+def get_char_limits() -> Tuple[int, int]:
+    """SKILL.md 长度软/硬上限，可用环境变量覆盖。"""
+    def _int(name: str, default: int) -> int:
+        raw = os.environ.get(name, '')
+        if raw:
+            try:
+                v = int(raw)
+                if v > 0:
+                    return v
+            except ValueError:
+                pass
+        return default
+    return (_int('SE_SKILL_SOFT_MAX', SOFT_MAX_CHARS),
+            _int('SE_SKILL_HARD_MAX', HARD_MAX_CHARS))
+
+
+def get_block_count_limit() -> int:
+    """「待人工复核」SE 块的累积数量上限，可用环境变量覆盖。"""
+    raw = os.environ.get('SE_MAX_BLOCK_COUNT', '')
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return MAX_BLOCK_COUNT
+
+
+def count_blocks(text: str) -> int:
+    """全文里 SE-APPLIED 块的数量。"""
+    return sum(1 for _ in _SE_BLOCK_RE.finditer(text))
+
+
+def _find_block(task_id: str, body: str) -> Optional[re.Match]:
+    """定位 body 中属于该 task_id 的 SE-APPLIED 块。"""
+    for m in _SE_BLOCK_RE.finditer(body):
+        if m.group(1) == task_id:
+            return m
+    return None
+
+
+def _block_payload(block: str) -> str:
+    """剥掉块的标记行与标题行，返回可比对的正文。"""
+    keep: list[str] = []
+    for ln in block.split('\n'):
+        s = ln.strip()
+        if s.startswith('<!-- SE-APPLIED') or s.startswith('<!-- /SE-APPLIED -->'):
+            continue
+        if s.startswith('### '):
+            continue
+        keep.append(ln)
+    return '\n'.join(keep).strip()
+
+
+def patch_skill_md_detailed(
     skill_name: str,
     new_content: str,
     *,
     task_id: str = 'n/a',
     home: Optional[str] = None,
     backup_dir: Optional[str] = None,
-) -> bool:
-    """将 refined_content 安全写回 skill 的 SKILL.md。
+) -> PatchResult:
+    """将 refined_content 安全写回 skill 的 SKILL.md（详细结果版）。
 
     行为：
+      0) 空变更短路：若与已有 SE-APPLIED 块内容逐字相同，直接返回 unchanged，
+         不写盘、不产生备份。
       1) 安全扫描（HARD_BLOCK）→ 不通过直接拒绝。
       2) 定位 SKILL.md（rglob）。
       3) 保留 frontmatter，把修正内容 append 到正文，写入一个带 task_id 的
          去重块；同一 task_id 旧块先被清除。
-      4) 先备份再原子写，失败回滚。
+      4) 长度护栏：软上限只 WARN，超硬上限拒绝写回。
+      5) 先备份再原子写，失败回滚。
 
     Returns:
-        True 表示成功写回；False 表示被拒绝/未找到/写盘失败。
+        PatchResult — ok 表示目标状态已达成（applied 或 unchanged）。
     """
+    payload = new_content.strip()
+    if not payload:
+        return PatchResult(False, 'rejected', '内容为空', 0)
+
     is_safe, reason = security_scan(new_content)
     if not is_safe:
         print(f'SECURITY: 拒绝写回 {skill_name}: {reason}')
-        return False
+        return PatchResult(False, 'rejected', reason, 0)
 
     p = find_skill_md(skill_name, home)
     if not p:
@@ -136,13 +229,13 @@ def patch_skill_md(
             print(f'WARN: 跳过写回（目标 SKILL.md 缺失）: {skill_name}')
         else:
             print(f'WARN: 跳过写回（目标 skill 未安装）: {skill_name}')
-        return False
+        return PatchResult(False, 'rejected', 'SKILL.md 未找到', 0)
 
     try:
         existing = p.read_text(encoding='utf-8')
     except OSError as e:
         print(f'ERROR: 读取 SKILL.md 失败 {skill_name}: {e}')
-        return False
+        return PatchResult(False, 'rejected', f'读取失败: {e}', 0)
 
     # 解析 frontmatter
     fm_end = None
@@ -153,10 +246,16 @@ def patch_skill_md(
             fm_end = len(existing) - len(stripped) + first_end + 3
     if fm_end is None:
         print(f'ERROR: 无法解析 frontmatter: {skill_name}')
-        return False
+        return PatchResult(False, 'rejected', '无法解析 frontmatter', 0)
 
     frontmatter = existing[:fm_end]
     body = existing[fm_end:]
+
+    # ── 空变更短路：与已有块逐字相同则不写盘 ──
+    old_block = _find_block(task_id, body)
+    if old_block is not None and _block_payload(old_block.group(0)) == payload:
+        print(f'SKIP: 内容未变化，跳过写回 {skill_name} (task {task_id})')
+        return PatchResult(True, 'unchanged', '内容未变化', len(existing))
 
     # 去除该 task_id 的旧块（去重）
     def _replace(m: re.Match) -> str:
@@ -168,10 +267,31 @@ def patch_skill_md(
     block = (
         f'\n\n<!-- SE-APPLIED id={task_id} ts={ts} -->\n'
         f'### 🔄 Self-Evolving 修正（task {task_id}，待人工复核）\n\n'
-        f'{new_content.strip()}\n'
+        f'{payload}\n'
         f'<!-- /SE-APPLIED -->'
     )
     merged = frontmatter + '\n\n' + body.strip() + block + '\n'
+
+    # ── 长度护栏（与 skillopt 的软/硬上限对齐）──
+    soft_max, hard_max = get_char_limits()
+    total = len(merged)
+    if total > hard_max:
+        print(f'LIMIT: 拒绝写回 {skill_name} — 写回后 {total} 字符 > 硬上限 '
+              f'{hard_max}，该 skill 需人工整合后再启用自动写回')
+        return PatchResult(False, 'rejected',
+                           f'超硬上限 {total}>{hard_max}', total)
+    if total > soft_max:
+        print(f'WARN: {skill_name} 写回后 {total} 字符 > 软上限 {soft_max}，'
+              f'接近需人工整合的临界点')
+
+    # ── 待复核块数护栏：累积过多「待人工复核」块则停止追加 ──
+    block_limit = get_block_count_limit()
+    n_blocks = count_blocks(merged)
+    if n_blocks > block_limit:
+        print(f'BLOCKS: 拒绝写回 {skill_name} — 待复核的 SE 块已达 '
+              f'{n_blocks} 个 > 上限 {block_limit}，先人工复核再启用自动写回')
+        return PatchResult(False, 'rejected',
+                           f'待复核块过多 {n_blocks}>{block_limit}', total)
 
     # 备份 + 原子写
     resolved_home = home or os.environ.get('HERMES_HOME') or '/root/.hermes'
@@ -188,7 +308,25 @@ def patch_skill_md(
             shutil.copy2(bak, p)
         except Exception:
             pass
-        return False
+        return PatchResult(False, 'rejected', f'写盘失败: {e}', total)
 
     print(f'SUCCESS: 已写回 {p}（备份 {bak}）')
-    return True
+    return PatchResult(True, 'applied', 'ok', total)
+
+
+def patch_skill_md(
+    skill_name: str,
+    new_content: str,
+    *,
+    task_id: str = 'n/a',
+    home: Optional[str] = None,
+    backup_dir: Optional[str] = None,
+) -> bool:
+    """向后兼容的 bool 包装：True 表示目标状态已达成（含「内容未变」）。
+
+    需要区分 applied / unchanged / rejected 的调用方请用 patch_skill_md_detailed。
+    """
+    return patch_skill_md_detailed(
+        skill_name, new_content, task_id=task_id,
+        home=home, backup_dir=backup_dir,
+    ).ok

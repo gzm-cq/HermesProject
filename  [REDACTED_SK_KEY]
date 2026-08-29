@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+import json, sqlite3
+
+print("=== BIFROST JSON: agnes provider ===")
+d = json.load(open("/root/.bifrost/data/config.json"))
+agn = d["providers"]["agnes"]
+print(json.dumps(agn, ensure_ascii=False, indent=2))
+
+print("\n=== ROUTING RULES referencing agnes ===")  
+for r in d.get("routing_rules", []):     
+    fb_str = str(r.get("fallbacks", ""))     
+    if "a...[truncated]
