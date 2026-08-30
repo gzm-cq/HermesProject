@@ -546,7 +546,11 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     L.append("### Cognee MCP 连通性")
     L.append("")
     if not cognee_m.get("registered"):
-        L.append("- 状态: ❌ 未注册（config.yaml 无 mcp_servers.cognee）")
+        if cognee_m.get("retired"):
+            L.append("- 状态: 🚫 已退役（2026-08-30 有意移除，非故障）")
+            L.append(f"- 退役原因: {cognee_m.get('retire_note', '')}")
+        else:
+            L.append("- 状态: ❌ 未注册（config.yaml 无 mcp_servers.cognee）")
     elif not cognee_m.get("wrapper_executable"):
         L.append("- 状态: ❌ wrapper 缺失或不可执行")
     elif not cognee_m.get("startup_ok"):

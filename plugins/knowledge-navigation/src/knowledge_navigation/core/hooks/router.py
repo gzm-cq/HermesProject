@@ -905,13 +905,27 @@ def _expand_multi_hop(
     kt_active: bool,
     session_id: str,
 ) -> list[dict[str, Any]]:
-    """多跳关联展开。"""
+    """多跳关联展开。
+
+    top_k=4（原 2）：Route A 同域兄弟固定 0.5 分，Route C 跨域边
+    单条 cooccurrence=1 得分 0.333，top_k=2 时跨域关联会被同域结果
+    挤出合并前 N，双向边修复（2026-08-30）后仍无法进入上下文；
+    放宽到 4 给跨域关联保留位置（后续仍有 cross_domain_dedup 过滤）。
+
+    短路：跨域扩展已下沉进 KT 主流程（public_api._recall_core Step 3.6），
+    kt_raw_results 通常已自带 source="multi-hop" 的结果。此时再调一次
+    multi_hop_recall 只会对已扩展的跨域 KP 做二跳，既浪费 DB 查询又
+    膨胀注入；故命中已有 multi-hop 结果时直接跳过（KT 侧可经
+    KT_ENABLE_MULTI_HOP_EXPAND=0 关闭，此时仍走本函数的兜底展开）。
+    """
     if not kt_raw_results or not kt_active:
+        return kt_raw_results
+    if any(r.get("source") == "multi-hop" for r in kt_raw_results):
         return kt_raw_results
     try:
         _seed_ids = [int(r["id"]) for r in kt_raw_results if r.get("id") and str(r["id"]).isdigit()]
         if _seed_ids:
-            _mh_results = _multi_hop_recall(_seed_ids, top_k=2)
+            _mh_results = _multi_hop_recall(_seed_ids, top_k=4)
             if _mh_results:
                 logger.info("多跳关联展开: %d 条", len(_mh_results), extra={"session_id": session_id, "event": "multi_hop_expand", "count": len(_mh_results)})
                 _existing_ids = {r.get("id") for r in kt_raw_results}

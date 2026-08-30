@@ -122,6 +122,98 @@ def test_recall_from_tree_raw_returns_kp_list() -> None:
     assert result == kps
 
 
+# ===== 主流程跨域多跳扩展（2026-08-30 下沉） =====
+
+
+def _mock_full_recall_cfg() -> MagicMock:
+    """构造走完整召回流程的 cfg（含跨域扩展开关与 top_k）。"""
+    cfg = MagicMock()
+    cfg.db_url = "postgresql://test/db"
+    cfg.embed_base_url = "https://api.test.com"
+    cfg.embed_model = "test-model"
+    cfg.embed_api_key = "test-key"
+    cfg.cold_start_threshold = 20
+    cfg.recall_min_score = 0.3
+    cfg.max_recall_results = 5
+    cfg.enable_temporal_filter = False
+    cfg.enable_multi_hop_expand = True
+    cfg.multi_hop_top_k = 4
+    return cfg
+
+
+def test_recall_core_appends_cross_domain_results() -> None:
+    """Step 3.6: attention_filter 结果作 seed，跨域 KP 合入返回，带 source 标记。"""
+    cfg = _mock_full_recall_cfg()
+    adapter = MagicMock()
+    seed_kps = [{"id": 10, "name": "欧姆定律", "text": "V=IR", "score": 0.9}]
+    cross_domain = [
+        {"id": 99, "name": "跨域KP", "text": "另一个科目的关联知识点", "score": 0.33, "strategy": "edge"},
+    ]
+
+    with patch.object(public_api, "batch_embed", return_value=[[0.1] * 1024]):
+        with patch.object(public_api, "locate_subject", return_value={
+            "id": 2, "name": "基础理论", "child_count": 5,
+            "children": [{"id": 10, "name": "欧姆定律", "k_vector": [0.15] * 1024, "text": "V=IR"}],
+            "local_offset": None,
+        }):
+            with patch.object(public_api, "attention_filter", return_value=seed_kps):
+                with patch.object(public_api, "multi_hop_recall", return_value=cross_domain):
+                    with patch.object(public_api, "log_use"):
+                        kps, _adapter, _owns = public_api._recall_core("session", "query", cfg=cfg, adapter=adapter)
+
+    # 原 seed 保留 + 跨域 KP 追加并打 source 标记
+    assert len(kps) == 2
+    assert kps[0]["id"] == 10
+    by_id = {k["id"]: k for k in kps}
+    assert by_id[99]["source"] == "multi-hop"
+    # seed 自身不打 cross-domain 标记
+    assert "source" not in by_id[10]
+
+
+def test_recall_core_dedups_cross_domain_with_seed() -> None:
+    """跨域结果与 seed 撞 id 时不重复追加。"""
+    cfg = _mock_full_recall_cfg()
+    adapter = MagicMock()
+    seed_kps = [{"id": 10, "name": "欧姆定律", "text": "V=IR", "score": 0.9}]
+    # 撞 id：multi_hop_recall 把 seed 自己返回来
+    dup = [{"id": 10, "name": "欧姆定律", "text": "V=IR", "score": 0.9, "strategy": "edge"}]
+
+    with patch.object(public_api, "batch_embed", return_value=[[0.1] * 1024]):
+        with patch.object(public_api, "locate_subject", return_value={
+            "id": 2, "name": "基础理论", "child_count": 5,
+            "children": [{"id": 10, "name": "欧姆定律", "k_vector": [0.15] * 1024, "text": "V=IR"}],
+            "local_offset": None,
+        }):
+            with patch.object(public_api, "attention_filter", return_value=seed_kps):
+                with patch.object(public_api, "multi_hop_recall", return_value=dup):
+                    with patch.object(public_api, "log_use"):
+                        kps, _adapter, _owns = public_api._recall_core("session", "query", cfg=cfg, adapter=adapter)
+
+    assert len(kps) == 1  # 不重复追加
+
+
+def test_recall_core_disabled_expand_keeps_seed_only() -> None:
+    """关闭扩展时仅返回 attention_filter 结果，不调 multi_hop_recall。"""
+    cfg = _mock_full_recall_cfg()
+    cfg.enable_multi_hop_expand = False
+    adapter = MagicMock()
+    seed_kps = [{"id": 10, "name": "欧姆定律", "text": "V=IR", "score": 0.9}]
+
+    with patch.object(public_api, "batch_embed", return_value=[[0.1] * 1024]):
+        with patch.object(public_api, "locate_subject", return_value={
+            "id": 2, "name": "基础理论", "child_count": 5,
+            "children": [{"id": 10, "name": "欧姆定律", "k_vector": [0.15] * 1024, "text": "V=IR"}],
+            "local_offset": None,
+        }):
+            with patch.object(public_api, "attention_filter", return_value=seed_kps):
+                with patch.object(public_api, "multi_hop_recall") as mock_mh:
+                    with patch.object(public_api, "log_use"):
+                        kps, _adapter, _owns = public_api._recall_core("session", "query", cfg=cfg, adapter=adapter)
+
+    assert kps == seed_kps
+    mock_mh.assert_not_called()
+
+
 def test_recall_from_tree_raw_pooled_adapter_not_closed() -> None:
     """S-2: 池化 adapter由 pool 管理，recall_from_tree_raw 不再主动关闭。"""
     mock_adapter = MagicMock()

@@ -550,9 +550,11 @@ class PluginDatabaseAdapter:
         *,
         vector_bridge_threshold: float = 0.80,
     ) -> list[dict[str, Any]]:
-        """Route C: edge-based — 通过 knowledge_tree_edges 预建边展开。
+        """Route C: edge-based — 通过 knowledge_tree_edges 预建边展开（双向）。
 
-        若无预建边，退化为向量桥接：与种子向量余弦相似度超阈值的知识点。
+        双向聚合：向前 (from_node_id=seed) + 向后 (to_node_id=seed) 均纳入，
+        同一 peer 跨方向的 cooccurrence_count 累加，以反映关联强度。
+        若无任何关联边，退化为向量桥接（与种子向量余弦相似度超阈值）。
 
         Args:
             seed_kp_ids: 种子知识点 ID 列表
@@ -560,33 +562,47 @@ class PluginDatabaseAdapter:
             vector_bridge_threshold: 向量桥接的相似度下限
 
         Returns:
-            [{id, name, text, score}]
+            [{id, name, text, score}]，score = min(1.0, 聚合 cooccurrence / 3.0)
         """
         if not seed_kp_ids:
             return []
         cursor = self._inner.cursor
+        # 双向 UNION ALL：forward (from_seed) + reverse (to_seed)，再按 peer 聚合
         cursor.execute(
             """
-            SELECT kt.id, kt.name, kpt.text, e.cooccurrence_count
-            FROM knowledge_tree_edges e
-            JOIN knowledge_tree kt ON kt.id = e.to_node_id
-            JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
-            WHERE e.from_node_id = ANY(%s)
-              AND kt.id != ALL(%s)
-            ORDER BY e.cooccurrence_count DESC
+            WITH fwd AS (
+              SELECT to_node_id AS peer_id, cooccurrence_count AS cc
+              FROM knowledge_tree_edges
+              WHERE from_node_id = ANY(%s) AND to_node_id != ALL(%s)
+            ), rev AS (
+              SELECT from_node_id AS peer_id, cooccurrence_count AS cc
+              FROM knowledge_tree_edges
+              WHERE to_node_id = ANY(%s) AND from_node_id != ALL(%s)
+            ), peer AS (
+              SELECT peer_id, cc FROM fwd
+              UNION ALL
+              SELECT peer_id, cc FROM rev
+            ), agg AS (
+              SELECT peer_id, SUM(cc) AS cc FROM peer GROUP BY peer_id
+            )
+            SELECT kt.id, kt.name, kpt.text, agg.cc
+            FROM agg
+            JOIN knowledge_tree kt ON kt.id = agg.peer_id
+            LEFT JOIN knowledge_point_texts kpt ON kpt.tree_node_id = kt.id
+            ORDER BY agg.cc DESC
             LIMIT %s
             """,
-            (seed_kp_ids, seed_kp_ids, limit),
+            (seed_kp_ids, seed_kp_ids, seed_kp_ids, seed_kp_ids, limit),
         )
         results = [
             {"id": r[0], "name": r[1], "text": r[2],
-             "score": min(1.0, r[3] / 3.0)}
+             "score": min(1.0, float(r[3]) / 3.0)}
             for r in cursor.fetchall()
         ]
         if results:
             return results
 
-        # 退化：向量桥接
+        # 退化：向量桥接（与种子向量余弦相似度超阈值）
         cursor.execute(
             """
             SELECT kt.id, kt.name, kpt.text,

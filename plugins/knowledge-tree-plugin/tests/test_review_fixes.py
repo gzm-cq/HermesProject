@@ -179,6 +179,33 @@ class TestMultiHopInAdapter:
         assert out == [{"id": 7, "name": "n", "text": "t", "score": 0.91}]
         assert cur.execute.call_count == 2
 
+    def test_edge_route_is_bidirectional(self):
+        """Route C 修复（2026-08-30）：边单向存储，跨域边全在反向。
+
+        断言 SQL 同时含 fwd（from_seed）与 rev（to_seed）双向展开，
+        且参数按 fwd/rev 各一组 seed 传 4 个。
+        """
+        from knowledge_tree_plugin.adapters.database import PluginDatabaseAdapter
+
+        a = object.__new__(PluginDatabaseAdapter)
+        cur = MagicMock()
+        a._inner = MagicMock()
+        a._inner.cursor = cur
+        cur.fetchall.side_effect = [[(7, "n", "t", 2), (8, "m", "u", 1)], []]
+
+        out = a.multi_hop_by_edge([1, 2], 5)
+        sql = cur.execute.call_args_list[0][0][0]
+        params = cur.execute.call_args_list[0][0][1]
+
+        # 双向：fwd + rev 两个 CTE 均存在
+        assert "fwd" in sql and "rev" in sql
+        assert "to_node_id = ANY" in sql or "to_node_id=ANY" in sql.replace(" ", "")
+        assert "UNION ALL" in sql
+        # 参数：fwd seed, fwd 排除, rev seed, rev 排除 → 4 个
+        assert params == ([1, 2], [1, 2], [1, 2], [1, 2], 5)
+        # 得分 = min(1.0, cc/3.0)，cc=2 → 0.667
+        assert out[0]["score"] == pytest.approx(2 / 3)
+
 
 def public_api_file() -> str:
     from knowledge_tree_plugin import public_api

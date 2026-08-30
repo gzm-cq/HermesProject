@@ -4,7 +4,7 @@ health-check-all.py — 全量健康巡检，固定命令，零LLM
 输出：stdout 完整 JSON，stderr 日志
 """
 
-import json, os, subprocess, sys, glob, re
+import json, os, subprocess, sys, glob, re, argparse
 from datetime import datetime, timezone
 
 TMPDIR = "/tmp/health-check-py"
@@ -156,7 +156,8 @@ def write_check(name, status, checks):
 # ============================================
 def check_hermes():
     proc_count = count_processes(r'hermes_cli.*gateway')
-    dup = proc_count > 1
+    # P1-5: 用 detect_duplicate_processes 判断重复 — granian worker 模型下多进程是父子链，不算重复
+    dup = detect_duplicate_processes(r'hermes_cli.*gateway')
 
     out, err, rc = run(
         ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}:%{time_total}",
@@ -165,7 +166,8 @@ def check_hermes():
     )
     api_endpoint = out if out and rc == 0 else "unreachable"
 
-    out, _, _ = run("tail -3 ~/.hermes/logs/gateway.log 2>/dev/null | "
+    # P2: 采样窗口从 tail -3 扩到最近 200 行，避免样本过小失去参考价值
+    out, _, _ = run("tail -n 200 ~/.hermes/logs/gateway.log 2>/dev/null | "
                     "grep -ciE 'error|traceback|exception' 2>/dev/null; echo ''")
     errors = int(out.strip().split('\n')[0] or 0)
 
@@ -237,7 +239,8 @@ def check_bifrost():
 # ============================================
 def check_hindsight():
     proc_count = count_processes(r'hindsight-api')
-    dup = proc_count > 1
+    # P1-5: 同上，granian worker 父子链不算重复
+    dup = detect_duplicate_processes(r'hindsight-api')
 
     # systemd state — distinguish "crashed mid-run" from "never started (dependency unmet)"
     out, _, _ = run("systemctl is-enabled hindsight-daemon 2>/dev/null || echo unknown")
@@ -254,6 +257,8 @@ def check_hindsight():
     if rc != 0:
         out, _, _ = run(["curl", "-s", "http://127.0.0.1:8000/health", "--max-time", "5"], shell=False)
     health_resp = out or "unreachable"
+    # P1-4: HTTP health 端点是服务的真实可用性信号 — 进程活但端点不可达同样视为异常
+    health_ok = health_resp not in ("unreachable", "", "000")
 
     out, _, rc = _psql("hindsight", "SELECT 1 AS alive")
     pg_ok = out == "1"
@@ -266,6 +271,7 @@ def check_hindsight():
     st = "ok"
     if proc_count == 0: st = "fail"
     elif dup: st = "warn"
+    elif not health_ok: st = "warn"
     elif not pg_ok: st = "warn"
 
     write_check("hindsight", st, {
@@ -273,6 +279,7 @@ def check_hindsight():
         "process_count": proc_count,
         "duplicate_detected": dup,
         "health_endpoint": health_resp[:100],
+        "health_ok": health_ok,
         "pg_connection": pg_ok,
         "systemd_enabled": svc_enabled,
         "systemd_active_state": svc_active_state,
@@ -317,6 +324,9 @@ def check_sag():
         shell=False,
     )
     sag_mcp_auth = out.strip() if out and rc == 0 else "000"
+    # P2: MCP initialize 探测可接受状态码 — 200=正常 SSE；406=缺 tool/list 头但连接已建立（bridge 活着，
+    # 属 MCP SSE 端点对非标准 initialize 的预期响应）；skip=未配置。其余视为 bridge 异常。
+    SAG_MCP_OK_CODES = ("skip", "406", "200")
 
     # DB connectivity (sag_lite database in shared-postgres:5434)
     out, _, rc = _psql("sag_lite", "SELECT 1 AS alive")
@@ -326,7 +336,7 @@ def check_sag():
     if not sag_alive: st = "fail"
     elif not sag_api_reachable: st = "warn"
     elif not bridge_active: st = "warn"
-    elif sag_mcp_auth not in ("skip", "406", "200"): st = "warn"
+    elif sag_mcp_auth not in SAG_MCP_OK_CODES: st = "warn"
     elif not sag_pg_ok: st = "warn"
 
     write_check("sag", st, {
@@ -351,7 +361,6 @@ def check_postgres():
     pg_alive = bool(out.strip())
     pg5434 = 1 if pg_alive else 0
     pg_total = pg5434
-    other_port = False
 
     out, _, _ = _psql("postgres", "SELECT count(*) FROM pg_stat_activity WHERE state = 'active'")
     active_conn = int(out or 0)
@@ -367,14 +376,12 @@ def check_postgres():
 
     st = "ok"
     if pg5434 == 0: st = "fail"
-    elif other_port: st = "warn"
     elif disk_pct > 85: st = "warn"
 
     write_check("postgres", st, {
         "process_alive": pg5434 > 0,
         "process_5434_count": pg5434,
         "total_postgres": pg_total,
-        "other_port_detected": other_port,
         "active_connections": active_conn,
         "databases": dbs,
         "pgvector_enabled": pgvector > 0,
@@ -384,13 +391,13 @@ def check_postgres():
 # ============================================
 # 6. MCP
 # ============================================
-# All 6 MCP servers from config.yaml (mcp_servers section)
-MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "sag", "windows-mcp", "cognee"]
+# All 6 MCP servers from config.yaml (mcp_servers section) + sag-mcp-bridge (SSE bridge proxy)
+# (cognee 已摘除 2026-08-30：recall 后端 neo4j 停用、KN 无 cognee 召回路、功能死锁)
+MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "sag", "sag-mcp-bridge", "windows-mcp"]
 MCP_PATTERNS = {
     "axiom-wiki":  r'axiom-wiki-mcp-sse\.mjs',
     "postgres":    r'postgres-mcp-sse\.mjs',
     "codegraph":   r'codegraph\.js serve --mcp',
-    "cognee":      r'cognee-mcp.*--transport stdio',
 }
 # windows-mcp runs on Windows host, checked via HTTP endpoint
 WINDOWS_MCP_URL = "http://127.0.0.1:8000/sse"
@@ -589,7 +596,61 @@ if __name__ == "__main__":
     log("starting")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    
+
+    # 统一 check 函数注册表：key 与健康 JSON 顶层名一致（供 --service 单查 + 自愈脚本复用）
+    CHECK_FUNCS = {
+        "hermes": check_hermes,
+        "bifrost": check_bifrost,
+        "hindsight": check_hindsight,
+        "sag": check_sag,
+        "postgres": check_postgres,
+        "mcp": check_mcp,
+        "dashboard": check_dashboard,
+        "orphan_scan": check_orphans,
+        "memory_files": check_memory_files,
+    }
+
+    parser = argparse.ArgumentParser(description="Hermes full health check")
+    parser.add_argument("--service", help="only run this single check and output its JSON")
+    args = parser.parse_args()
+
+    # P2: 清空 TMPDIR 残留，避免合并到过期 json（上次崩溃/并发实例残留会污染结果）
+    for f in glob.glob(os.path.join(TMPDIR, "*.json")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    def _meta():
+        return {
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "script_version": "1.1.0",
+        }
+
+    if args.service:
+        name = args.service
+        fn = CHECK_FUNCS.get(name)
+        if fn is None:
+            log(f"unknown service: {name}")
+            result = {"_meta": _meta(), "error": f"unknown service: {name}"}
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            sys.exit(1)
+        try:
+            fn()
+            log(f"  {name}: ok")
+        except Exception as e:
+            log(f"  {name}: FAILED: {e}")
+            write_check(name, "fail", {"error": str(e)})
+        result = {}
+        fpath = os.path.join(TMPDIR, f"{name}.json")
+        if os.path.exists(fpath):
+            with open(fpath) as fh:
+                result[name] = json.load(fh)
+        result["_meta"] = _meta()
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        log("complete")
+        sys.exit(0)
+
     checks = {
         "hermes": check_hermes,
         "bifrost": check_bifrost,
@@ -599,7 +660,7 @@ if __name__ == "__main__":
         "mcp": check_mcp,
         "dashboard": check_dashboard,
     }
-    
+
     with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as executor:
         futures = {executor.submit(fn): name for name, fn in checks.items()}
         for future in as_completed(futures):
@@ -622,11 +683,8 @@ if __name__ == "__main__":
         name = os.path.splitext(os.path.basename(f))[0]
         with open(f) as fh:
             result[name] = json.load(fh)
-    
-    result["_meta"] = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "script_version": "1.0.0"
-    }
-    
+
+    result["_meta"] = _meta()
+
     print(json.dumps(result, indent=2, ensure_ascii=False))
     log("complete")

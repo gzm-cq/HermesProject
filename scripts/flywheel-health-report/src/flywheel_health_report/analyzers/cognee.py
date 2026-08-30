@@ -59,12 +59,13 @@ def analyze_cognee_health(home: Path) -> tuple[list[dict], dict, dict]:
     registered = bool(mcp)
     m["registered"] = registered
     if not registered:
-        issues.append({
-            "severity": "P1",
-            "flywheel": "Cognee",
-            "desc": "config.yaml 未注册 cognee MCP server",
-            "detail": "飞轮跨科语义召回依赖 cognee，但 mcp_servers.cognee 缺失",
-        })
+        # cognee 已于 2026-08-30 有意退役（neo4j 后端停用、KN 无 cognee 召回路、recall 挂起）
+        # → "未注册"是设计状态而非故障，不产生 issue，仅记录退役标记供 report 渲染。
+        m["retired"] = True
+        m["retire_note"] = (
+            "2026-08-30 有意移除：SAG 已覆盖横跳、KT 跨域边已建、"
+            "KN 四路召回无 cognee 路、neo4j 8-25 主动停用、recall 45s 挂起"
+        )
         return issues, m, trend
 
     cmd = mcp.get("command") or ""

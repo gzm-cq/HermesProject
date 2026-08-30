@@ -173,6 +173,38 @@ def _recall_core(
             if not kp_results:
                 return [], adapter, owns_adapter
 
+        # Step 3.6: 跨域多跳扩展（主流程内建，不依赖调用方二次展开）
+        # 修复背景（2026-08-30）：attention_filter 只做「科目内注意力召回」，
+        # 跨科关联此前完全依赖调用方（KN _expand_multi_hop）二次调用才出现，
+        # 导致 KT 插件单独调用时零跨域发现。下沉到主流程后，
+        # recall_from_tree_raw 的返回结果自带跨域 KP，调用方按需去重。
+        if cfg.enable_multi_hop_expand:
+            try:
+                _seed_ids = [
+                    int(kp["id"]) for kp in kp_results
+                    if kp.get("id") is not None and str(kp["id"]).isdigit()
+                ]
+                if _seed_ids:
+                    _mh = multi_hop_recall(
+                        _seed_ids, cfg=cfg, adapter=adapter,
+                        top_k=cfg.multi_hop_top_k,
+                    )
+                    if _mh:
+                        _existing_ids = {kp.get("id") for kp in kp_results}
+                        _added = 0
+                        for r in _mh:
+                            if r.get("id") not in _existing_ids:
+                                r["source"] = "multi-hop"
+                                kp_results.append(r)
+                                _existing_ids.add(r.get("id"))
+                                _added += 1
+                        logger.debug(
+                            "跨域多跳扩展: +%d 条", _added,
+                            extra={"session_id": session_id, "event": "cross_domain_expand", "count": _added},
+                        )
+            except Exception as e:
+                logger.debug("跨域多跳扩展跳过: %s", e)
+
         # Step 4: 回写 use_log
         node_ids = [kp.get("id", 0) for kp in kp_results if kp.get("id")]
         try:

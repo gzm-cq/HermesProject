@@ -1281,3 +1281,39 @@ class TestRecallLoggerEvents:
         # per_source 字段必须存在（dict 结构）
         assert hasattr(rec, "per_source")
         assert isinstance(getattr(rec, "per_source"), dict)
+
+
+# ===== _expand_multi_hop 短路（2026-08-30 跨域下沉后） =====
+
+
+class TestExpandMultiHopShortCircuit:
+    """跨域扩展下沉 KT 主流程后，_expand_multi_hop 命中已有 multi-hop 结果应短路。"""
+
+    def test_skips_when_multi_hop_present(self) -> None:
+        """kt_raw_results 已含 source=multi-hop → 不重复展开，直接返回。"""
+        base = [{"id": 1, "text": "seed", "score": 0.8}]
+        with_mh = [
+            {"id": 1, "text": "seed", "score": 0.8},
+            {"id": 99, "text": "跨域KP", "score": 0.33, "source": "multi-hop"},
+        ]
+        with patch.object(kn_router, "_multi_hop_recall", return_value=[{"id": 100, "text": "二跳", "score": 0.2}]) as mock_mh:
+            out = kn_router._expand_multi_hop(with_mh, True, "sess")
+        mock_mh.assert_not_called()
+        assert [r["id"] for r in out] == [1, 99]
+
+    def test_expands_when_no_multi_hop(self) -> None:
+        """无 multi-hop 结果（如 KT 侧关闭扩展）→ 兜底展开。"""
+        base = [{"id": 1, "text": "seed", "score": 0.8}]
+        mh_results = [{"id": 99, "text": "跨域KP", "score": 0.33}]
+        with patch.object(kn_router, "_multi_hop_recall", return_value=mh_results):
+            out = kn_router._expand_multi_hop(base, True, "sess")
+        assert len(out) == 2
+        assert out[-1]["source"] == "multi-hop"
+
+    def test_inactive_returns_unchanged(self) -> None:
+        """KT 未激活 → 原样返回，不调多跳。"""
+        base = [{"id": 1, "text": "seed", "score": 0.8}]
+        with patch.object(kn_router, "_multi_hop_recall") as mock_mh:
+            out = kn_router._expand_multi_hop(base, False, "sess")
+        mock_mh.assert_not_called()
+        assert out == base

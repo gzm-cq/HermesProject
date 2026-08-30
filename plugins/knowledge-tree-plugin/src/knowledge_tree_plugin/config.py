@@ -65,6 +65,13 @@ class PluginConfig:
     enable_temporal_filter: bool = False   # 是否启用时态过滤
     temporal_filter_demote_factor: float = 0.5  # 过期记忆的降权系数（0-1，越小降权越多）
 
+    # 跨域多跳扩展（recall 主流程内建）
+    # 默认开启：attention_filter 只做科目内注意力召回，跨科关联完全缺失。
+    # 2026-08-30 修复 Route C 双向边遍历后，把跨域发现下沉进 _recall_core，
+    # 使 recall_from_tree_raw 无论被谁调用都自带跨域结果，不依赖调用方二次展开。
+    enable_multi_hop_expand: bool = True  # recall 主流程是否内建跨域多跳扩展
+    multi_hop_top_k: int = 4              # 扩展结果条数上限（与 KN 侧对齐）
+
     def __post_init__(self) -> None:
         """环境变量覆盖（YAML 加载后执行）。"""
         env_map: dict[str, str] = {
@@ -83,6 +90,7 @@ class PluginConfig:
         int_env_map = {
             "extract_llm_timeout_seconds": "KT_EXTRACT_LLM_TIMEOUT_SECONDS",
             "extract_llm_retries": "KT_EXTRACT_LLM_RETRIES",
+            "multi_hop_top_k": "KT_MULTI_HOP_TOP_K",
         }
         for field_name, env_var in int_env_map.items():
             if env_var in os.environ:
@@ -93,6 +101,7 @@ class PluginConfig:
 
         bool_env_map = {
             "enable_temporal_filter": "KT_ENABLE_TEMPORAL_FILTER",
+            "enable_multi_hop_expand": "KT_ENABLE_MULTI_HOP_EXPAND",
         }
         for field_name, env_var in bool_env_map.items():
             if env_var in os.environ:
