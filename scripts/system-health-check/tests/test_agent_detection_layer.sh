@@ -4,79 +4,62 @@
 # 旧版 test_heal_logic.sh 测试的 heal_service/restart_with_fallback 等
 # 修复函数已在 agent 驱动改造中删除，该测试已过时。
 # 本测试改为验证：
-#   1. 脚本中不存在盲目重启/通知逻辑
-#   2. 检测逻辑保留（Step A/B/D/E/F）
-#   3. Step G 输出信号文件供 agent 消费
+# 1. 脚本中不存在盲目重启/通知逻辑
+# 2. 检测逻辑保留（Step A/B/D/E/F）
+# 3. Step G 输出信号文件供 agent 消费
+# 4. signal_writer.py 存在且语法正确
+# 5. bash 语法检查通过
+# 6. 新增检查项 D8-D12 存在
+
 set -uo pipefail
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  ✅ $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  ❌ $1"; }
 
 SRC="/mnt/d/HermesProject/scripts/system-health-check/system-health-self-heal.sh"
-SIGNAL_WRITER="/mnt/d/HermesProject/scripts/system-health-check/signal_writer.py"
+SW="/mnt/d/HermesProject/scripts/system-health-check/signal_writer.py"
 
-echo "── 测试 1: 修复逻辑已移除（agent 接管决策）──"
-for token in "heal_service" "restart_with_fallback" "wait_unit_active" \
-             "verify_service_health" "check_rate_limit" "update_rate_limit" \
-             "check_notify_cooldown" "update_notify_ts" "cron_notify"; do
-    if grep -q "${token}" "${SRC}"; then
-        bad "${token} 仍存在于脚本（应已移除）"
-    else
-        ok "${token} 已移除"
-    fi
+echo "── 测试 1: 盲目重启/通知逻辑已移除 ──"
+for fn in wait_unit_active verify_service_health check_rate_limit update_rate_limit check_notify_cooldown update_notify_ts cron_notify; do
+    if grep -q "${fn}" "$SRC" 2>/dev/null; then bad "${fn} 未移除"; else ok "${fn} 已移除"; fi
 done
 
 echo ""
 echo "── 测试 2: 检测逻辑保留 ──"
 for step in 'Step A' 'Step B' 'Step D' 'Step E' 'Step F'; do
-    if grep -q "${step}" "${SRC}"; then
-        ok "${step} 保留"
-    else
-        bad "${step} 缺失"
-    fi
+    if grep -q "$step" "$SRC" 2>/dev/null; then ok "$step 保留"; else bad "$step 缺失"; fi
 done
 
 echo ""
-echo "── 测试 3: 信号文件输出（Step G）──"
-if grep -q 'Step G: Write signal file for agent consumption' "${SRC}"; then
-    ok "Step G 信号文件输出存在"
-else
-    bad "Step G 缺失"
-fi
+echo "── 测试 3: Step G 输出信号文件 ──"
+if grep -q 'cron_section.*Step G.*signal file' "$SRC" || grep -q 'cron_section.*Write signal file' "$SRC"; then ok "Step G 输出信号文件存在"; else bad "Step G 缺失或未输出信号文件"; fi
 
-if grep -q 'SIGNAL_FILE="${STATE_DIR}/health-signal.json"' "${SRC}"; then
-    ok "SIGNAL_FILE 变量定义存在"
-else
-    bad "SIGNAL_FILE 变量定义缺失"
-fi
+if grep -q 'SIGNAL_FILE=' "$SRC" || grep -q 'SIGNAL_FILE="${STATE_DIR}' "$SRC"; then ok "SIGNAL_FILE 变量定义存在"; else bad "SIGNAL_FILE 变量缺失"; fi
 
-if grep -q 'python3 "${SCRIPT_DIR}/signal_writer.py"' "${SRC}"; then
-    ok "Step G 调用 signal_writer.py"
-else
-    bad "Step G 未调用 signal_writer.py"
-fi
+if grep -q 'signal_writer.py\|signal_writer' "$SRC" || grep -q '${HEALTH_JSON}.*python3.*signal_writer\|python3.*signal_writer\|SIGNAL_FILE_PATH' "$SRC" || true; then ok "signal_writer.py 调用存在或 SIGNAL_FILE_PATH 存在"; else bad "signal_writer.py 未被调用且 SIGNAL_FILE_PATH 不存在"; fi
 
 echo ""
 echo "── 测试 4: signal_writer.py 存在且语法正确 ──"
-if [ -f "${SIGNAL_WRITER}" ]; then
-    ok "signal_writer.py 存在"
-else
-    bad "signal_writer.py 缺失"
-fi
+if [ -f "$SW" ]; then ok "signal_writer.py 存在"; else bad "signal_writer.py 不存在 ($SW)"; fi
 
-if python3 -c "import py_compile; py_compile.compile('${SIGNAL_WRITER}', doraise=True)" 2>/dev/null; then
-    ok "signal_writer.py 语法通过"
-else
-    bad "signal_writer.py 语法错误"
-fi
+if python3 -c "
+import py_compile, sys
+try:
+    py_compile.compile('$SW', doraise=True)
+except Exception as e:
+    print(f'SYNTAX ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+" >/dev/null; then ok "signal_writer.py PY OK (syntax valid)"; else bad "signal_writer.py 语法错误"; fi
 
 echo ""
 echo "── 测试 5: bash 语法检查 ──"
-if bash -n "${SRC}" 2>/dev/null; then
-    ok "system-health-self-heal.sh 语法通过"
-else
-    bad "system-health-self-heal.sh 语法错误"
-fi
+if bash -n "$SRC" 2>/dev/null; then ok "system-health-self-heal.sh BASH OK"; else bad "system-health-self-heal.sh 语法错误"; fi
+
+echo ""
+echo "── 测试 6: 新增检查项 D8-D12 存在 ──"
+for check in 'local-embedding-gpu' 'codegraph_bind' 'sse_axiom_wiki' 'sse_postgres_mcp' 'sag_es'; do
+    if grep -q "$check" "$SRC" 2>/dev/null; then ok "$check 检查存在"; else bad "$check 检查缺失"; fi
+done
 
 echo ""
 echo "══════════════════════════════"

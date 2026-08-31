@@ -209,6 +209,54 @@ else
     INFRA_STATUS="fail"
 fi
 
+# D8: local-embedding-gpu.service (GPU embedding service, port 8082)
+if systemctl is-active --quiet local-embedding-gpu.service 2>/dev/null; then
+    EXTRA_CHECKS="${EXTRA_CHECKS} local-embedding-gpu:ok"
+else
+    EXTRA_CHECKS="${EXTRA_CHECKS} local-embedding-gpu:fail"
+    cron_warn "local-embedding-gpu.service not active (SAG vector search depends on it)"
+    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+fi
+
+# D9: codegraph bind mount (/mnt/d/HermesProject/.codegraph)
+if mountpoint -q /mnt/d/HermesProject/.codegraph 2>/dev/null; then
+    EXTRA_CHECKS="${EXTRA_CHECKS} codegraph_bind:ok"
+else
+    EXTRA_CHECKS="${EXTRA_CHECKS} codegraph_bind:not_mounted"
+    cron_warn "/mnt/d/HermesProject/.codegraph not a valid mountpoint (codegraph MCP depends on it)"
+    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+fi
+
+# D10: axiom-wiki SSE port 4143 connectivity check
+# SSE endpoints return non-standard HTTP codes for GET requests.
+# Use curl exit code to determine success/failure rather than parsing HTTP status codes.
+if curl -s -o /dev/null --max-time 3 http://127.0.0.1:4143/sse 2>/dev/null; then
+    EXTRA_CHECKS="${EXTRA_CHECKS} sse_axiom_wiki:ok"
+else
+    EXTRA_CHECKS="${EXTRA_CHECKS} sse_axiom_wiki:fail"
+    cron_warn "axiom-wiki SSE port 4143 unreachable (connection refused or timeout)"
+    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+fi
+
+# D11: postgres-mcp SSE port 4145 connectivity check
+if curl -s -o /dev/null --max-time 3 http://127.0.0.1:4145/sse 2>/dev/null; then
+    EXTRA_CHECKS="${EXTRA_CHECKS} sse_postgres_mcp:ok"
+else
+    EXTRA_CHECKS="${EXTRA_CHECKS} sse_postgres_mcp:fail"
+    cron_warn "postgres-mcp SSE port 4145 unreachable (connection refused or timeout)"
+    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+fi
+
+# D12: sag-es container status (Elasticsearch for SAG)
+SAG_ES_STATE="$(docker inspect --format='{{.State.Status}}' sag-es 2>/dev/null || echo 'not_found')"
+if [ "${SAG_ES_STATE}" = "running" ]; then
+    EXTRA_CHECKS="${EXTRA_CHECKS} sag_es:ok(running)"
+else
+    EXTRA_CHECKS="${EXTRA_CHECKS} sag_es:${SAG_ES_STATE}"
+    cron_warn "sag-es container not running (state: ${SAG_ES_STATE}) — SAG full-text search degraded"
+    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+fi
+
 cron_section "Step E: Check enabled cron jobs for last_status=error"
 
 CRON_ERRORS=""
