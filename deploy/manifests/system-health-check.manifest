@@ -4,6 +4,8 @@
 
 health-check-all.py
 health-check-run.py
+system-health-self-heal.sh
+signal_writer.py
 
 !**/__pycache__/**
 !**/*.pyc
