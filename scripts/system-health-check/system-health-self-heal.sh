@@ -9,6 +9,7 @@ set -euo pipefail
 source /root/.hermes/lib/cron_common.sh
 
 cron_init "system-health-self-heal"
+CRON_SKIP_FINISH_NOTIFY=true
 
 SCRIPT_DIR="/root/.hermes/scripts"
 STATE_DIR="/root/.hermes/lib/cron-state"
