@@ -271,6 +271,7 @@ class TestCheckMCP:
             ("12345", "", 0),               # systemctl show hermes-gateway MainPID
             ("42\n42\n42\n42\n42\n", "", 0), # grep -c mcp_servers: — 5 行结果
             ("active", "", 0),               # systemctl is-active sag.service
+            ("active", "", 0),               # systemctl is-active sag-mcp-bridge.service
             ("", "", 0),                     # ps -eo pid=,args= (empty)
             ("000", "", 0),                 # curl windows-mcp
         ]
@@ -304,6 +305,7 @@ class TestCheckMCP:
             ("12345", "", 0),               # systemctl show hermes-gateway MainPID
             ("3", "", 0),                    # grep -c mcp_servers:
             ("active", "", 0),               # systemctl is-active sag.service
+            ("active", "", 0),               # systemctl is-active sag-mcp-bridge.service
             (ps_output, "", 0),             # ps -eo pid=,args=
             ("000", "", 0),                 # curl windows-mcp
         ]
@@ -328,6 +330,7 @@ class TestCheckMCP:
             ("12345", "", 0),               # systemctl show hermes-gateway MainPID
             ("3", "", 0),                    # grep -c mcp_servers: — 单行
             ("active", "", 0),               # systemctl is-active sag.service
+            ("active", "", 0),               # systemctl is-active sag-mcp-bridge.service
             ("", "", 0),                     # ps -eo pid=,args= (empty)
             ("000", "", 0),                 # curl windows-mcp
         ]
@@ -352,6 +355,7 @@ class TestCheckHindsight:
     def test_pg_connection_ok(self, mock_write, mock_run, mock_count, mock_psql):
         """_psql SELECT 1 返回 '1' → pg_connection=True"""
         mock_run.side_effect = [
+            ("", "", 0),            # detect_duplicate_processes → ps -eo pid=,ppid=
             ("enabled", "", 0),   # systemctl is-enabled
             ("active", "", 0),    # systemctl is-active
             ("Mon 2026-08-17 08:10:07 CST", "", 0),  # systemctl show ActiveEnterTimestamp
