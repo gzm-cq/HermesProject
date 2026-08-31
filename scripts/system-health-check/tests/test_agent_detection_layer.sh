@@ -56,10 +56,14 @@ echo "── 测试 5: bash 语法检查 ──"
 if bash -n "$SRC" 2>/dev/null; then ok "system-health-self-heal.sh BASH OK"; else bad "system-health-self-heal.sh 语法错误"; fi
 
 echo ""
-echo "── 测试 6: 新增检查项 D8-D12 存在 ──"
-for check in 'local-embedding-gpu' 'codegraph_bind' 'sse_axiom_wiki' 'sse_postgres_mcp' 'sag_es'; do
+echo "── 测试 6: 新增检查项 D8-D11 存在 ──"
+for check in 'local-embedding-gpu' 'codegraph_bind' 'sse_axiom_wiki' 'sse_postgres_mcp'; do
     if grep -q "$check" "$SRC" 2>/dev/null; then ok "$check 检查存在"; else bad "$check 检查缺失"; fi
 done
+
+echo ""
+echo "── 测试 7: sag-es (D12) 已停用，不应再被监控 ──"
+if grep -qE "docker inspect.*sag-es|sag_es:" "$SRC" 2>/dev/null; then bad "脚本仍监控已停用的 sag-es"; else ok "sag-es D12 检查已移除"; fi
 
 echo ""
 echo "══════════════════════════════"

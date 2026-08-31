@@ -251,15 +251,9 @@ else
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 
-# D12: sag-es container status (Elasticsearch for SAG)
-SAG_ES_STATE="$(docker inspect --format='{{.State.Status}}' sag-es 2>/dev/null || echo 'not_found')"
-if [ "${SAG_ES_STATE}" = "running" ]; then
-    EXTRA_CHECKS="${EXTRA_CHECKS} sag_es:ok(running)"
-else
-    EXTRA_CHECKS="${EXTRA_CHECKS} sag_es:${SAG_ES_STATE}"
-    cron_warn "sag-es container not running (state: ${SAG_ES_STATE}) — SAG full-text search degraded"
-    [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
-fi
+# D12 (removed 2026-08-31): sag-es (Elasticsearch) decommissioned.
+# SAG uses vector search strategy (SAG_SEARCH_STRATEGY=vector, pgvector+zhparser),
+# ES was an orphan legacy container with no data volume. Container removed.
 
 cron_section "Step E: Check enabled cron jobs for last_status=error"
 
