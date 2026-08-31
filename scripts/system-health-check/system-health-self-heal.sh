@@ -228,9 +228,10 @@ else
 fi
 
 # D10: axiom-wiki SSE port 4143 connectivity check
-# SSE endpoints return non-standard HTTP codes for GET requests.
-# Use curl exit code to determine success/failure rather than parsing HTTP status codes.
-if curl -s -o /dev/null --max-time 3 http://127.0.0.1:4143/sse 2>/dev/null; then
+# SSE endpoints stream indefinitely; use connect-timeout (not max-time) to avoid false negatives.
+# curl exit code 0 or 28(timeout reading body) both mean the port is listening and responding.
+if curl -s -o /dev/null --connect-timeout 3 --max-time 1 http://127.0.0.1:4143/sse 2>/dev/null || \
+   [ $? -eq 28 ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_axiom_wiki:ok"
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_axiom_wiki:fail"
@@ -239,7 +240,9 @@ else
 fi
 
 # D11: postgres-mcp SSE port 4145 connectivity check
-if curl -s -o /dev/null --max-time 3 http://127.0.0.1:4145/sse 2>/dev/null; then
+# Same SSE logic as D10: connect-timeout + accept exit code 28 (body read timeout).
+if curl -s -o /dev/null --connect-timeout 3 --max-time 1 http://127.0.0.1:4145/sse 2>/dev/null || \
+   [ $? -eq 28 ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_postgres_mcp:ok"
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_postgres_mcp:fail"
