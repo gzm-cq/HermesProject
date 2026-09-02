@@ -229,9 +229,9 @@ else
 fi
 
 # D10: axiom-wiki SSE port 4143 connectivity check
-# SSE endpoints stream indefinitely; --max-time kills the connection during body read.
-# Use --connect-timeout only; wrap with `timeout` to avoid hanging, accept exit 124 (killed = SSE streaming = OK).
-if timeout 5 curl -s -o /dev/null --connect-timeout 3 http://127.0.0.1:4143/sse 2>/dev/null || \
+# SSE streams indefinitely; use --connect-timeout to verify port is listening.
+# exit 0 = connected; exit 124 = killed by `timeout` = still streaming = OK.
+if timeout 10 curl -s -o /dev/null --connect-timeout 5 http://127.0.0.1:4143/sse 2>/dev/null || \
    [ $? -eq 124 ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_axiom_wiki:ok"
 else
@@ -241,8 +241,8 @@ else
 fi
 
 # D11: postgres-mcp SSE port 4145 connectivity check
-# Same SSE logic as D10: connect-timeout only + timeout wrapper, accept exit 124.
-if timeout 5 curl -s -o /dev/null --connect-timeout 3 http://127.0.0.1:4145/sse 2>/dev/null || \
+# Same logic as D10: connect-timeout verifies port; timeout wrapper catches hung connections.
+if timeout 10 curl -s -o /dev/null --connect-timeout 5 http://127.0.0.1:4145/sse 2>/dev/null || \
    [ $? -eq 124 ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_postgres_mcp:ok"
 else
@@ -322,6 +322,7 @@ print(0)
 " 2>/dev/null || echo 0)"
 fi
 if [ "${BACKUP_TASK_OK}" != "1" ]; then
+    EXTRA_CHECKS="${EXTRA_CHECKS} backup_task:missing"
     cron_err "pg-daily-backup cron job missing or disabled in jobs.json"
     INFRA_STATUS="fail"
 fi
@@ -348,17 +349,22 @@ else
 fi
 case "${DUMP_FRESH}" in
     ok)
+        EXTRA_CHECKS="${EXTRA_CHECKS} backup_dump_fresh:ok(${LATEST_DUMP})"
         cron_ok "latest backup dump: ${LATEST_DUMP}"
         ;;
     stale:*)
-        cron_err "backup dump stale (${DUMP_FRESH#stale:}): ${LATEST_DUMP}"
+        AGE_H="${DUMP_FRESH#stale:}"
+        EXTRA_CHECKS="${EXTRA_CHECKS} backup_dump_fresh:stale(${AGE_H}@${LATEST_DUMP})"
+        cron_err "backup dump stale (${AGE_H}): ${LATEST_DUMP}"
         INFRA_STATUS="fail"
         ;;
     missing)
+        EXTRA_CHECKS="${EXTRA_CHECKS} backup_dump_fresh:missing(${BACKUP_DIR_DEFAULT})"
         cron_err "no hindsight backup dump found in ${BACKUP_DIR_DEFAULT}"
         INFRA_STATUS="fail"
         ;;
     err)
+        EXTRA_CHECKS="${EXTRA_CHECKS} backup_dump_fresh:err(${LATEST_DUMP:-none})"
         cron_warn "backup freshness check failed for ${LATEST_DUMP}"
         [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
         ;;

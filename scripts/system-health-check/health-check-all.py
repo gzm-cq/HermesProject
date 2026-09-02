@@ -416,12 +416,13 @@ def check_mcp():
     for name, pattern in MCP_PATTERNS.items():
         c = count_processes(pattern)
         server_counts[name] = c
-    # sag checked via systemd (not an SSE bridge process pattern)
+    # sag: systemd (SAG itself, not an SSE bridge — no reusable process pattern)
     out, _, _ = run("systemctl is-active sag.service 2>/dev/null || echo inactive")
     server_counts["sag"] = 1 if out.strip() == "active" else 0
-    # sag-mcp-bridge also via systemd
+    # sag-mcp-bridge: systemd (SSE bridge proxy, same reason — no reusable process pattern)
     out, _, _ = run("systemctl is-active sag-mcp-bridge.service 2>/dev/null || echo inactive")
     server_counts["sag-mcp-bridge"] = 1 if out.strip() == "active" else 0
+    # windows-mcp: HTTP endpoint on Windows host (runs outside WSL, can't match process)
 
     # List all MCP PIDs excluding self & parent
     out, _, _ = run("ps -eo pid=,args= 2>/dev/null || true")
