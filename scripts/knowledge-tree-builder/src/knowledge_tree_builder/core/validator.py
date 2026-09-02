@@ -58,6 +58,7 @@ def classify_knowledge_types(
         result = call_llm(
             prompt=prompt,
             temperature=0,
+            top_p=0.1,
             api_url=api_url,
             api_key=api_key,
             model=model,
@@ -120,6 +121,7 @@ def judge_subcluster_structure(
     result = call_llm(
         prompt=prompt,
         temperature=0,
+        top_p=0.1,
         api_url=api_url,
         api_key=api_key,
         model=model,
@@ -174,6 +176,7 @@ def binary_verify(
     result = call_llm(
         prompt=prompt,
         temperature=0,
+        top_p=0.1,
         api_url=api_url,
         api_key=api_key,
         model=model,

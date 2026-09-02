@@ -57,6 +57,7 @@ def extract_knowledge_points(
     response = call_llm(
         prompt=prompt,
         temperature=temperature,
+        top_p=0.1,
         max_tokens=max_tokens,
         api_url=api_url,
         api_key=api_key,
@@ -119,6 +120,7 @@ def extract_knowledge_points_with_temporal(
     response = call_llm(
         prompt=prompt,
         temperature=temperature,
+        top_p=0.1,
         max_tokens=max_tokens,
         api_url=api_url,
         api_key=api_key,

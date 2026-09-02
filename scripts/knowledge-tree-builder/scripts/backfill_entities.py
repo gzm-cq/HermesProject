@@ -70,10 +70,7 @@ def _call_llm_extract(text: str, api_key: str) -> list[str]:
 
     for attempt in range(LLM_RETRIES):
         try:
-            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
-            _bf_think = LLM_MODEL.startswith(("s-deepseek", "agnes"))
-            _bf_mt = 16384 if _bf_think else LLM_MAX_TOKENS
-            _bf_thinking = {"type": "enabled"} if _bf_think else {"type": "disabled"}
+            # 冷配置：确定性实体提取取低温和低 top_p
             resp = requests.post(
                 LLM_API_URL,
                 headers={
@@ -85,8 +82,8 @@ def _call_llm_extract(text: str, api_key: str) -> list[str]:
                     "model": LLM_MODEL,
                     "messages": messages,
                     "temperature": LLM_TEMPERATURE,
-                    "max_tokens": _bf_mt,
-                    "extra_body": {"thinking": _bf_thinking},
+                    "top_p": 0.1,
+                    "max_tokens": LLM_MAX_TOKENS,
                 },
                 timeout=(10, LLM_TIMEOUT),
             )

@@ -1,6 +1,6 @@
 """LLM API 调用封装 — OpenAI 兼容接口
 
-所有 LLM 调用护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
+所有 LLM 调用护栏（response_format=json_object / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
 重试 / 429 退避 / 超时不再重试 / 限速 / 空内容重试）统一由 hermes_common.llm_guard 的
 ``guarded_chat_completion`` **单一实现** 提供；本文件仅做薄封装。
 """
@@ -74,6 +74,7 @@ def call_llm(
     *,
     system_prompt: str | None = None,
     temperature: float = 0,
+    top_p: float | None = None,
     max_tokens: int = 16384,
     api_url: str = "http://127.0.0.1:4142/v1/chat/completions",
     api_key: str = "",
@@ -87,6 +88,7 @@ def call_llm(
         prompt: 用户消息内容
         system_prompt: 系统提示（可选）
         temperature: 生成温度
+        top_p: 核采样（None 不写入，交由服务端默认）
         max_tokens: 最大输出 token 数
         api_url: OpenAI 兼容 API 地址
         api_key: API 密钥
@@ -112,6 +114,7 @@ def call_llm(
             model=model,
             messages=messages,
             temperature=temperature,
+            top_p=top_p,
             max_tokens=max_tokens,
             json_mode=False,
             timeout=timeout_seconds,
@@ -132,6 +135,7 @@ def call_llm_json(
     *,
     system_prompt: str | None = None,
     temperature: float = 0,
+    top_p: float | None = None,
     api_url: str = "http://127.0.0.1:4142/v1/chat/completions",
     api_key: str = "",
     model: str = "s-deepseek-v4-flash",
@@ -149,6 +153,7 @@ def call_llm_json(
         prompt=prompt,
         system_prompt=system_prompt,
         temperature=temperature,
+        top_p=top_p,
         max_tokens=16384,
         api_url=api_url,
         api_key=api_key,
