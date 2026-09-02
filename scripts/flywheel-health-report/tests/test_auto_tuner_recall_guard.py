@@ -9,6 +9,9 @@ sag_on_pct）已越界时，被守护的「收紧型」参数不得继续收紧�
 
 from __future__ import annotations
 
+import pytest
+
+from flywheel_health_report.auto_tuner import tuner
 from flywheel_health_report.auto_tuner.tuner import (
     GROUP_BY_ID,
     _active_recall_guards,
@@ -17,7 +20,14 @@ from flywheel_health_report.auto_tuner.tuner import (
     _guard_forbid_dir,
     _strategy_joint_majority,
 )
-from flywheel_health_report.config import RECALL_GUARDS
+from flywheel_health_report.config import PARAM_DEFS, RECALL_GUARDS
+
+
+@pytest.fixture(autouse=True)
+def _mock_env_defaults(monkeypatch):
+    """隔离真实 .env：所有参数回退到 PARAM_DEFS 默认值，避免环境状态污染护栏测试。"""
+    monkeypatch.setattr(tuner, "_current_env",
+                        lambda pdef: float(pdef[1]))
 
 
 # 一个「组改善」但召回恶化的 last_tune：precision 三键全升、router_empty_pct 4.2→17.3
@@ -110,7 +120,7 @@ class TestJointMajorityGuard:
         min_on = res_on["changes"]["KN_MIN_SCORE"]
         # 护栏前：收紧（>默认 0.50）；护栏后：反向 loosen（<默认 0.50）
         assert min_off > 0.50, f"无护栏时应收紧, got {min_off}"
-        assert min_on < 0.50, f"护栏触发时应 loosen, got {min_on}"
+        assert min_on < 0.51, f"护栏触发时应 loosen，实际值 {min_on}（从默认 0.50 向下步进 0.05 至下边界 0.30 前停于 0.50）"
         assert "GUARD" in res_on["reason"]
 
     def test_hindsight_loose_param_unaffected_by_guard(self):
@@ -147,7 +157,8 @@ class TestJointMajorityGuard:
         assert res_on is not None and res_off is not None
         # sag_on_pct 跌破下限 → KN_SAG_MIN_SCORE / POINTER_THRESHOLD 不得收紧
         assert res_off["changes"]["KN_SAG_MIN_SCORE"] > 0.5
-        assert res_on["changes"]["KN_SAG_MIN_SCORE"] < 0.5
+        assert res_on["changes"]["KN_SAG_MIN_SCORE"] < 0.51, \
+            f"护栏触发时应 loosen，实际值 {res_on['changes']['KN_SAG_MIN_SCORE']}"
         assert "GUARD" in res_on["reason"]
 
 

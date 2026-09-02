@@ -83,6 +83,8 @@ def _fake_extract_metrics(today, yday):
 
 
 def _install(monkeypatch, h):
+    monkeypatch.setattr(tuner, "_get_all_pending_tunes",
+                       lambda: [copy.deepcopy(h.last_tune)])
     monkeypatch.setattr(tuner, "_get_last_tune_any", lambda: copy.deepcopy(h.last_tune))
     monkeypatch.setattr(tuner, "verify_restart", lambda ts: True)
     monkeypatch.setattr(tuner, "update_log_entry",
