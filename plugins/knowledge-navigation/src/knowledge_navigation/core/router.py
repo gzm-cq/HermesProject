@@ -72,7 +72,7 @@ def _call_router_llm(
                     "model": model,
                     "temperature": 0,
                     "top_p": 0.1,
-                    "max_tokens": 16384,
+                    "max_tokens": 2048,
                     "messages": [
                         {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
                         {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
@@ -363,14 +363,24 @@ def route(
     if cached is not None:
         return cached, _meta(None, "cache_hit", None)
 
+    # P2: 语义缓存 — 同 session 内前80字符匹配的query复用最近决策（追问/工具调用场景）
+    safe_msg_preview = message[:80].lower().replace("\n", " ").replace("\r", " ")
+    with _router_lock:
+        _clean_expired_cache()
+        for ck, cm in reversed(list(_router_cache.items())):
+            if ck[0] == session_id and ck[1][:80].lower().replace("\n", " ").replace("\r", " ") == safe_msg_preview:
+                _router_cache.move_to_end(ck)
+                return cm, _meta(None, "cache_hit_semantic", None)
+
     safe_msg = message[:300] + message[-200:] if len(message) > 500 else message
     safe_msg = safe_msg.replace("\n", " ").replace("\r", " ")
 
     start_time = time.time()
     fallback_reason = "unknown"
 
-    # SAG 是本地服务（有独立熔断器+30s超时保护），fallback 时开启不增加外部压力，
-    # 反而能补全知识召回。2026-08-17: 从 sag:False 改为 sag:True，避免超时降级丢 SAG 知识。
+    # SAG 是本地服务（有独立熔断器+30s超时保护），成功路由时开启；
+    # 超时/异常降级时保持历史 mask 的 sag 值，避免无意义全开引入额外开销。
+    # 无历史 mask 时 sag=True（保守兜底）。2026-09-02: 降级时保留历史 sag 倾向。
     FALLBACK_MASK = {"h": True, "kt": True, "s": True, "sag": True}
 
     try:
