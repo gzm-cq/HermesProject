@@ -26,7 +26,7 @@ done
 
 echo ""
 echo "── 测试 2: 检测逻辑保留 ──"
-for step in 'Step A' 'Step B' 'Step D' 'Step E' 'Step F'; do
+for step in 'Step A' 'Step B' 'Step D' 'Step E' 'Step E2' 'Step F'; do
     if grep -q "$step" "$SRC" 2>/dev/null; then ok "$step 保留"; else bad "$step 缺失"; fi
 done
 

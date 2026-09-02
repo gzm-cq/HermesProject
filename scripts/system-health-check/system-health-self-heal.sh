@@ -229,10 +229,10 @@ else
 fi
 
 # D10: axiom-wiki SSE port 4143 connectivity check
-# SSE endpoints stream indefinitely; use connect-timeout (not max-time) to avoid false negatives.
-# curl exit code 0 or 28(timeout reading body) both mean the port is listening and responding.
-if curl -s -o /dev/null --connect-timeout 3 --max-time 1 http://127.0.0.1:4143/sse 2>/dev/null || \
-   [ $? -eq 28 ]; then
+# SSE endpoints stream indefinitely; --max-time kills the connection during body read.
+# Use --connect-timeout only; wrap with `timeout` to avoid hanging, accept exit 124 (killed = SSE streaming = OK).
+if timeout 5 curl -s -o /dev/null --connect-timeout 3 http://127.0.0.1:4143/sse 2>/dev/null || \
+   [ $? -eq 124 ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_axiom_wiki:ok"
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_axiom_wiki:fail"
@@ -241,9 +241,9 @@ else
 fi
 
 # D11: postgres-mcp SSE port 4145 connectivity check
-# Same SSE logic as D10: connect-timeout + accept exit code 28 (body read timeout).
-if curl -s -o /dev/null --connect-timeout 3 --max-time 1 http://127.0.0.1:4145/sse 2>/dev/null || \
-   [ $? -eq 28 ]; then
+# Same SSE logic as D10: connect-timeout only + timeout wrapper, accept exit 124.
+if timeout 5 curl -s -o /dev/null --connect-timeout 3 http://127.0.0.1:4145/sse 2>/dev/null || \
+   [ $? -eq 124 ]; then
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_postgres_mcp:ok"
 else
     EXTRA_CHECKS="${EXTRA_CHECKS} sse_postgres_mcp:fail"
@@ -301,6 +301,68 @@ if [ -n "${CRON_ERRORS}" ]; then
     done
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
+
+cron_section "Step E2: pg-daily-backup presence + backup freshness (blind-spot cover)"
+
+# P0-2: 兜底盲区1 — pg-daily-backup 任务被禁用/删除时不是 error，巡检抓不到。
+# 检查 jobs.json 中 pg-daily-backup 存在且 enabled。
+BACKUP_TASK_OK=1
+if [ -f "${JOBS_FILE}" ]; then
+    BACKUP_TASK_OK="$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('${JOBS_FILE}'))
+except:
+    print(0); sys.exit(0)
+for job in data.get('jobs', []):
+    if job.get('name') == 'pg-daily-backup':
+        print(1 if job.get('enabled', False) else 0)
+        sys.exit(0)
+print(0)
+" 2>/dev/null || echo 0)"
+fi
+if [ "${BACKUP_TASK_OK}" != "1" ]; then
+    cron_err "pg-daily-backup cron job missing or disabled in jobs.json"
+    INFRA_STATUS="fail"
+fi
+
+# P0-3: 兜底盲区2 — 备份任务没跑但没报错（如 12:00 WSL 关机错过）。
+# 检查最新 dump 文件新鲜度：超过 26h 未更新则告警（正常每日 12:00 一轮，26h 容错 2h 边界）。
+BACKUP_DIR_DEFAULT="/root/pg-backups"
+if [ -n "${PG_BACKUP_DIR:-}" ]; then
+    BACKUP_DIR_DEFAULT="${PG_BACKUP_DIR}"
+fi
+LATEST_DUMP="$(ls -t "${BACKUP_DIR_DEFAULT}"/hindsight_*.dump 2>/dev/null | head -1)"
+DUMP_FRESH=""
+if [ -n "${LATEST_DUMP}" ]; then
+    DUMP_FRESH="$(python3 -c "
+import os, time, sys
+try:
+    age_h = (time.time() - os.path.getmtime('${LATEST_DUMP}')) / 3600.0
+    print('ok' if age_h <= 26 else f'stale:{age_h:.1f}h')
+except:
+    print('err')
+" 2>/dev/null || echo err)"
+else
+    DUMP_FRESH="missing"
+fi
+case "${DUMP_FRESH}" in
+    ok)
+        cron_ok "latest backup dump: ${LATEST_DUMP}"
+        ;;
+    stale:*)
+        cron_err "backup dump stale (${DUMP_FRESH#stale:}): ${LATEST_DUMP}"
+        INFRA_STATUS="fail"
+        ;;
+    missing)
+        cron_err "no hindsight backup dump found in ${BACKUP_DIR_DEFAULT}"
+        INFRA_STATUS="fail"
+        ;;
+    err)
+        cron_warn "backup freshness check failed for ${LATEST_DUMP}"
+        [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
+        ;;
+esac
 
 cron_section "Step F: Write JSON report"
 

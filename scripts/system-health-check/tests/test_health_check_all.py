@@ -211,7 +211,7 @@ class TestCheckPostgres:
         # 模拟 _psql 返回三条数据库名（含真实换行符）
         def psql_side_effect(db, query, **kwargs):
             if "datname" in query:
-                return ("postgres\nhindsight\nsag_lite", "", 0)
+                return ("postgres\nhindsight\nsag_lite_v2", "", 0)
             elif "count" in query:
                 return ("5", "", 0)
             elif "vector" in query:
@@ -227,7 +227,7 @@ class TestCheckPostgres:
         assert call_args is not None
         name, status, checks = call_args[0]
         assert name == "postgres"
-        assert checks["databases"] == ["postgres", "hindsight", "sag_lite"]
+        assert checks["databases"] == ["postgres", "hindsight", "sag_lite_v2"]
         assert checks["process_alive"] is True
 
     @patch.object(hca, "_psql")

@@ -328,8 +328,9 @@ def check_sag():
     # 属 MCP SSE 端点对非标准 initialize 的预期响应）；skip=未配置。其余视为 bridge 异常。
     SAG_MCP_OK_CODES = ("skip", "406", "200")
 
-    # DB connectivity (sag_lite database in shared-postgres:5434)
-    out, _, rc = _psql("sag_lite", "SELECT 1 AS alive")
+    # DB connectivity (sag_lite_v2 database in shared-postgres:5434)
+    # NOTE: renamed sag_lite → sag_lite_v2 after 2026-09-02 container rebuild (SAG_DATABASE_URL uses sag_lite_v2)
+    out, _, rc = _psql("sag_lite_v2", "SELECT 1 AS alive")
     sag_pg_ok = out.strip() == "1"
 
     st = "ok"
