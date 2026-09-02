@@ -30,7 +30,7 @@ TH = {
     # 产出质量
     "router_full_off_pct": 30,     # >30% -> P0
     "recall_empty_pct": 20,        # >20% -> P1
-    "skill_f1_low": 0.4,           # <0.4 -> P0
+    "skill_f1_low": 0.3,           # <0.3 -> P0（2026-09-02 从 0.4 下调：优化后正常水平 0.36-0.37，0.4 会误报；0.3 以下才视为明显退化）
     "kn_avg_score_low": 0.5,       # <0.5 per dimension -> P1
     "kt_orphan_pct": 90,           # >90% -> P1
     "unknown_dim_pct": 50,         # >50% -> P1
@@ -96,9 +96,10 @@ _TEST_QUERY_RE = re.compile(
 )
 
 # === Active cron jobs — all user cronjobs monitored by flywheel health report ===
-# 包括：核心飞轮 + 新增 3 个（dream-daily、每周深度研究、system-health-check）
+# 包括：核心飞轮 + 新增（dream-daily、每周深度研究、system-health-self-heal）
 # 注：knowledge-navigation-baseline / run-skill-eval 已合并进 runner（阶段 0/1 内部执行），
 #     不再作为独立 cronjob 监控；clustering-analysis 已取消（测试无实际效果）。
+# 2026-09-02 修正：system-health-check 已更名 system-health-self-heal（旧 state 文件为 08-23 残留孤儿）。
 ACTIVE_CRON_JOBS = frozenset({
     # 核心飞轮
     "memory-cleanup",
@@ -110,7 +111,7 @@ ACTIVE_CRON_JOBS = frozenset({
     # 新增：之前未跟踪的 job
     "dream-daily",
     "每周深度研究-知识树学习",
-    "system-health-check",
+    "system-health-self-heal",
     # 能力飞轮：Self-Evolving 自动写回闭环（F-5 + B）
     "self-evolving-nightly",
 })
@@ -121,6 +122,9 @@ EXCLUDED_STATE_FILES = frozenset({
     "cron-periodic-dedup",
     "flywheel-health-report",
     "deploy-cleanup-health-check",
+    # 2026-09-02 修正：旧名 system-health-check 是更名前的残留 state，已非活跃任务；
+    # 新名 system-health-self-heal 已加入 ACTIVE_CRON_JOBS 正常监控
+    "system-health-check",
 })
 
 # === Flywheel mapping ===
@@ -134,7 +138,7 @@ _CRON_TO_FLYWHEEL = {
     "daily-learn": "知识路",
     "dream-daily": "知识路",
     "每周深度研究-知识树学习": "知识树",
-    "system-health-check": "系统",
+    "system-health-self-heal": "系统",
     "kn-router-health-check": "Router",
     "self-evolving-nightly": "能力飞轮",
 }

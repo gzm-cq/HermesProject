@@ -44,6 +44,13 @@ def analyze_skill_eval(data_flywheel: Path, kn_baseline_dir: Path) -> tuple[list
         "avg_recall": round(avg_recall, 4),
         "n_queries": n_queries,
         "timestamp": timestamp,
+        # 延迟稳健统计（数据源 run_skill_eval.py meta）：
+        # 主指标取中位数，均值参考；偶发 LLM 慢条（>5s）单独计数不归因瓶颈
+        "median_latency_ms": round(meta.get("median_latency_ms", 0), 0),
+        "clean_avg_latency_ms": round(meta.get("clean_avg_latency_ms", 0), 0),
+        "avg_latency_ms": round(meta.get("avg_latency_ms", 0), 0),
+        "clean_p95_latency_ms": round(meta.get("clean_p95_latency_ms", 0), 0),
+        "n_outliers": meta.get("n_outliers", 0),
     }
     if fallback_used:
         results["source"] = "skill_eval_latest.json (prev.json 为空，回退)"

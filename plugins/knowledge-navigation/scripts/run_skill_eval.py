@@ -19,6 +19,7 @@
 
 import json
 import os
+import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,6 +44,19 @@ def load_eval_queries() -> list[dict]:
         return []
     with open(EVAL_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _percentile(values: list[float], p: float) -> float:
+    """线性插值百分位数（与飞轮健康报告 utils._percentile 同语义）。"""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    k = (len(s) - 1) * p
+    f = int(k)
+    c = f + 1 if f + 1 < len(s) else f
+    if f == c:
+        return s[f]
+    return s[f] + (s[c] - s[f]) * (k - f)
 
 
 def compute_metrics(results: list[str], expected: list[str]) -> dict:
@@ -136,6 +150,7 @@ def run_eval() -> dict:
     all_precisions: list[float] = []
     all_recalls: list[float] = []
     all_f1s: list[float] = []
+    all_latencies: list[float] = []  # 每条成功请求延迟（ms），用于中位数/异常剔除统计
     total_latency = 0.0
     n_done = 0
     n_skipped = 0
@@ -168,6 +183,7 @@ def run_eval() -> dict:
             all_recalls.append(res["recall"])
             all_f1s.append(res["f1"])
             total_latency += latency
+            all_latencies.append(latency)
             print(f"   ✓ [{n_done}/{n_total}] {qid} F1={res['f1']:.3f} {res['latency_ms']:.0f}ms",
                   file=sys.stderr)
 
@@ -176,6 +192,16 @@ def run_eval() -> dict:
     avg_recall = sum(all_recalls) / n_scored if n_scored else 0.0
     avg_f1 = sum(all_f1s) / n_scored if n_scored else 0.0
     avg_latency = total_latency / n_scored if n_scored else 0.0
+
+    # 延迟稳健统计：偶发 LLM 慢条（如 >5s TTFB 波动）会拉高均值，属正常现象不归因瓶颈。
+    # 主指标取中位数，另报剔除异常（>5s）后的均值；异常数单独标注供参考。
+    LATENCY_OUTLIER_MS = 5000.0
+    latencies = sorted(all_latencies)
+    median_latency = statistics.median(latencies) if latencies else 0.0
+    clean_lat = [x for x in latencies if x <= LATENCY_OUTLIER_MS]
+    clean_avg_latency = (sum(clean_lat) / len(clean_lat)) if clean_lat else 0.0
+    clean_p95 = _percentile(clean_lat, 0.95) if clean_lat else 0.0
+    n_outliers = len(latencies) - len(clean_lat)
 
     return {
         "meta": {
@@ -188,8 +214,13 @@ def run_eval() -> dict:
             "avg_recall": round(avg_recall, 4),
             "avg_f1": round(avg_f1, 4),
             "avg_latency_ms": round(avg_latency, 0),
+            "median_latency_ms": round(median_latency, 0),
+            "clean_avg_latency_ms": round(clean_avg_latency, 0),
+            "clean_p95_latency_ms": round(clean_p95, 0),
+            "n_outliers": n_outliers,
+            "latency_outlier_ms_threshold": LATENCY_OUTLIER_MS,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+08:00"),
-            "note": "稳健 harness 方法：逐条 90s 超时 + 超时/异常 skip，杜绝整轮卡死",
+            "note": "稳健 harness 方法：逐条 90s 超时 + 超时/异常 skip，杜绝整轮卡死；延迟主指标为中位数，均值参考，>5s 异常点单独计数",
         },
         "results": results_by_id,
     }
@@ -201,7 +232,9 @@ def print_report(result: dict) -> None:
 
     print("📊 Skill Matcher 评估报表")
     print(f"   评估集: {meta['n_queries']} 条 query")
-    print(f"   平均延迟: {meta['avg_latency_ms']:.0f}ms")
+    print(f"   延迟: 中位 {meta['median_latency_ms']:.0f}ms | 剔除异常均值 {meta['clean_avg_latency_ms']:.0f}ms "
+          f"| p95(clean) {meta['clean_p95_latency_ms']:.0f}ms | 全量均值 {meta['avg_latency_ms']:.0f}ms "
+          f"| 异常>5s {meta['n_outliers']} 条")
     print()
     print(f"   平均 Precision@3:  {meta['avg_precision']:.3f}")
     print(f"   平均 Recall@3:     {meta['avg_recall']:.3f}")

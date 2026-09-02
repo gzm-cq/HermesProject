@@ -16,7 +16,7 @@ from .config import (
     ERROR_LOG_SUBPATH, MEMORY_DIR_SUBPATH, EXCLUDED_STATE_FILES,
 )
 from .parsers import (
-    parse_cron_states, parse_cron_jobs_json,
+    parse_cron_states, parse_cron_jobs_json, load_disabled_cron_jobs,
     parse_trace_log, append_daily_summary, load_daily_summary,
 )
 from .utils import _resolve_trend_arrow
@@ -46,12 +46,12 @@ def format_7day_trend(data_flywheel: Path) -> list[str]:
     if len(records) < 2:
         return ["历史数据不足 2 天，7 天趋势待积累。"]
     lines = [
-        "| 日期 | P0/P1 | Router得分 | 全关% | 空结果% | 错误% | KT降级 | Token消耗avg | Skill占比% | SAG开启% | SAG召回量 | "
-        "SAG延迟ms | Skill F1 | Skill活跃 | Skill调用次数 | KN unknown% | KN均分 | 聚类噪声% | KT孤立% | MEM占用% | USER占用% | Hindsight产出 | ERROR数 |"
+        "| 日期 | P0/P1 | Router得分 | Router中位延迟ms | 全关% | 空结果% | 错误% | KT降级 | Token消耗avg | Skill占比% | SAG开启% | "
+        "SAG召回量 | SAG延迟ms | Skill F1 | Skill中位延迟ms | Skill剔除异常均值ms | Skill活跃 | Skill调用次数 | KN unknown% | KN均分 | KT孤立% | MEM占用% | USER占用% | Hindsight产出 | ERROR数 |"
     ]
     lines.append(
-        "|------|-------|-----------|-------|---------|-------|--------|-------------|-----------|----------|-----------|"
-        "----------|----------|----------|------------|-------------|--------|-----------|---------|---------|---------|--------------|--------|"
+        "|------|-------|-----------|-----------------|-------|---------|-------|--------|-------------|-----------|----------|"
+        "----------|-----------|------------|-------------|-----------|--------|-----------|---------|---------|---------|--------------|--------|"
     )
     for r in records[-7:]:
         p0 = r.get("p0_count", 0)
@@ -59,6 +59,7 @@ def format_7day_trend(data_flywheel: Path) -> list[str]:
         lines.append(
             f"| {r.get('date', '-')} | {p0}/{p1} | "
             f"{r.get('router_avg_score', '-')} | "
+            f"{r.get('router_median_latency_ms', '-')} | "
             f"{r.get('router_full_off_pct', '-')} | "
             f"{r.get('router_empty_pct', '-')} | "
             f"{r.get('router_error_rate', '-')} | "
@@ -69,11 +70,12 @@ def format_7day_trend(data_flywheel: Path) -> list[str]:
             f"{r.get('sag_total_kept', '-')} | "
             f"{r.get('sag_avg_latency_ms', '-')} | "
             f"{r.get('skill_f1', '-')} | "
+            f"{r.get('skill_median_latency_ms', '-')} | "
+            f"{r.get('skill_clean_avg_latency_ms', '-')} | "
             f"{r.get('skill_active_count', '-')} | "
             f"{r.get('skill_total_uses', '-')} | "
             f"{r.get('kn_unknown_pct', '-')} | "
             f"{round(r.get('kn_avg_score', 0), 4) if r.get('kn_avg_score') else '-'} | "
-            f"{r.get('cluster_noise_rate', '-')} | "
             f"{r.get('kt_orphan_pct', '-')} | "
             f"{r.get('memory_usage_pct', '-')} | "
             f"{r.get('memory_user_usage_pct', '-')} | "
@@ -106,10 +108,13 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     # Parse all data — merge cron-state files (rich) with jobs.json (supplementary)
     cron_states = parse_cron_states(cron_state_dir)
     cron_states.update(parse_cron_jobs_json(home, cron_states))
+    disabled_cron_jobs = load_disabled_cron_jobs(home)
     trace = parse_trace_log(trace_path, filter_dates=data_windows)
 
     # Analyze
-    cron_issues, cron_table, elapsed_ann = analyze_cron_jobs(cron_states, cron_log_dir, now)
+    # 已停用 job（jobs.json enabled=False）不产生失败/耗时异常 issue，避免误报
+    active_states = {k: v for k, v in cron_states.items() if k not in disabled_cron_jobs}
+    cron_issues, cron_table, elapsed_ann = analyze_cron_jobs(active_states, cron_log_dir, now)
     router_issues, router_m, router_trend = analyze_router(trace, data_flywheel_dir)
     skill_issues, skill_m, skill_trend = analyze_skill_eval(data_flywheel_dir, kn_baseline_dir)
     skill_usage_issues, skill_usage_m, skill_usage_trend = analyze_skill_usage(skill_usage_path, now)
@@ -119,7 +124,10 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     kt_issues, kt_m, kt_trend = analyze_kt_baseline(data_flywheel_dir)
     kn_issues, kn_m, kn_trend = analyze_kn_baseline(kn_baseline_dir)
     memory_issues, memory_m, memory_trend = analyze_memory_cleanup(home / MEMORY_DIR_SUBPATH, data_window)
-    se_issues, se_m, se_trend = analyze_self_evolving(home)
+    # self-evolving-nightly 已停用（jobs.json enabled=False）时跳过停滞告警，避免误报
+    se_issues, se_m, se_trend = (([], {"status": "disabled"}, {})
+                                 if "self-evolving-nightly" in disabled_cron_jobs
+                                 else analyze_self_evolving(home))
     cognee_issues, cognee_m, cognee_trend = analyze_cognee_health(home)
 
     # ===== KN LLM Judge：知识导航召回质量评估（KN_MIN_SCORE 调优主反馈）=====
@@ -240,6 +248,10 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     L.append("|------|------|------|---------|------|---------|")
     all_names = sorted(set(cron_table.keys()) | set(runner_tasks_override.keys()))
     for name in all_names:
+        # 已停用 job（jobs.json enabled=False）：标注 ⏸️，不按残留 cron-state 误报成功/失败
+        if name in disabled_cron_jobs:
+            L.append(f"| {name} | {_CRON_TO_FLYWHEEL.get(name, name)} | ⏸️ 已停用 | — | — | jobs.json enabled=False |")
+            continue
         # Runner 登记的内部任务优先（替换 cron-state 中的旧数据）
         override = runner_tasks_override.get(name)
         if override:
@@ -455,8 +467,8 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
             L.append(f"- 整体源级贡献: HS={os.get('avg_hs_kept', 0)} "
                      f"KT={os.get('avg_kt_kept', 0)} SAG={os.get('avg_sag_kept', 0)} "
                      f"| 延迟: {os.get('avg_latency_ms', 0)}ms")
-        L.append("  *Eval 命中率: 基线中 eval_counted_true/false 均为 0 "
-                 "（LLM judge 评估结果未持久化至该字段，召回成功率参考 trace.log 数据）*")
+        L.append("  *Eval 命中率: LLM judge 评估已并入 runner 内部执行（runner 阶段 1），"
+                 "详细结果参考 trace.log recall_* 事件；此处 eval_counted_true/false 保留为 0 系历史字段未回填。*")
         L.append("")
         L.append("| Dimension | 查询数 | 均分 | HS | KT | SAG | 延迟ms |")
         L.append("|-----------|--------|------|----|----|-----|--------|")
@@ -476,6 +488,12 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         L.append(f"- **匹配质量 (eval)**: F1={skill_m['avg_f1']} | Precision={skill_m['avg_precision']} | "
                  f"Recall={skill_m['avg_recall']}")
         L.append(f"- 评估查询数: {skill_m['n_queries']} | 时间: {skill_m['timestamp']}")
+        # 延迟稳健统计：主指标中位数，均值参考；偶发 >5s LLM 慢条单独计数不归因瓶颈
+        L.append(f"- **评估延迟**: 中位 {skill_m.get('median_latency_ms', 0)}ms | "
+                 f"剔除异常均值 {skill_m.get('clean_avg_latency_ms', 0)}ms | "
+                 f"全量均值 {skill_m.get('avg_latency_ms', 0)}ms | "
+                 f"p95(clean) {skill_m.get('clean_p95_latency_ms', 0)}ms | "
+                 f"异常>5s {skill_m.get('n_outliers', 0)} 条")
     if skill_usage_m.get("status") != "no_data":
         L.append("")
         L.append(f"- **真实使用**: 总 Skill {skill_usage_m['total_skills']} 个 | "
@@ -528,8 +546,10 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
     # 能力飞轮 / Self-Evolving（F-5 + B 自动写回闭环）
     L.append("### 能力飞轮 / Self-Evolving")
     L.append("")
-    if se_m.get("status") == "no_data":
-        L.append("- 暂无 Self-Evolving 产出（尚未运行，或输出目录/写回块均为空）")
+    if se_m.get("status") in ("no_data", "disabled"):
+        L.append("- ⏸️ Self-Evolving 已停用（jobs.json enabled=False），不再监控产出"
+                 if se_m.get("status") == "disabled"
+                 else "- 暂无 Self-Evolving 产出（尚未运行，或输出目录/写回块均为空）")
     else:
         L.append(f"- 最近运行: {se_m.get('last_run') or '—'}")
         L.append(f"- 驱动产出文件: {se_m.get('output_files', 0)}（声明写回 {se_m.get('applied_from_output', 0)}，精炼未落地 {se_m.get('refined_not_applied', 0)}）")
@@ -647,6 +667,7 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "router_kt_fallback_count": router_m.get("kt_fallback_count", 0),
         "router_avg_score": router_m.get("avg_score", 0),
         "router_avg_latency_ms": router_m.get("avg_latency_ms", 0),
+        "router_median_latency_ms": router_m.get("p50_latency_ms", 0),
         "sag_on_pct": router_m.get("sag_on_pct", 0),
         "sag_total_kept": router_m.get("sag_total_kept", 0),
         "sag_avg_latency_ms": router_m.get("sag_avg_latency_ms", 0),
@@ -655,6 +676,8 @@ def generate_report(home: Path, dry_run: bool = False) -> tuple[str, list[dict]]
         "token_total_avg": token_m.get("total_stats", {}).get("avg", 0),
         "token_skill_share_pct": token_m.get("source_share_pct", {}).get("skill", 0),
         "skill_f1": skill_m.get("avg_f1", 0),
+        "skill_median_latency_ms": skill_m.get("median_latency_ms", 0),
+        "skill_clean_avg_latency_ms": skill_m.get("clean_avg_latency_ms", 0),
         "skill_active_count": skill_usage_m.get("active_count", 0),
         # used_count = 使用过（use_count>0）的不同 active skill 数量
         # total_uses = 所有 active skill 的 use_count 之和（总调用次数）

@@ -130,6 +130,28 @@ def parse_cron_jobs_json(hermes_home: Path,
     return supplementary
 
 
+def load_disabled_cron_jobs(hermes_home: Path) -> set[str]:
+    """Read jobs.json and return names of ACTIVE_CRON_JOBS currently disabled.
+
+    报告中「任务可靠性」表对已停用 job 标注 ⏸️ 而非 ✅/❌，避免残留 cron-state
+    把已停用任务误显示为「成功」。动态读取，无需硬编码。
+    """
+    jobs_path = hermes_home / JOBS_JSON_SUBPATH
+    data = _load_json(jobs_path)
+    if not data or not isinstance(data, dict):
+        return set()
+    jobs = data.get("jobs", [])
+    if not isinstance(jobs, list):
+        return set()
+    return {
+        job.get("name", "")
+        for job in jobs
+        if isinstance(job, dict)
+        and job.get("name") in ACTIVE_CRON_JOBS
+        and not job.get("enabled", True)
+    }
+
+
 def parse_trace_log(trace_path: Path,
                     filter_dates: list[str] | None = None) -> dict[str, list[dict]]:
     """Parse trace.log, optionally filtered to entries matching filter_dates."""
