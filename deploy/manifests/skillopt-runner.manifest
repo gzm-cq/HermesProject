@@ -4,6 +4,7 @@
 
 skillopt_runner.py
 config.yaml
+maintenance/condense_skill.py
 !__pycache__/**
 !state.json
 !allowlist.yaml
