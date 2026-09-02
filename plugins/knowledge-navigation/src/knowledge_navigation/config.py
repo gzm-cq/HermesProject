@@ -194,6 +194,10 @@ class KnowledgeNavigationConfig:
     kn_skillrouter_embedding_dir: str = field(default="/root/.hermes/models/skillrouter/embedding")
     kn_skillrouter_reranker_dir: str = field(default="/root/.hermes/models/skillrouter/reranker")
 
+    # Skill Matcher 2 步流程（embedding 主召回 + LLM 精排，≤3 早退）
+    skill_embedding_main_top_k: int = field(default=30)  # embedding 主召回候选数（预筛覆盖与候选池大小的平衡点）
+    skill_rerank_max_candidates: int = field(default=20)  # 精排输入上限（union 截断）
+
     # SAG API configuration
     sag_api_url: str = field(default="http://127.0.0.1:4173")
     sag_auth_token: str = field(default="")  # Bearer token for SAG v1.5.3+
@@ -417,6 +421,10 @@ class KnowledgeNavigationConfig:
             values["kn_skillrouter_embedding_dir"] = env.strip()
         if env := os.getenv("KN_SKILLROUTER_RERANKER_DIR"):
             values["kn_skillrouter_reranker_dir"] = env.strip()
+        if env := os.getenv("KN_SKILL_EMBEDDING_MAIN_TOP_K"):
+            values["skill_embedding_main_top_k"] = int(env)
+        if env := os.getenv("KN_SKILL_RERANK_MAX_CANDIDATES"):
+            values["skill_rerank_max_candidates"] = int(env)
         # KN_ENABLE_TOKEN_BUDGET / KN_TOKEN_BUDGET_* 已废弃（2026-08-10 移除预算控制）。
         # 若 .env 中仍残留这些变量，此处静默忽略，不影响启动。
         if env := os.getenv("KN_SKILL_MAX_CHARS_PER_SKILL"):

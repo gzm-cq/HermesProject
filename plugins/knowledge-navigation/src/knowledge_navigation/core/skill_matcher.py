@@ -1023,6 +1023,22 @@ def _keyword_prescreen(
     return result
 
 
+def _get_embedding_main_top_k() -> int:
+    """embedding 主召回候选数（新版流程）。"""
+    return _clamp_positive(
+        get_env_int("KN_SKILL_EMBEDDING_MAIN_TOP_K", CONFIG.skill_embedding_main_top_k),
+        CONFIG.skill_embedding_main_top_k,
+    )
+
+
+def _get_rerank_max_candidates() -> int:
+    """LLM 精排输入上限（union 截断，新版流程）。"""
+    return _clamp_positive(
+        get_env_int("KN_SKILL_RERANK_MAX_CANDIDATES", CONFIG.skill_rerank_max_candidates),
+        CONFIG.skill_rerank_max_candidates,
+    )
+
+
 # ====================================================================
 # Stage 2: LLM 精排
 # ====================================================================
@@ -1033,7 +1049,7 @@ def _build_skill_prompt(index: list[dict[str, Any]]) -> str:
     排序：优先按预筛相关度（keyword _score 与 embedding _emb_score 归一化后取大）
     降序排列，使强命中排在 prompt 前部，利用 LLM 的 primacy 偏置提升精排精度。
     无预筛分数（全量退化模式）时回退按名称字母序。
-    每行 name + 描述（截断到 120 字），过滤归档。
+    每行 name + 描述（截断到 120 字）+ 权重分数（预筛相关度，供 LLM 作选择参考），过滤归档。
     """
     def _rel_score(s: dict[str, Any]) -> float:
         kw = s.get("_score", 0.0)
@@ -1052,7 +1068,14 @@ def _build_skill_prompt(index: list[dict[str, Any]]) -> str:
             continue
         desc = s.get("description", "")
         desc_trunc = (desc[:120] + "...") if len(desc) > 120 else desc
-        lines.append(f"- {s['name']}: {desc_trunc}")
+        # 权重分数：embedding 相似度原值（0-1）或 keyword 命中数，供 LLM 作为选择参考
+        emb = s.get("_emb_score", 0.0)
+        kw = s.get("_score", s.get("_kw_score", 0.0))
+        if has_score and (emb or kw):
+            weight = f" [权重 {max(emb * 50.0, kw):.0f}]"
+        else:
+            weight = ""
+        lines.append(f"- {s['name']}: {desc_trunc}{weight}")
     return "\n".join(lines)
 
 
@@ -1081,72 +1104,21 @@ def _llm_match(
 
     skill_text = _build_skill_prompt(pool)
     prompt = (
-        "你是一个技能选择器。用户遇到了一个问题，你需要从可用技能列表中选出 1-3 个最可能帮助解决问题的技能。\n\n"
-        "## 选择流程\n\n"
-        "```\n"
-        "用户问题\n"
-        "  |\n"
-        "  +- 问题中是否包含具体工具/产品名？(如 LiteLLM, Docker, PostgreSQL, 飞书)\n"
-        "  |   +- 是 -> 在技能列表中搜索包含该名称或其同义词的技能 -> 候选集 A\n"
-        "  |   +- 否 -> 提取核心任务概念(如 部署 调试 配置) -> 候选集 A\n"
-        "  |\n"
-        "  +- 问题是否描述了一个工作流程？(如 怎么部署 如何配置 审查流程)\n"
-        "  |   +- 是 -> 在技能描述中搜索包含该工作流关键词的技能 -> 候选集 B\n"
-        "  |   +- 否 -> 候选集 B 为空\n"
-        "  |\n"
-        "  +- 问题是否涉及特定领域？(如 AI 安全 数据库 前端)\n"
-        "  |   +- 是 -> 在技能描述中搜索该领域术语 -> 候选集 C\n"
-        "  |   +- 否 -> 候选集 C 为空\n"
-        "  |\n"
-        "  +- 合并候选集 A B C -> 按相关性排序 -> 取 top 1-3\n"
-        "```\n\n"
-        "为什么用决策树：技能列表有 30-50 项，线性扫描容易遗漏。决策树帮你在不同维度上并行搜索，提高召回率。\n\n"
-        "## 关键原则\n\n"
-        "1. 技能名称是强信号：name 通常是技能的核心关键词(如 database-migrations git-workflow)。如果用户问题中的词与某个 skill name 直接相关，优先选它。\n"
-        "2. 描述中的术语是弱信号：description 提供补充上下文。当 name 不直接匹配时，检查 description 中是否包含问题领域的术语。\n"
-        "3. 精准优先于数量：只选择你确信与用户问题直接相关的技能。证据不足的『可能相关』不要选入——多选无关技能会稀释注入质量、干扰下游。在确信相关的前提下最多选 3 个；若只有 1-2 个确信相关，就只返回它们，不要为凑数选弱相关项。\n\n"
-        "## 示例\n\n"
-        "### 示例 1(工具名匹配 + 语义关联)\n"
-        "用户问题：PG 连接错误怎么排查\n"
-        "可用技能列表(部分)：\n"
-        "- database-migrations: 安全的数据库 schema 变更与迁移模式\n"
-        "- systematic-debugging: 系统化调试方法论\n"
-        "- gateway-platform-troubleshooting: 排查网关平台启动/连接/崩溃等问题\n"
-        "- docker-patterns: Docker 和 Docker Compose 开发模式\n"
-        "输出：[\"database-migrations\", \"systematic-debugging\"]\n\n"
-        "### 示例 2(工作流匹配 + 领域匹配)\n"
-        "用户问题：怎么部署插件\n"
-        "可用技能列表(部分)：\n"
-        "- land-and-deploy: 合并 PR 等待 CI 部署到生产环境的完整工作流\n"
-        "- setup-deploy: 配置部署目标和策略\n"
-        "- ship: 检测+合并 base branch 运行测试 review 部署\n"
-        "- hermes-agent: 配置 Hermes Agent 的 CLI 模型 工具\n"
-        "输出：[\"land-and-deploy\", \"setup-deploy\", \"ship\"]\n\n"
-        "### 示例 3(概念关联 无直接关键词重叠)\n"
-        "用户问题：用什么工具查日志\n"
-        "可用技能列表(部分)：\n"
-        "- system-health-check: 全栈健康检查 包含日志分析和服务状态\n"
-        "- system-operations-rules: 系统运维操作规范 覆盖 Docker WSL 网络 包管理\n"
-        "- collect-baseline: 采集 recall 基线数据和统计对比\n"
-        "输出：[\"system-health-check\", \"system-operations-rules\"]\n\n"
-        "### 示例 4(无关查询)\n"
-        "用户问题：推荐一部电影\n"
-        "可用技能列表：\n"
-        "- database-migrations: 数据库 schema 变更\n"
-        "- frontend-patterns: 前端开发模式\n"
-        "输出：[]\n\n"
-        "## 候选排序说明\n\n"
-        "下方候选列表已按预筛相关度降序排列（最相关项排在前）。可优先参考排序靠前的候选，"
-        "但最终决策仍以语义匹配为准，排序仅作提示、不构成强制优先级。\n\n"
-        "## 可用技能列表\n"
-        + skill_text + "\n\n"
+        "你是一个技能选择器。从候选技能列表中选出 1-3 个最可能帮助解决用户问题的技能。\n\n"
         "## 用户问题\n"
-        + query + "\n\n"
+        "<user_query>\n"
+        + query + "\n"
+        "</user_query>\n\n"
+        "## 候选技能列表（已按预筛相关度降序，最相关排最前）\n"
+        + skill_text + "\n\n"
+        "## 选择规则\n"
+        "1. 技能 name 是强信号，description 是补充信号。\n"
+        "2. 只选确信与用户问题直接相关的技能；只确信 1 个就返回 1 个，不要凑数。\n"
+        "3. 若与任何候选都不相关，输出空数组。\n\n"
         "## 输出(仅 JSON 数组 不要其他文字)\n"
     )
 
-    # max_tokens=8192：适配sensenova-6.8-flash-lite thinking-heavy responses，避免 reasoning 吃掉所有 budget
-    # 耗尽 token 配额导致 content 字段为空（512 在长 prompt 下经常不够用）
+    # 冷配置：确定性技能匹配取低温和低 top_p（见 SPEC-llm-call-3params-cleanup）
     # 不重试：单次失败立即返回空触发 fallback（kw+emb union top-K），
     # 避免最坏 45s × 2 = 90s 的长尾叠加（实测 p99=66s）。
     for attempt in range(1):
@@ -1155,18 +1127,16 @@ def _llm_match(
             api_key = get_env("LITELLM_MASTER_KEY", "")
             skill_url = get_env("KN_SKILL_MATCHER_API_URL") or CONFIG.skill_matcher_api_url
             skill_model = get_env("KN_SKILL_MATCHER_MODEL") or CONFIG.skill_matcher_model
-            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
-            _sm_think = {"type": "enabled"} if skill_model.startswith(("s-deepseek", "agnes")) else {"type": "disabled"}
-            _sm_mt = 16384 if skill_model.startswith(("s-deepseek", "agnes")) else 8192
+            # 冷配置：确定性技能匹配取低温和低 top_p
             resp = httpx.post(
                 f"{skill_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 json={
                     "model": skill_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": _sm_mt,
-                    "temperature": 0.1,
-                    "thinking": _sm_think,
+                    "max_tokens": 16384,
+                    "temperature": 0,
+                    "top_p": 0.1,
                 },
                 timeout=_get_llm_timeout(),
             )
@@ -1178,8 +1148,7 @@ def _llm_match(
             raw = (msg.get("content") or "").strip()
 
             # 兜底：content 空但 reasoning_content 非空时，从 reasoning 末尾提取 JSON 数组。
-            # 触发场景：LiteLLM 降级到不支持 thinking:disabled 的推理模型（如 sensenova），
-            # reasoning_content 占满 token 后 content 为空。reasoning 末尾通常会给出最终答案。
+            # reasoning_content 占满 token 后 content 为空时，reasoning 末尾通常会给出最终答案。
             if not raw:
                 reasoning = (msg.get("reasoning_content") or "").strip()
                 if reasoning:
@@ -1247,18 +1216,17 @@ def match_skills(
     top_k: int | None = None,
     enable_keyword_prescreen: bool = True,
 ) -> list[dict[str, str]]:
-    """技能匹配：关键词预筛 + Embedding 预筛 + LLM 精排。
+    """技能匹配：Embedding 主召回 + LLM 精排（≤3 早退，2 步流程）。
 
-    Stage 1 (keyword prescreen): 从全量 skill 中快速选出 top-30 候选
-    Stage 1.5 (embedding prescreen): 独立从全量 skill 中选出 top-20 候选
-    Stage 2 (LLM): 从 union（≤50）候选中选出 top_k 个最相关的
-
-    三阶段管线保证 LLM prompt 大小可控，同时通过 embedding 补全关键词漏筛。
+    Stage 1 (embedding 主召回): 从全量 skill 中按相似度选 top-N 候选（N=30）
+    Stage 2 (早退): 候选 ≤3 → 直接返回，跳过精排 LLM
+    Stage 3 (LLM): 从候选（截断到精排上限 20）中选出 top_k 个最相关的，
+            候选行带预筛权重分数供 LLM 参考（关键词作为权重参数）
 
     Args:
         query: 用户消息
         top_k: 最多返回数量；None 表示运行期读取 KN_SKILL_TOP_K
-        enable_keyword_prescreen: 是否启用关键词预筛（默认 True）
+        enable_keyword_prescreen: False 时走全量 LLM 匹配（无预筛）
 
     Returns:
         [{name, description, score, path}, ...]
@@ -1276,63 +1244,68 @@ def match_skills(
     t0 = time.time()
     skill_list = _get_skill_list()
 
-    # Stage 1: 关键词预筛
-    if enable_keyword_prescreen:
-        kw_candidates = _keyword_prescreen(query, skill_list, top_k=_get_prescreen_top_k())
-        if not kw_candidates:
-            logger.debug("Skill match: keyword prescreen returned empty")
-            return []
-    else:
-        kw_candidates = []
+    # 兼容旧语义：关闭预筛 → 全量 LLM 匹配
+    if not enable_keyword_prescreen:
+        results = _llm_match(query, top_k, candidates=None)
+        if results:
+            elapsed = (time.time() - t0) * 1000
+            logger.info(
+                "Skill match (full LLM): %s (%.0fms, %d→%d) query=%s",
+                [r["name"] for r in results], elapsed, len(skill_list), len(results),
+                query[:100].replace("\n", " "),
+            )
+            return results
+        logger.debug("Skill match: empty (LLM returned nothing, no prescreen)")
+        return []
 
-    # Stage 1.5: Embedding 预筛（独立全量，补全关键词漏筛）
+    # Stage 1: Embedding 主召回（独立全量，带熔断）
     emb_candidates: list[dict[str, Any]] = []
-    if enable_keyword_prescreen and not _embedding_circuit_breaker():
+    if not _embedding_circuit_breaker():
         _, _, emb_api_key, _ = _get_embedding_config()
         if emb_api_key:
-            emb_candidates = _embedding_prescreen(query, skill_list, top_k=_get_embedding_top_k())
+            emb_candidates = _embedding_prescreen(query, skill_list, top_k=_get_embedding_main_top_k())
             # 降级检查：返回的候选没有 _emb_score 说明 embedding 失败，跳过
             if emb_candidates and not any("_emb_score" in c for c in emb_candidates):
                 logger.debug("Skill match: embedding prescreen degraded, skipping")
                 emb_candidates = []
 
-    # Union + 去重（keyword 优先，embedding 补充未命中的）
-    if enable_keyword_prescreen:
-        seen_names: set[str] = set()
-        candidates: list[dict[str, Any]] = []
-        for c in kw_candidates:
-            name = c["name"]
-            if name not in seen_names:
-                seen_names.add(name)
-                candidates.append(c)
-        for c in emb_candidates:
-            name = c["name"]
-            if name not in seen_names:
-                seen_names.add(name)
-                candidates.append(c)
+    # 候选 = embedding 主召回；embedding 失败/为空时兜底字典关键词预筛
+    candidates = list(emb_candidates)
+    if not candidates:
+        candidates = _keyword_prescreen(query, skill_list, top_k=_get_prescreen_top_k())
+        if candidates:
+            logger.debug(
+                "Skill match: embedding empty, fell back to dictionary prescreen (%d)", len(candidates)
+            )
 
-        if not candidates:
-            logger.debug("Skill match: no candidates after union")
-            return []
+    if not candidates:
+        logger.debug("Skill match: no candidates")
+        return []
 
-        n_kw = len(kw_candidates)
-        n_emb = len(emb_candidates)
-        n_union = len(candidates)
-        logger.debug(
-            "Skill match prescreen: keyword=%d, embedding=%d, union=%d query=%s",
-            n_kw, n_emb, n_union, query[:100].replace("\n", " "),
+    n_union = len(candidates)
+    logger.debug(
+        "Skill match prescreen: embedding=%d, union=%d query=%s",
+        len(emb_candidates), n_union, query[:100].replace("\n", " "),
+    )
+
+    # Stage 2: 早退 — union ≤3 直接返回（跳过精排 LLM）
+    if n_union <= 3:
+        results = _early_exit_results(candidates, skill_list, top_k)
+        elapsed = (time.time() - t0) * 1000
+        logger.info(
+            "Skill match (early-exit): %s (%.0fms, union=%d→%d) query=%s",
+            [r["name"] for r in results], elapsed, n_union, len(results),
+            query[:100].replace("\n", " "),
         )
-        llm_candidates: list[dict[str, Any]] | None = candidates
-    else:
-        llm_candidates = None
-        n_union = len(skill_list)
+        return results
 
-    # Stage 2: LLM 精排
-    results = _llm_match(query, top_k, candidates=llm_candidates)
+    # Stage 3: LLM 精排（输入截断到精排上限）
+    llm_pool = candidates[:_get_rerank_max_candidates()]
+    results = _llm_match(query, top_k, candidates=llm_pool)
     if results:
         elapsed = (time.time() - t0) * 1000
         logger.info(
-            "Skill match (kw+emb+LLM): %s (%.0fms, %d→%d) query=%s",
+            "Skill match (emb+kw+LLM): %s (%.0fms, %d→%d) query=%s",
             [r["name"] for r in results],
             elapsed,
             n_union,
@@ -1341,26 +1314,15 @@ def match_skills(
         )
         return results
 
-    # Fallback: LLM 返回空时，用 union top-K 兜底（仅预筛模式）
-    if llm_candidates is None:
-        logger.debug("Skill match: empty (LLM returned nothing, no prescreen)")
-        return []
-
+    # Fallback: LLM 返回空时，用 union top-K 兜底
     logger.debug("Skill match: LLM returned empty, falling back to union top-%d", top_k)
     info_map = {s["name"]: {"description": s["description"], "path": s["path"]} for s in skill_list}
-    # 排序：取 keyword 和 embedding 中较高的归一化分数
-    def _fallback_sort_key(c: dict[str, Any]) -> float:
-        kw_s = c.get("_score", 0.0) * 0.01
-        emb_s = c.get("_emb_score", 0.0) * 0.2
-        return max(kw_s, emb_s)
-
     fallback: list[dict[str, str]] = []
-    for c in sorted(llm_candidates, key=_fallback_sort_key, reverse=True)[:top_k]:
+    for c in sorted(llm_pool, key=_candidate_sort_key, reverse=True)[:top_k]:
         name = c["name"]
         if name in info_map:
             # 分数对齐：fallback 基线 0.3，低于 LLM 命中的 0.5（min 封顶 0.49 防止超越 LLM 基线）
-            best = _fallback_sort_key(c)
-            final_score = min(0.49, 0.3 + best)
+            final_score = min(0.49, 0.3 + _candidate_sort_key(c))
             fallback.append({
                 "name": name,
                 "description": info_map[name]["description"],
@@ -1378,6 +1340,34 @@ def match_skills(
             query[:100].replace("\n", " "),
         )
     return fallback
+
+
+def _candidate_sort_key(c: dict[str, Any]) -> float:
+    """候选排序分：取 keyword(_score/_kw_score) 与 embedding(_emb_score) 中较高的归一化分。"""
+    kw_s = max(c.get("_score", 0.0), c.get("_kw_score", 0.0)) * 0.01
+    emb_s = c.get("_emb_score", 0.0) * 0.2
+    return max(kw_s, emb_s)
+
+
+def _early_exit_results(
+    candidates: list[dict[str, Any]],
+    skill_list: list[dict[str, Any]],
+    top_k: int,
+) -> list[dict[str, str]]:
+    """早退路径：union ≤3 时按预筛分数排序直接返回，不调精排 LLM。"""
+    info_map = {s["name"]: {"description": s["description"], "path": s["path"]} for s in skill_list}
+    results: list[dict[str, str]] = []
+    for c in sorted(candidates, key=_candidate_sort_key, reverse=True)[:top_k]:
+        name = c["name"]
+        if name in info_map:
+            final_score = min(0.49, 0.3 + _candidate_sort_key(c))
+            results.append({
+                "name": name,
+                "description": info_map[name]["description"],
+                "path": info_map[name]["path"],
+                "score": f"{final_score:.3f}",
+            })
+    return results
 
 
 # ── 技术关键词提取（供 Router 全false防护使用） ──

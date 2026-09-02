@@ -350,19 +350,31 @@ def test_match_skills_no_index() -> None:
 
 @patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
 def test_match_skills_llm_returns_names(mock_ensure: MagicMock) -> None:
-    """LLM 返回 skill 名称列表 → match_skills 转为带 path 的 dict。"""
+    """LLM 返回 skill 名称列表 → match_skills 转为带 path 的 dict。
+
+    新版流程：embedding 主召回 >3 → 走 LLM 精排。
+    """
     import knowledge_navigation.core.skill_matcher as sm
     sm._skill_index = [
-        {"name": "docker-patterns", "description": "Docker stuff", "path": "/skills/docker/SKILL.md", "category": "ops"},
-        {"name": "git-workflow", "description": "Git patterns", "path": "/skills/git/SKILL.md", "category": "dev"},
+        {"name": f"skill-{i}", "description": f"desc {i}", "path": f"/skills/{i}/SKILL.md", "category": "ops"}
+        for i in range(5)
     ]
 
-    with patch("httpx.post", return_value=_mock_llm_response('["docker-patterns", "git-workflow"]')):
+    def mock_emb(query, candidates, top_k=30):
+        return [
+            {"name": f"skill-{i}", "description": f"desc {i}", "path": f"/skills/{i}/SKILL.md", "category": "ops", "_emb_score": 1.0 - i * 0.1}
+            for i in range(5)
+        ]
+
+    with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
+         patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
+         patch.object(sm, "_embedding_prescreen", side_effect=mock_emb), \
+         patch("httpx.post", return_value=_mock_llm_response('["skill-0", "skill-1"]')):
         results = match_skills("deploy docker containers")
 
     assert len(results) == 2
-    assert results[0]["name"] == "docker-patterns"
-    assert results[0]["path"] == "/skills/docker/SKILL.md"
+    assert results[0]["name"] == "skill-0"
+    assert results[0]["path"] == "/skills/0/SKILL.md"
     assert "score" in results[0]
     sm._skill_index = None
 
@@ -823,3 +835,159 @@ class TestTuningParamsRuntimeRead:
             value = getattr(sm, name)
             assert isinstance(value, int), f"{name} 应为 int"
             assert value >= 1, f"{name} 应为正整数，实际 {value}"
+
+
+# ====================================================================
+# 新流程：Embedding 主召回 + ≤3 早退 + 截断精排（关键词作为权重参数）
+# ====================================================================
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_early_exit_le3_skips_llm(mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T4: union ≤3 → 早退直接返回，不调用精排 LLM。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops"},
+        {"name": "git-workflow", "description": "Git branching patterns", "path": "/p2", "category": "dev"},
+    ]
+
+    def mock_emb(query, candidates, top_k=20):
+        # 只返回 2 个候选（有 _emb_score）
+        return [
+            {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops", "_emb_score": 0.9},
+            {"name": "git-workflow", "description": "Git branching patterns", "path": "/p2", "category": "dev", "_emb_score": 0.8},
+        ]
+
+    with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
+         patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
+         patch.object(sm, "_embedding_prescreen", side_effect=mock_emb), \
+         patch.object(sm, "_llm_match", return_value=[]) as mock_llm:
+        results = match_skills("docker deploy")
+
+    assert len(results) == 2
+    assert results[0]["name"] == "docker-patterns"
+    mock_llm.assert_not_called()  # 早退：精排 LLM 未被调用
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_early_exit_gt3_calls_llm(mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T5: union >3 → 才调用精排 LLM。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = [
+        {"name": f"skill-{i}", "description": f"desc {i}", "path": f"/p{i}", "category": "ops"}
+        for i in range(5)
+    ]
+
+    def mock_emb(query, candidates, top_k=20):
+        return [
+            {"name": f"skill-{i}", "description": f"desc {i}", "path": f"/p{i}", "category": "ops", "_emb_score": 0.9 - i * 0.1}
+            for i in range(5)
+        ]
+
+    with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
+         patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
+         patch.object(sm, "_embedding_prescreen", side_effect=mock_emb), \
+         patch.object(sm, "_llm_match", return_value=[{"name": "skill-0", "description": "desc 0", "path": "/p0", "score": "0.900"}]) as mock_llm:
+        results = match_skills("deploy")
+
+    mock_llm.assert_called_once()  # union=5 >3 → 精排 LLM 被调用
+    assert results[0]["name"] == "skill-0"
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_prompt_has_user_query_and_candidates(mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T6: 精排 prompt 含 <user_query> 全文 + 候选列表（直接测 _llm_match）。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops"},
+    ]
+
+    captured: dict[str, str] = {}
+
+    def mock_httpx(url, **kwargs):
+        captured["prompt"] = kwargs["json"]["messages"][0]["content"]
+        return _mock_llm_response('["docker-patterns"]')
+
+    with patch("httpx.post", side_effect=mock_httpx):
+        sm._llm_match("docker deploy", 3, candidates=[
+            {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops", "_emb_score": 0.9},
+            {"name": "git-workflow", "description": "Git branching patterns", "path": "/p2", "category": "dev", "_emb_score": 0.8},
+        ])
+
+    assert "<user_query>" in captured["prompt"]
+    assert "docker deploy" in captured["prompt"]
+    assert "docker-patterns" in captured["prompt"]
+    assert "Docker deployment patterns" in captured["prompt"]
+    # 候选行带权重分数（关键词作为权重参数）
+    assert "[权重" in captured["prompt"]
+    assert "docker-patterns: Docker deployment patterns [权重 45]" in captured["prompt"]
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_prompt_no_decision_tree_noise(mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T7: 精排 prompt 已移除决策树/示例/排序说明噪音（直接测 _llm_match）。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = [
+        {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops"},
+    ]
+
+    captured: dict[str, str] = {}
+
+    def mock_httpx(url, **kwargs):
+        captured["prompt"] = kwargs["json"]["messages"][0]["content"]
+        return _mock_llm_response('["docker-patterns"]')
+
+    with patch("httpx.post", side_effect=mock_httpx):
+        sm._llm_match("docker deploy", 3, candidates=[
+            {"name": "docker-patterns", "description": "Docker deployment patterns", "path": "/p1", "category": "ops", "_emb_score": 0.9},
+        ])
+
+    prompt = captured["prompt"]
+    for noise in ("选择流程", "决策树", "### 示例 1", "候选排序说明", "关键原则"):
+        assert noise not in prompt, f"prompt 仍含噪音: {noise}"
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_rerank_input_capped(mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T8: 精排 LLM 输入候选被截断到 KN_SKILL_RERANK_MAX_CANDIDATES 上限。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    monkeypatch.setenv("KN_SKILL_RERANK_MAX_CANDIDATES", "20")
+    monkeypatch.setattr("knowledge_navigation.core.env_loader._env_cache", {})
+
+    sm._skill_index = [
+        {"name": f"skill-{i}", "description": f"desc {i}", "path": f"/p{i}", "category": "ops"}
+        for i in range(50)
+    ]
+
+    captured: dict[str, str] = {}
+
+    def mock_httpx(url, **kwargs):
+        captured["prompt"] = kwargs["json"]["messages"][0]["content"]
+        return _mock_llm_response('["skill-0"]')
+
+    def mock_emb(query, candidates, top_k=20):
+        return [
+            {"name": f"skill-{i}", "description": f"desc {i}", "path": f"/p{i}", "category": "ops", "_emb_score": 1.0 - i * 0.01}
+            for i in range(50)
+        ]
+
+    with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
+         patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
+         patch.object(sm, "_embedding_prescreen", side_effect=mock_emb), \
+         patch("httpx.post", side_effect=mock_httpx):
+        match_skills("deploy")
+
+    # prompt 中的候选行 = "- name: desc" 每行一个
+    lines = [ln for ln in captured["prompt"].splitlines() if ln.startswith("- ")]
+    assert len(lines) <= 20, f"精排输入未截断: {len(lines)} 个候选"
+    assert len(lines) == 20  # 50 个候选截断到上限 20
+    sm._skill_index = None
