@@ -195,7 +195,7 @@ class RefinementOperator:
     def _call_llm_json(self, messages: list[dict], max_tokens: int = 16384) -> dict:
         try:
             resp = self._llm.chat_completion(
-                messages=messages, temperature=0.1,
+                messages=messages, temperature=0.3, top_p=0.9,
                 max_tokens=max_tokens,
                 response_format={"type": "json_object"},
             )
@@ -208,7 +208,7 @@ class RefinementOperator:
     def _call_llm_text(self, messages: list[dict], max_tokens: int = 16384) -> str:
         try:
             resp = self._llm.chat_completion(
-                messages=messages, temperature=0.3,
+                messages=messages, temperature=0.3, top_p=0.9,
                 max_tokens=max_tokens,
             )
             return self._llm.extract_content(resp)

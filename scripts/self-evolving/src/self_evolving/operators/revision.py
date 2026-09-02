@@ -241,7 +241,7 @@ class RevisionOperator:
             max_tokens = self.config.llm_max_tokens
         try:
             resp = self._llm.chat_completion(
-                messages=messages, temperature=0.3,
+                messages=messages, temperature=0.3, top_p=0.9,
                 max_tokens=max_tokens,
                 response_format={"type": "json_object"},
             )
@@ -257,7 +257,7 @@ class RevisionOperator:
             max_tokens = self.config.llm_max_tokens
         try:
             resp = self._llm.chat_completion(
-                messages=messages, temperature=0.3,
+                messages=messages, temperature=0.3, top_p=0.9,
                 max_tokens=max_tokens,
             )
             return self._llm.extract_content(resp)
@@ -440,6 +440,7 @@ class RevisionOperator:
                         {"role": "user", "content": user},
                     ],
                     temperature=t,
+                    top_p=0.9,
                     max_tokens=300,
                     response_format={"type": "json_object"},
                 )

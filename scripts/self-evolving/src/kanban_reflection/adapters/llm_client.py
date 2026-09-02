@@ -2,7 +2,7 @@
 
 通过 urllib.request（stdlib）调用兼容 OpenAI API 格式的 LLM 服务。
 
-所有护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
+所有护栏（response_format=json_object / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
 超时不再重试 / 限速 / 空内容重试）统一由公共模块 ``hermes_common.llm_guard`` 的
 ``guarded_chat_completion`` **单一实现**提供，本文件仅做薄封装。与 self_evolving
 客户端共用同一套护栏（均经 _load_common_llm_guard 加载 common），消除漂移。
@@ -104,6 +104,7 @@ class LLMClient:
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.3,
+        top_p: float | None = None,
         max_tokens: int = _MAX_TOKENS_FLOOR,
         response_format: dict | None = None,
     ) -> dict[str, Any]:
@@ -114,6 +115,7 @@ class LLMClient:
             model=self._model,
             messages=messages,
             temperature=temperature,
+            top_p=top_p,
             max_tokens=max_tokens,
             json_mode=json_mode,
             timeout=self._timeout,
