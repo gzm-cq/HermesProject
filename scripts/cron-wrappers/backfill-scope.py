@@ -133,9 +133,7 @@ def extract_batch(texts: list[str]) -> list[list[str]]:
     for attempt in range(MAX_RETRIES):
         try:
             with httpx.Client(timeout=120) as cli:
-                # thinking-required 模型（s-deepseek*/agnes*/deepseek-v4-flash）必须启用 thinking
-                # 且 max_tokens>8192（业务硬约束）；其余模型保持原行为（无 thinking / 4096）。
-                _is_think_model = LLM_MODEL.startswith(("s-deepseek", "agnes", "deepseek-v4-flash"))
+                # 冷配置：确定性实体提取取低温和低 top_p
                 _payload = {
                     "model": LLM_MODEL,
                     "messages": [
@@ -145,11 +143,10 @@ def extract_batch(texts: list[str]) -> list[list[str]]:
                             + "\n---\n".join(f"[{i}] {t[:200]}" for i,t in enumerate(texts))
                             + "\n\n对每条返回 JSON 数组。"},
                     ],
-                    "temperature":0.1,
-                    "max_tokens": 16384 if _is_think_model else 4096,
+                    "temperature":0,
+                    "top_p":0.1,
+                    "max_tokens":16384,
                 }
-                if _is_think_model:
-                    _payload["thinking"] = {"type": "enabled"}
                 resp = cli.post(
                     LLM_API_URL,
                     headers={"Content-Type":"application/json",

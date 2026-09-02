@@ -29,15 +29,14 @@ def call_llm_for_entity(
     )
     for attempt in range(retries):
         try:
-            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
-            _e_think = (model or "").startswith(("s-deepseek", "agnes"))
+            # 冷配置：确定性实体提取取低温和低 top_p
             _e_body = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "top_p": 0.1,
+                "max_tokens": 16384,
             }
-            if _e_think:
-                _e_body["thinking"] = {"type": "enabled"}
-                _e_body["max_tokens"] = 16384
             resp = requests.post(
                 api_url,
                 headers={
@@ -139,15 +138,14 @@ def call_llm_for_entity_with_causal(
 
     for attempt in range(retries):
         try:
-            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）
-            _e_think = (model or "").startswith(("s-deepseek", "agnes"))
+            # 冷配置：确定性因果对提取取低温和低 top_p
             _e_body = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "top_p": 0.1,
+                "max_tokens": 16384,
             }
-            if _e_think:
-                _e_body["thinking"] = {"type": "enabled"}
-                _e_body["max_tokens"] = 16384
             resp = requests.post(
                 api_url,
                 headers={

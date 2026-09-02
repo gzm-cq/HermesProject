@@ -85,7 +85,9 @@ def llm_condense(client, text: str, target: int, *, strict: bool = False) -> str
     resp = client.chat.completions.create(
         model=MODEL,
         messages=[{'role': 'user', 'content': prompt + text}],
-        max_completion_tokens=32768,
+        temperature=0.3,
+        top_p=0.9,
+        max_tokens=32768,
     )
     out = (resp.choices[0].message.content or '').strip()
     # 剥掉可能的围栏包裹

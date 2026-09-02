@@ -8,7 +8,7 @@
 
 护栏分两层：
   A 层 · 模型行为 / 解析（零耦合纯函数，所有客户端复用）：
-    - build_chat_body()      构建请求体：thinking 禁用 + JSON-only 系统约束 + max_tokens 钳制
+    - build_chat_body()      构建请求体：JSON-only 系统约束 + response_format=json_object + max_tokens 钳制
     - extract_content()      content 空时兜底 reasoning / reasoning_content
     - parse_json_response()  健壮 JSON 解析：markdown→raw_decode→括号级→思考前缀剥离
     - clamp_max_tokens()     max_tokens 下限保护（防推理模型 reasoning 吃光预算致 content 空）
@@ -20,7 +20,6 @@
       重试/退避/429/超时/空内容决策，仅 post_fn 不同（urllib vs requests）。
 
 开关均带环境变量兜底，可灰度回退：
-    HERMES_SE_DISABLE_THINKING  默认 "1"（禁用推理模型思考）；置 "0" 关闭回退
     HERMES_SE_MIN_CALL_INTERVAL 相邻 LLM 调用最小间隔（秒），默认 "0.5"
 
 仅使用标准库（json/time/threading/urllib/os/logging/importlib）；requests 仅在
@@ -60,22 +59,6 @@ JSON_ONLY_SYSTEM = (
 # max_tokens 默认下限：推理模型 reasoning 会占用 token 预算，偏小会导致 content 为空。
 _DEFAULT_MAX_TOKENS_FLOOR = 16384
 
-# 必须使用 thinking 且 max_tokens>8192 的推理模型前缀（s-deepseek 系列 / agnes 系列 / deepseek-v4-flash）。
-# 这些模型在网关侧为推理模型：禁用 thinking 会跳过 reasoning、输出质量下降；
-# 且推理模型需要足够 token 预算容纳 reasoning 过程。
-_THINKING_REQUIRED_PREFIXES = ("s-deepseek", "agnes", "deepseek-v4-flash")
-_THINKING_MODEL_MIN_TOKENS = 16384  # > 8192，满足业务硬约束
-
-
-def _is_thinking_required_model(model: str) -> bool:
-    """判断模型是否必须使用 thinking（s-deepseek*/agnes*/deepseek-v4-flash*）。"""
-    return bool(model) and model.startswith(_THINKING_REQUIRED_PREFIXES)
-
-
-def _thinking_disabled() -> bool:
-    """是否禁用推理模型思考过程（thinking）。默认开启，可用 env 回退关闭。"""
-    return os.environ.get("HERMES_SE_DISABLE_THINKING", "1") != "0"
-
 
 # --------------------------------------------------------------------------
 # A 层 · 模型行为 / 解析
@@ -100,11 +83,11 @@ def build_chat_body(
     model: str,
     messages: list[dict[str, str]],
     temperature: float = 0.3,
+    top_p: float | None = None,
     max_tokens: int = _DEFAULT_MAX_TOKENS_FLOOR,
     json_mode: bool = False,
     max_tokens_floor: int = _DEFAULT_MAX_TOKENS_FLOOR,
     max_tokens_cap: int | None = None,
-    disable_thinking: bool | None = None,
 ) -> dict[str, Any]:
     """构建 OpenAI 兼容 chat completion 请求体，统一注入护栏。
 
@@ -112,12 +95,11 @@ def build_chat_body(
         model: 模型名
         messages: OpenAI 格式消息列表
         temperature: 生成温度
+        top_p: 核采样（None 时不写入请求体，交由服务端默认）
         max_tokens: 期望最大输出 token（会被钳制到 [floor, cap]）
-        json_mode: 是否 JSON 输出模式（注入 JSON-only 系统约束 + response_format）
+        json_mode: 是否 JSON 输出模式（注入 JSON-only 系统约束 + response_format=json_object）
         max_tokens_floor: max_tokens 下限（默认 16384）
         max_tokens_cap: max_tokens 上限（可选）
-        disable_thinking: 是否禁用推理模型思考；None 时按环境变量 _thinking_disabled() 决定。
-            注意：s-deepseek*/agnes*/deepseek-v4-flash 模型**强制启用 thinking**（业务硬约束），此参数对其无效。
 
     Returns:
         可直接 json.dumps 的请求体 dict
@@ -128,19 +110,11 @@ def build_chat_body(
         "temperature": temperature,
         "max_tokens": clamp_max_tokens(max_tokens, lo=max_tokens_floor, hi=max_tokens_cap),
     }
+    if top_p is not None:
+        body["top_p"] = top_p
 
-    # s-deepseek*/agnes*/deepseek-v4-flash：业务硬约束 —— 必须启用 thinking，且 max_tokens>8192。
-    # 推理模型禁用 thinking 会跳过 reasoning、输出质量下降；且需足够 token 预算容纳 reasoning。
-    if _is_thinking_required_model(model):
-        body["thinking"] = {"type": "enabled"}
-        if body["max_tokens"] <= 8192:
-            body["max_tokens"] = _THINKING_MODEL_MIN_TOKENS
-    elif disable_thinking if disable_thinking is not None else _thinking_disabled():
-        # 其他模型：默认禁用思考，避免 reasoning 占满 token 预算导致 content 为空
-        body["thinking"] = {"type": "disabled"}
-
-    # JSON 场景：注入强约束 system 消息，抑制推理模型输出思考过程/解释/markdown。
-    # 仅靠 response_format 不够，必须用提升词约束。
+    # JSON 场景：response_format=json_object 约束结构化输出（最大化兼容 OpenAI 兼容端点），
+    # 并注入系统级强约束 prompt，抑制模型输出思考过程/解释/markdown。
     if json_mode:
         body["response_format"] = {"type": "json_object"}
         if not any(isinstance(m, dict) and m.get("role") == "system" for m in body["messages"]):
@@ -166,15 +140,14 @@ def extract_content(message: dict[str, Any]) -> str:
     raise ValueError("LLM 响应 content 与 reasoning 均为空")
 
 
-def parse_json_response(text: str, *, allow_thinking_prefix: bool = True) -> dict[str, Any]:
+def parse_json_response(text: str) -> dict[str, Any]:
     """从 LLM 响应文本中解析 JSON，兼容多种畸形输出。
 
     解析链（每个候选文本依次尝试）：
       1) 整体 json.loads；
       2) raw_decode 提取首个完整 JSON 对象（容忍尾部多余文本 / 多对象）；
       3) 截取首个 `{` 到末个 `}`；
-      4) 剥离常见思考前缀(Thinking Process:/Thinking:/思考过程：/Let me think/Here is the JSON ...) 后重试 1-3；
-      5) 通用括号级提取：遍历文本每个 `{`/`[` 位置用 raw_decode 尝试（覆盖嵌套/前缀/后缀）。
+      4) 通用括号级提取：遍历文本每个 `{`/`[` 位置用 raw_decode 尝试（覆盖嵌套/前缀/后缀）。
     任一候选成功即返回；全失败抛 ValueError。
     """
     if text is None:
@@ -200,19 +173,6 @@ def parse_json_response(text: str, *, allow_thinking_prefix: bool = True) -> dic
             cleaned = cleaned[:-3]
     cleaned = cleaned.strip()
     _add(cleaned)
-
-    # 剥离常见思考/说明前缀，保留其后内容重试
-    if allow_thinking_prefix:
-        _THINK_PREFIXES = (
-            "Thinking Process:", "Thinking:", "思考过程：", "思考过程:",
-            "Let me think", "Here is the JSON", "Here's the JSON",
-            "以下是 JSON", "以下是JSON", "输出 JSON：", "输出 JSON:",
-            "我的分析如下", "分析如下",
-        )
-        for prefix in _THINK_PREFIXES:
-            idx = cleaned.find(prefix)
-            if idx != -1:
-                _add(cleaned[idx + len(prefix):])
 
     seen: set[str] = set()
     for cand in candidates:
@@ -454,6 +414,7 @@ def guarded_chat_completion(
     model: str,
     messages: list[dict[str, str]],
     temperature: float = 0.3,
+    top_p: float | None = None,
     max_tokens: int = _DEFAULT_MAX_TOKENS_FLOOR,
     json_mode: bool = False,
     timeout: float = 60.0,
@@ -461,7 +422,6 @@ def guarded_chat_completion(
     min_interval: float = _DEFAULT_MIN_CALL_INTERVAL,
     max_tokens_floor: int = _DEFAULT_MAX_TOKENS_FLOOR,
     max_tokens_cap: int | None = None,
-    disable_thinking: bool | None = None,
     rate_limiter: RateLimiter | None = None,
 ) -> dict[str, Any]:
     """带全护栏的 LLM 调用（传输无关，统一策略）。
@@ -475,12 +435,12 @@ def guarded_chat_completion(
       - 网络 URLError/ConnectionError：重试
       - **超时(Timeout)：不再重试**（避免 3×timeout 长尾）
       - 200 但 content/reasoning 皆空：视为可重试瞬时故障，退避重试
-      - thinking 禁用 + JSON-only 系统约束 + max_tokens 钳制（经 build_chat_body）
+      - JSON-only 系统约束 + response_format=json_object + max_tokens 钳制（经 build_chat_body）
 
     Args:
         post_fn: 传输回调，签名 (body: dict, timeout: float) -> dict（返回解析后的响应 dict），
                  失败时抛 LLMTransportError。可由 make_urllib_post / make_requests_post 构造。
-        model / messages / temperature / max_tokens / json_mode / disable_thinking / max_tokens_floor / max_tokens_cap: 见 build_chat_body
+        model / messages / temperature / top_p / max_tokens / json_mode / max_tokens_floor / max_tokens_cap: 见 build_chat_body
         timeout: 单次请求超时（秒），传给 post_fn
         max_retries: 最大尝试次数（含首次）
         min_interval: 相邻调用最小间隔（秒），传给 RateLimiter
@@ -496,11 +456,11 @@ def guarded_chat_completion(
         model=model,
         messages=messages,
         temperature=temperature,
+        top_p=top_p,
         max_tokens=max_tokens,
         json_mode=json_mode,
         max_tokens_floor=max_tokens_floor,
         max_tokens_cap=max_tokens_cap,
-        disable_thinking=disable_thinking,
     )
 
     limiter = rate_limiter or RateLimiter(min_interval)

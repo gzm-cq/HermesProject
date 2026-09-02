@@ -65,17 +65,14 @@ def _call_router_llm(
     for attempt in range(max_retries):
         try:
             cur_key = _fetch_api_key() if attempt > 0 else api_key
-            # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）；
-            # 默认 sensenova 等保持原行为（thinking disabled / 8192）
-            _rt_think = {"type": "enabled"} if (model or "").startswith(("s-deepseek", "agnes")) else {"type": "disabled"}
-            _rt_mt = 16384 if (model or "").startswith(("s-deepseek", "agnes")) else 8192
+            # 冷配置：确定性路由判断取低温和低 top_p
             resp = httpx.post(
                 f"{api_url.rstrip('/')}/chat/completions",
                 json={
                     "model": model,
-                    "temperature": 0.1,
-                    "max_tokens": _rt_mt,
-                    "thinking": _rt_think,
+                    "temperature": 0,
+                    "top_p": 0.1,
+                    "max_tokens": 16384,
                     "messages": [
                         {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
                         {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
@@ -220,8 +217,8 @@ def _parse_mask(text: str) -> tuple[dict[str, bool] | None, float]:
                     else:
                         break
 
-    # 5) Extract JSON from LLM reasoning text: LLM sometimes outputs thinking
-    #    before JSON (e.g. "我们分析消息：...\n\n{\"h\": ...}") — pull the last
+    # 5) Extract JSON from LLM reasoning text: LLM may emit text before JSON
+    #    (e.g. "我们分析消息：...\n\n{\"h\": ...}") — pull the last
     #    JSON object from the full text, not just the first one.
     if data is None:
         json_objects = re.findall(r'\{[^{}]*\}', text)

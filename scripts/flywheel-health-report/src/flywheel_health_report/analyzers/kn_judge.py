@@ -247,16 +247,15 @@ def _judge_one_masked(rec: dict, config: dict | None) -> tuple[dict | None, Any]
     headers = {"Content-Type": "application/json"}
     if config.get("key"):
         headers["Authorization"] = f"Bearer {config['key']}"
-    # s-deepseek*/agnes 必须启用 thinking（业务硬约束）；max_tokens 已 16384>8192
+    # 冷配置：确定性 judge 评分取低温和低 top_p
     _kj_model = config.get("model", "s-deepseek-v4-flash")
-    _kj_think = _kj_model.startswith(("s-deepseek", "agnes"))
     body = json.dumps({
         "model": _kj_model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
+        "temperature": 0,
+        "top_p": 0.1,
         "max_tokens": 16384,
         "response_format": {"type": "json_object"},
-        **({"thinking": {"type": "enabled"}} if _kj_think else {}),
     }).encode("utf-8")
     ctx = ssl.create_default_context()
     if os.environ.get("JUDGE_INSECURE", "").lower() in ("1", "true", "yes"):

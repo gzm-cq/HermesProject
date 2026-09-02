@@ -890,16 +890,14 @@ def _judge_one(rec: dict, config: dict | None) -> tuple[float, bool] | tuple[Non
     headers = {"Content-Type": "application/json"}
     if config.get("key"):
         headers["Authorization"] = f"Bearer {config['key']}"
-    # s-deepseek*/agnes 必须启用 thinking 且 max_tokens>8192（业务硬约束）；
-    # 其他模型保持 8192 与全局配置对齐（商汤 sensenova 会写超长 reasoning）
+    # 冷配置：确定性 judge 评分取低温和低 top_p
     _cb_model = config.get("model", "s-deepseek-v4-flash")
-    _cb_think = _cb_model.startswith(("s-deepseek", "agnes"))
     body = json.dumps({
         "model": _cb_model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
-        "max_tokens": 16384 if _cb_think else 8192,
-        **({"thinking": {"type": "enabled"}} if _cb_think else {}),
+        "temperature": 0,
+        "top_p": 0.1,
+        "max_tokens": 16384,
     }).encode("utf-8")
     ctx = ssl.create_default_context()
     if os.environ.get("JUDGE_INSECURE", "").lower() in ("1", "true", "yes"):

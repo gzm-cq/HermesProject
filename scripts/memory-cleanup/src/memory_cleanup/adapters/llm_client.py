@@ -1,6 +1,6 @@
 """LLM 调用适配器 — 封装 HTTP 调用、JSON 解析重试逻辑。
 
-所有 LLM 调用护栏（thinking 禁用 / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
+所有 LLM 调用护栏（response_format=json_object / JSON-only 系统约束 / max_tokens 钳制 / 健壮 JSON 解析 /
 重试 / 429 退避 / 超时不再重试 / 限速 / 空内容重试）统一由 hermes_common.llm_guard 的
 ``guarded_chat_completion`` **单一实现** 提供；本文件仅做薄封装，并保留业务层 JSON 正则兜底。
 """
@@ -116,7 +116,8 @@ class LLMClient:
                 self._post_fn,
                 model=self._model,
                 messages=messages,
-                temperature=0.05,
+                temperature=0.0,
+                top_p=0.1,
                 max_tokens=max_tokens,
                 json_mode=json_mode,
                 timeout=120,
