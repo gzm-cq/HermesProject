@@ -7,6 +7,82 @@ import pytest
 from tests._helpers import make_reflection as _make_reflection
 
 
+class TestPhaseRepairIngest:
+    def _write_verdict(self, dirpath, sid, **overrides):
+        d = {
+            "score": 5,
+            "session_id": sid,
+            "synthesized": True,
+            "reflection_title": f"反思-{sid}",
+            "reflection_content": f"# 反思-{sid}\n\n内容",
+        }
+        d.update(overrides)
+        with open(os.path.join(dirpath, f"{sid}.json"), "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+
+    def test_repairs_orphan_reflections(self, module, tmp_path):
+        """扫描 cache：synthesized 未 ingest 的补写入，已 ingest 的跳过。"""
+        d = tmp_path / "verdicts"
+        d.mkdir()
+        # 孤儿（synthesized=True, 未 ingest）
+        self._write_verdict(d, "s_orphan1")
+        self._write_verdict(d, "s_orphan2")
+        # 已 ingest（跳过）
+        self._write_verdict(d, "s_done", ingested=True, document_id="doc-ok")
+        # 未合成（跳过）
+        self._write_verdict(d, "s_unsyn", synthesized=False)
+
+        with patch.object(module, "sag_health_check", return_value=True), \
+             patch.object(module, "sag_ingest", return_value="doc-repair") as mock_ingest:
+            repaired = module.phase_repair_ingest(dry_run=False, verdict_dir=str(d))
+
+        assert repaired == 2
+        assert mock_ingest.call_count == 2
+        # 孤儿已标记 ingested
+        with open(d / "s_orphan1.json", encoding="utf-8") as f:
+            assert json.load(f)["ingested"] is True
+
+    def test_dry_run_no_write(self, module, tmp_path):
+        """dry-run：只报告不写 cache。"""
+        d = tmp_path / "verdicts"
+        d.mkdir()
+        self._write_verdict(d, "s_orphan1")
+
+        with patch.object(module, "sag_ingest") as mock_ingest:
+            would = module.phase_repair_ingest(dry_run=True, verdict_dir=str(d))
+
+        assert would == 1
+        mock_ingest.assert_not_called()
+        with open(d / "s_orphan1.json", encoding="utf-8") as f:
+            assert json.load(f).get("ingested") is None
+
+    def test_skips_attempts_exhausted(self, module, tmp_path):
+        """ingest_attempts >= 3 的跳过（上限保护）。"""
+        d = tmp_path / "verdicts"
+        d.mkdir()
+        self._write_verdict(d, "s_exhausted", ingest_attempts=3, last_ingest_error="x")
+
+        with patch.object(module, "sag_health_check", return_value=True), \
+             patch.object(module, "sag_ingest") as mock_ingest:
+            repaired = module.phase_repair_ingest(dry_run=False, verdict_dir=str(d))
+
+        assert repaired == 0
+        mock_ingest.assert_not_called()
+
+    def test_sag_down_returns_zero(self, module, tmp_path):
+        """SAG 不可达时不尝试 ingest。"""
+        d = tmp_path / "verdicts"
+        d.mkdir()
+        self._write_verdict(d, "s_orphan1")
+
+        with patch.object(module, "sag_health_check", return_value=False), \
+             patch.object(module, "sag_ingest") as mock_ingest:
+            repaired = module.phase_repair_ingest(dry_run=False, verdict_dir=str(d))
+
+        assert repaired == 0
+        mock_ingest.assert_not_called()
+
+
 class TestPhasePatterns:
     def test_less_than_two_reflections_skips(self, module, tmp_config):
         result = module.phase_patterns([_make_reflection()], dry_run=True)

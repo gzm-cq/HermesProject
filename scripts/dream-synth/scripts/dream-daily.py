@@ -484,6 +484,76 @@ def _load_cached_reflections() -> list[dict]:
 
     return reflections
 
+def phase_repair_ingest(dry_run: bool = False, verdict_dir: str | None = None) -> int:
+    """扫描 verdict cache：synthesized 但未 ingest 的反思补写入 SAG。
+
+    不依赖游标（read_sessions 只读 started_at >= last_run 的 session），
+    专门补齐历史上 synthesize 成功但 ingest 失败/跳过的漏网之鱼。
+    """
+    import glob as _glob
+    verdict_dir = verdict_dir or CFG["cache"]["verdict_dir"]
+    repaired = 0
+    would_repair = 0
+    skipped_attempts = 0
+
+    if not dry_run and not sag_health_check():
+        print("  ⚠️ SAG 服务不可达，跳过 repair-ingest", file=sys.stderr)
+        return 0
+
+    files = [f for f in _glob.glob(os.path.join(verdict_dir, "*.json"))
+             if not os.path.basename(f).startswith("last_run")]
+    for fname in files:
+        try:
+            with open(fname, encoding="utf-8") as f:
+                cache = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            continue
+
+        # 只处理：已合成 + 有内容 + 未 ingest + 尝试次数未达上限
+        if not cache.get("synthesized") or not cache.get("reflection_content"):
+            continue
+        if cache.get("ingested"):
+            continue
+        if cache.get("ingest_attempts", 0) >= 3:
+            skipped_attempts += 1
+            continue
+
+        sid = cache.get("session_id", os.path.basename(fname).replace(".json", ""))
+        title = cache.get("reflection_title", f"反思-{sid[:30]}")
+        content = cache["reflection_content"]
+        metadata = {"source": "dream-synth", "session_id": sid,
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "score": cache.get("score", 0),
+                    "repair": True}
+
+        if dry_run:
+            would_repair += 1
+            print(f"  [dry-run] 将补 ingest: {title[:50]}")
+            continue
+
+        doc_id = sag_ingest(title, content, metadata=metadata, source_id=SAG_SOURCE_ID)
+        if doc_id:
+            cache["ingested"] = True
+            cache["document_id"] = doc_id
+            cache.pop("ingest_attempts", None)
+            cache.pop("last_ingest_error", None)
+            _save_verdict(fname, cache)
+            repaired += 1
+            print(f"  ✔ 补 ingest: {title[:50]}")
+        else:
+            cache["ingest_attempts"] = cache.get("ingest_attempts", 0) + 1
+            cache["last_ingest_error"] = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (repair attempt)"
+            _save_verdict(fname, cache)
+            print(f"  ✘ 补 ingest 失败: {title[:50]}", file=sys.stderr)
+            PIPELINE_ERRORS.append(f"repair-ingest: {title[:40]}")
+
+    if dry_run:
+        print(f"  📊 repair-ingest(dry-run): 待补 {would_repair} 篇 | 跳过(attempts>=3) {skipped_attempts} 篇 | 共扫 {len(files)} 个 verdict")
+    else:
+        print(f"  📊 repair-ingest: 补入 {repaired} 篇 | 跳过(attempts>=3) {skipped_attempts} 篇 | 共扫 {len(files)} 个 verdict")
+    return repaired if not dry_run else would_repair
+
+
 # ── Phase 1: synthesize ──────────────────────────────
 def _save_verdict(verdict_file: str, data: dict):
     os.makedirs(os.path.dirname(verdict_file), exist_ok=True)
@@ -1123,7 +1193,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="dream-daily — 每日梦境流水线")
     parser.add_argument("--dry-run", action="store_true", help="只打印不写入")
-    parser.add_argument("--phase", choices=["synthesize", "patterns", "promote", "feishu"],
+    parser.add_argument("--phase", choices=["synthesize", "patterns", "promote", "feishu", "repair-ingest"],
                         help="只跑某一阶段")
     args = parser.parse_args()
 
@@ -1150,6 +1220,13 @@ def _run_pipeline(args):
     """执行流水线各阶段。"""
     last_ts = get_last_run_ts()
     now_ts = datetime.now().timestamp()
+
+    # Phase 0: repair-ingest（不依赖游标的补齐路径）
+    if args.phase == "repair-ingest":
+        print("\n── Phase 0: repair-ingest ──")
+        repaired = phase_repair_ingest(dry_run=args.dry_run)
+        print(f"  补 ingest 完成: {repaired} 篇")
+        return
 
     # Phase 1: synthesize
     reflections = []
