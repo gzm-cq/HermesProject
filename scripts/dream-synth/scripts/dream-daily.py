@@ -81,6 +81,10 @@ def load_config() -> dict:
 
 CFG = load_config()
 
+# 流水线级失败登记：任一 phase 的业务失败（非异常）都会登记，
+# main() 据此决定退出码（2=有业务失败）与 last_run 游标推进。
+PIPELINE_ERRORS: list[str] = []
+
 # 环境变量覆盖（继承链：DREAM_SYNTH_* → LLM_MODEL_LIGHT → LLM_MODEL_MAIN）
 _env_light = os.environ.get("LLM_MODEL_LIGHT", "")
 _env_main = os.environ.get("LLM_MODEL_MAIN", "")
@@ -569,6 +573,7 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
                     verdict = call_llm_json(prompt, cheap_model)
                 except Exception as e:
                     print(f"  FILTER FAIL {title[:40]}: {e}（不缓存，下次重试）")
+                    PIPELINE_ERRORS.append(f"filter: {title[:40]}")
                     if llm_throttle_s > 0:
                         time.sleep(llm_throttle_s)
                     continue
@@ -592,6 +597,7 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
                     md_content = call_llm(prompt, smart_model, temperature=0.3)
                 except Exception as e:
                     print(f"  SYNTH FAIL {title[:40]}: {e}", file=sys.stderr)
+                    PIPELINE_ERRORS.append(f"synth: {title[:40]}")
                     if llm_throttle_s > 0:
                         time.sleep(llm_throttle_s)
                     continue
@@ -706,6 +712,7 @@ def phase_synthesize(sessions: list[dict], dry_run: bool = False) -> list[dict]:
                 _save_verdict(info["verdict_file"], info["cache"])
                 failed_sessions.append(info["refl_title"])
                 stats.failed += 1
+                PIPELINE_ERRORS.append(f"ingest: {info['refl_title'][:40]}")
 
         total_ms = (time.time() - t0_total) * 1000
         print(f"  📊 合成完成: 总 {stats.total + stats.skipped} 个 | 成功 {stats.success} | 失败 {stats.failed} | 跳过 {stats.skipped} | 耗时 {total_ms/1000:.1f}s")
@@ -755,6 +762,7 @@ def phase_patterns(reflections: list[dict], dry_run: bool = False) -> list[dict]
         result = call_llm_json(prompt, smart_model)
     except Exception as e:
         print(f"  patterns 失败: {e}", file=sys.stderr)
+        PIPELINE_ERRORS.append(f"patterns: {e}")
         return []
 
     patterns = result.get("patterns", [])
@@ -855,6 +863,7 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
                 verdicts.append((r, verdict))
             except Exception as e:
                 print(f"  promote 判断失败: {e}", file=sys.stderr)
+                PIPELINE_ERRORS.append(f"promote: {e}")
                 verdicts.append((r, None))
             if llm_throttle_s > 0:
                 time.sleep(llm_throttle_s)
@@ -866,6 +875,7 @@ def phase_promote(reflections: list[dict], dry_run: bool = False) -> list[dict]:
                 return (r, verdict)
             except Exception as e:
                 print(f"  promote 判断失败: {e}", file=sys.stderr)
+                PIPELINE_ERRORS.append(f"promote: {e}")
                 return (r, None)
 
         verdicts = []
@@ -998,12 +1008,16 @@ def _mark_verdicts_feishu_pushed(verdict_dir: str, session_ids: set[str]):
 
 
 def phase_feishu(reflections: list[dict], promoted: list[dict], dry_run: bool = False,
-                fresh_count: int | None = None):
+                fresh_count: int | None = None, skip_on_errors: int = 0):
     """推送 top-5 未推送反思到飞书（已推的不重复推送）
 
     Args:
         fresh_count: 今日新提炼的反思篇数（来自 synthesize 阶段）。None 表示独立运行阶段。
     """
+    if skip_on_errors > 0:
+        print(f"  feishu: 本轮流水线有 {skip_on_errors} 处失败，跳过推送", file=sys.stderr)
+        return
+
     promoted_sids = {r["session_id"] for r in promoted}
     # 独立运行时从 promote-log 补充已归档 session_id
     if not promoted_sids:
@@ -1114,6 +1128,7 @@ def main():
     args = parser.parse_args()
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    PIPELINE_ERRORS.clear()
     print(f"🌙 梦境流水线启动 — {now_str}")
 
     try:
@@ -1123,6 +1138,10 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+    if PIPELINE_ERRORS:
+        print(f"\n⚠️ 梦境流水线完成，但 {len(PIPELINE_ERRORS)} 处业务失败（见上方日志）", file=sys.stderr)
+        sys.exit(2)
 
     print(f"\n✅ 梦境流水线完成 — {datetime.now().strftime('%H:%M:%S')}")
 
@@ -1174,12 +1193,16 @@ def _run_pipeline(args):
             fresh_synth_count = len(reflections)
             if fresh_synth_count > 0:
                 feishu_fresh = fresh_synth_count
-        phase_feishu(reflections, promoted, dry_run=args.dry_run, fresh_count=feishu_fresh)
+        phase_feishu(reflections, promoted, dry_run=args.dry_run, fresh_count=feishu_fresh,
+                     skip_on_errors=len(PIPELINE_ERRORS))
 
     # 更新时间戳：仅在完整流水线或 synthesize 阶段运行后更新
     # 单独运行 patterns/promote/feishu 时不更新，避免跳过未处理的 session
     if not args.dry_run and (not args.phase or args.phase == "synthesize"):
-        save_last_run_ts(now_ts)
+        if PIPELINE_ERRORS:
+            print(f"  ⏸️ 存在 {len(PIPELINE_ERRORS)} 处失败，last_run 游标不推进（失败 session 下次重试）", file=sys.stderr)
+        else:
+            save_last_run_ts(now_ts)
 
 
 if __name__ == "__main__":

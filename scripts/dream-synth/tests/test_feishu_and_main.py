@@ -4,6 +4,8 @@ import os
 import subprocess
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from tests._helpers import make_reflection as _make_reflection
 
 
@@ -122,3 +124,48 @@ class TestMainEntry:
              patch.object(module, "read_sessions", return_value=[]), \
              patch.object(module, "sag_search", return_value=[]):
             module.main()
+
+    def test_synthesize_failure_exits_2_and_no_cursor(self, module, tmp_config, tmp_path, capsys):
+        """synthesize 有失败时：退出码 2、游标不推进、飞书不推送。"""
+        from tests._helpers import make_session as _make_session
+        verdict_dir = tmp_config["cache"]["verdict_dir"]
+        os.makedirs(verdict_dir, exist_ok=True)
+        ts_file = os.path.join(verdict_dir, "last_run.txt")
+
+        sessions = [_make_session("s1")]
+        with patch("sys.argv", ["dream-daily.py"]), \
+             patch.object(module, "read_sessions", return_value=sessions), \
+             patch.object(module, "call_llm_json", side_effect=Exception("LLM down")), \
+             patch.object(module, "sag_health_check", return_value=True), \
+             patch.object(module, "subprocess") as mock_sub:
+            with pytest.raises(SystemExit) as exc_info:
+                module.main()
+
+        assert exc_info.value.code == 2
+        # 失败时游标不推进 → last_run.txt 不存在
+        assert not os.path.exists(ts_file)
+        # 飞书不推送（mock_sub.run 未被调用）
+        mock_sub.run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "业务失败" in captured.err
+        assert "✅" not in captured.out
+
+    def test_all_success_advances_cursor(self, module, tmp_config, tmp_path):
+        """synthesize 全部成功时：游标正常推进。"""
+        from tests._helpers import make_session as _make_session
+        verdict_dir = tmp_config["cache"]["verdict_dir"]
+        os.makedirs(verdict_dir, exist_ok=True)
+        ts_file = os.path.join(verdict_dir, "last_run.txt")
+
+        sessions = [_make_session("s1")]
+        with patch("sys.argv", ["dream-daily.py"]), \
+             patch.object(module, "read_sessions", return_value=sessions), \
+             patch.object(module, "call_llm_json", return_value={"score": 5}), \
+             patch.object(module, "call_llm", return_value="# 标题\n内容"), \
+             patch.object(module, "sag_health_check", return_value=True), \
+             patch.object(module, "sag_ingest", return_value="doc-123"), \
+             patch.object(module, "sag_search", return_value=[]), \
+             patch.object(module, "subprocess") as mock_sub:
+            module.main()
+
+        assert os.path.exists(ts_file)
