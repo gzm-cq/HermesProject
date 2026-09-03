@@ -219,12 +219,14 @@ else
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 
-# D9: codegraph bind mount (/mnt/d/HermesProject/.codegraph)
-if mountpoint -q /mnt/d/HermesProject/.codegraph 2>/dev/null; then
-    EXTRA_CHECKS="${EXTRA_CHECKS} codegraph_bind:ok"
+# D9: codegraph 索引 symlink (/mnt/d/HermesProject/.codegraph -> /root/.codegraph/HermesProject)
+# 2026-09-03: bind mount 改为 symlink（WSL 重启时序更稳，无需 systemd 挂载服务）。
+# 检查：symlink 存在 + 穿透目标可达 + 索引 DB 存在。
+if [ -L /mnt/d/HermesProject/.codegraph ] && [ -d /mnt/d/HermesProject/.codegraph ] && [ -f /mnt/d/HermesProject/.codegraph/codegraph.db ]; then
+    EXTRA_CHECKS="${EXTRA_CHECKS} codegraph_symlink:ok"
 else
-    EXTRA_CHECKS="${EXTRA_CHECKS} codegraph_bind:not_mounted"
-    cron_warn "/mnt/d/HermesProject/.codegraph not a valid mountpoint (codegraph MCP depends on it)"
+    EXTRA_CHECKS="${EXTRA_CHECKS} codegraph_symlink:broken"
+    cron_warn "/mnt/d/HermesProject/.codegraph symlink broken or index DB missing (codegraph MCP depends on it)"
     [ "${INFRA_STATUS}" = "ok" ] && INFRA_STATUS="warn"
 fi
 

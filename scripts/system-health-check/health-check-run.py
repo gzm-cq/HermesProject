@@ -93,7 +93,7 @@ def format_summary(data: dict) -> tuple[str, bool]:
             wmcp_ok = checks.get('windows_mcp_reachable', False)
             wmcp_http = checks.get('windows_mcp_http', 'N/A')
             parts = [f"{up}/{exp} 个在线"]
-            sorted_names = ["axiom-wiki", "postgres", "codegraph", "sag", "windows-mcp"]
+            sorted_names = ["axiom-wiki", "postgres", "codegraph", "codegraph-bifrost", "sag", "sag-mcp-bridge", "windows-mcp"]
             for name in sorted_names:
                 cnt = sc.get(name, 0)
                 if name == "windows-mcp":

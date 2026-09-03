@@ -81,7 +81,7 @@ def get_systemd_pids():
         return _SYSTEMD_PIDS
     out, _, _ = run(
         "for svc in hermes-gateway hindsight-daemon hermes-dashboard "
-        "axiom-wiki-mcp-sse codegraph-mcp postgres-mcp sag sag-mcp-bridge; do "
+        "axiom-wiki-mcp-sse postgres-mcp sag sag-mcp-bridge; do "
         "systemctl show -P MainPID \"$svc\" 2>/dev/null; done || true"
     )
     pids = set()
@@ -392,13 +392,15 @@ def check_postgres():
 # ============================================
 # 6. MCP
 # ============================================
-# All 6 MCP servers from config.yaml (mcp_servers section) + sag-mcp-bridge (SSE bridge proxy)
+# All 7 MCP servers from config.yaml (mcp_servers section) + sag-mcp-bridge (SSE bridge proxy)
 # (cognee 已摘除 2026-08-30：recall 后端 neo4j 停用、KN 无 cognee 召回路、功能死锁)
-MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "sag", "sag-mcp-bridge", "windows-mcp"]
+# 2026-09-03: 新增 codegraph-bifrost（/root/bifrost-src 索引实例，stdio 直连，无 SSE 桥）
+MCP_SERVERS = ["axiom-wiki", "postgres", "codegraph", "codegraph-bifrost", "sag", "sag-mcp-bridge", "windows-mcp"]
 MCP_PATTERNS = {
     "axiom-wiki":  r'axiom-wiki-mcp-sse\.mjs',
     "postgres":    r'postgres-mcp-sse\.mjs',
-    "codegraph":   r'codegraph\.js serve --mcp',
+    "codegraph":   r'codegraph\.js serve --mcp.*--path /mnt/d/HermesProject',
+    "codegraph-bifrost": r'codegraph\.js serve --mcp.*--path /root/bifrost-src',
 }
 # windows-mcp runs on Windows host, checked via HTTP endpoint
 WINDOWS_MCP_URL = "http://127.0.0.1:8000/sse"

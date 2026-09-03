@@ -57,7 +57,7 @@ if bash -n "$SRC" 2>/dev/null; then ok "system-health-self-heal.sh BASH OK"; els
 
 echo ""
 echo "── 测试 6: 新增检查项 D8-D11 存在 ──"
-for check in 'local-embedding-gpu' 'codegraph_bind' 'sse_axiom_wiki' 'sse_postgres_mcp'; do
+for check in 'local-embedding-gpu' 'codegraph_symlink' 'sse_axiom_wiki' 'sse_postgres_mcp'; do
     if grep -q "$check" "$SRC" 2>/dev/null; then ok "$check 检查存在"; else bad "$check 检查缺失"; fi
 done
 
