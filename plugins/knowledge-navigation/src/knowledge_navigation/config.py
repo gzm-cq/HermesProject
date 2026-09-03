@@ -207,7 +207,7 @@ class KnowledgeNavigationConfig:
     # --workers 2，瓶颈一直是 LLM 答案合成而非 worker 数。KN 侧已传 include_summary=False
     # 跳过该合成，/search 实测由 ~3.9s 降至 ~0.15s，故 30s 留有极大余量。
     sag_search_timeout: int = field(default=30)
-    sag_source_ids: str = field(default="89a9a04d295c4206b35706a09ffb43e8")
+    sag_source_ids: str = field(default="33acad8140a04f4d835ac9a5a2eeef13")
     sag_max_inject: int = field(default=3)  # merge 时最多注入条数（SAG topK 只控 vector 路，multi-hop 不受控）
     sag_pointer_threshold: int = field(default=300)  # content 超过此字符数时改注入指针，LLM 按需查全文
     sag_min_score: float = field(default=0.35)  # SAG 独立 min_score，与 Hindsight 分开（SAG 原始 pgvector 得分集中在 0.4-0.7，与 cross-encoder 分不同分布）

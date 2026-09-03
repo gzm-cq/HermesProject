@@ -361,7 +361,7 @@ def save_last_run_ts(ts: float):
 
 # ── SAG ─────────────────────────────────────────────
 # SAG sourceId（与 knowledge-navigation 插件共用同一个源）
-SAG_SOURCE_ID = "89a9a04d295c4206b35706a09ffb43e8"
+SAG_SOURCE_ID = "33acad8140a04f4d835ac9a5a2eeef13"
 
 # SAG Bearer token 文件路径（公共客户端会先读进程内缓存 → 环境变量 → 该文件）
 _SAG_TOKEN_PATH = "/root/.hermes/.sag_token"
