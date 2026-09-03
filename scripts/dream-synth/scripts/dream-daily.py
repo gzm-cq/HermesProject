@@ -531,7 +531,7 @@ def phase_repair_ingest(dry_run: bool = False, verdict_dir: str | None = None) -
             print(f"  [dry-run] 将补 ingest: {title[:50]}")
             continue
 
-        doc_id = sag_ingest(title, content, metadata=metadata, source_id=SAG_SOURCE_ID)
+        doc_id = sag_ingest(title, content, metadata=metadata)
         if doc_id:
             cache["ingested"] = True
             cache["document_id"] = doc_id
