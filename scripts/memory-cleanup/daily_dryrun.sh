@@ -22,6 +22,12 @@ MEMORY_DIR="${HERMES_HOME}/memories"
 # LLM 模型继承链兜底：MEMORY_CLEANUP_LLM_MODEL → LLM_MODEL_LIGHT
 export MEMORY_CLEANUP_LLM_MODEL="${MEMORY_CLEANUP_LLM_MODEL:-${LLM_MODEL_LIGHT:-}}"
 
+# 容量守卫：MEMORY 占用超 85% 时强制触发冷记忆淘汰（2026-09-04）
+# 冷记忆阈值 60 天，用户偏好/行为规则条目永不淘汰（lifecycle_protected_keywords）
+export MEMORY_CLEANUP_COLD_MEMORY_EVICTION="${MEMORY_CLEANUP_COLD_MEMORY_EVICTION:-true}"
+export MEMORY_CLEANUP_COLD_MEMORY_DAYS="${MEMORY_CLEANUP_COLD_MEMORY_DAYS:-60}"
+export MEMORY_CLEANUP_MEMORY_CAPACITY_SAFE_RATIO="${MEMORY_CLEANUP_MEMORY_CAPACITY_SAFE_RATIO:-0.85}"
+
 cron_section "执行记忆清理"
 if bash run.sh --vote 1 --apply --quiet; then
     cron_ok "记忆清理完成"
