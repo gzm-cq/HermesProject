@@ -76,16 +76,49 @@ class MemoryFileStore:
                 logger.warning("retain failed after 2 attempts: %s", e)
                 return False
 
-    def fetch_hindsight_entries(self) -> list[dict[str, Any]]:
-        """从 Hindsight 获取条目列表。
+    def fetch_hindsight_entries(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """从 Hindsight 获取条目列表（真实 API）。
 
-        暂时返回空列表（mock 实现），等 Hindsight API 支持查询后再接上真实数据。
+        分页拉取 GET {hindsight_url}/list?limit=N&offset=M，映射为 lifecycle
+        需要的 {content, created_at, tags} dict。
+
+        Args:
+            limit: 最大拉取条数（默认 CONFIG.hindsight_fetch_limit）
 
         Returns:
-            Hindsight 条目列表，每个条目含 content、tags 等字段
+            Hindsight 条目列表，每个条目含 content/text、created_at/date、tags 字段
         """
-        logger.info("fetch_hindsight_entries: 暂用 mock 实现，返回空列表")
-        return []
+        from memory_cleanup.config import CONFIG
+        max_items = limit if limit is not None else CONFIG.hindsight_fetch_limit
+        page_size = CONFIG.hindsight_fetch_page_size
+        url_base = self._config.hindsight_url.rstrip("/") + "/list"
+        items: list[dict[str, Any]] = []
+        offset = 0
+        while offset < (max_items or 999999):
+            cur_page = min(page_size, (max_items or 999999) - offset) if max_items else page_size
+            url = f"{url_base}?limit={cur_page}&offset={offset}"
+            try:
+                req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+            except Exception as e:
+                logger.warning("fetch_hindsight_entries 分页失败 (offset=%d): %s", offset, e)
+                break
+            page = data.get("items", [])
+            for it in page:
+                items.append({
+                    "content": it.get("text", ""),
+                    "created_at": it.get("date"),
+                    "tags": it.get("tags", []),
+                })
+            if not page:
+                break
+            offset += len(page)
+            total = data.get("total", 0)
+            if total and offset >= total:
+                break
+        logger.info("fetch_hindsight_entries: 拉取 %d 条 (hindsight_url=%s)", len(items), self._config.hindsight_url)
+        return items
 
     def execute_cleanup(
         self,

@@ -158,6 +158,9 @@ class AppConfig:
 
     # ── Hindsight API ──
     hindsight_url: str = "http://127.0.0.1:9177/v1/default/banks/hermes/memories"
+    # fetch_hindsight_entries 分页参数（2026-09-04 接真实 API）
+    hindsight_fetch_limit: int = 500
+    hindsight_fetch_page_size: int = 200
 
     # ── 并发与批处理 ──
     batch_size: int = 10
@@ -281,6 +284,8 @@ class AppConfig:
             values["llm_model"] = v
         if v := os.getenv("MEMORY_CLEANUP_HINDSIGHT_URL"):
             values["hindsight_url"] = v
+        _safe_int_env("MEMORY_CLEANUP_HINDSIGHT_FETCH_LIMIT", "hindsight_fetch_limit", values)
+        _safe_int_env("MEMORY_CLEANUP_HINDSIGHT_FETCH_PAGE_SIZE", "hindsight_fetch_page_size", values)
         _safe_int_env("MEMORY_CLEANUP_BATCH_SIZE", "batch_size", values)
         _safe_int_env("MEMORY_CLEANUP_USER_BATCH_SIZE", "user_batch_size", values)
         _safe_int_env("MEMORY_CLEANUP_VOTE_COUNT", "vote_count", values)

@@ -183,14 +183,13 @@ def _classify_single_round(
     merged = _dedup(all_merge, lambda m: tuple(m.get("indices", [])))
     compressed = _dedup(all_compress, lambda c: c.get("index", -1))
     hindsight = _dedup(all_hindsight, lambda h: h.get("index", -1))
-    # hindsight 仅适用于 USER
-    if source_type == "USER":
-        from memory_cleanup.config import CONFIG
-        if CONFIG.keyword_backfill:
-            hindsight = backfill_hindsight_keywords(
-                entries, hindsight, keyword_count=CONFIG.hindsight_keyword_count
-            )
-        hindsight = validate_hindsight_quality(entries, hindsight)
+    # hindsight 适用于 MEMORY 与 USER（MEMORY 转存链路 2026-09-04 启用）
+    from memory_cleanup.config import CONFIG
+    if CONFIG.keyword_backfill:
+        hindsight = backfill_hindsight_keywords(
+            entries, hindsight, keyword_count=CONFIG.hindsight_keyword_count
+        )
+    hindsight = validate_hindsight_quality(entries, hindsight)
     return {
         "merge": validate_merge_quality(entries, merged),
         "remove": _dedup(all_remove, lambda r: r.get("index", -1)),

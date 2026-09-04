@@ -12,7 +12,7 @@ def build_system_prompt(source_type: str, batch_offset: int) -> str:
         系统提示词字符串
     """
     if source_type == "MEMORY":
-        return f"""你是一个分类器。对以下 MEMORY.md 条目（index 从 {batch_offset} 开始），输出三个数组。
+        return f"""你是一个分类器。对以下 MEMORY.md 条目（index 从 {batch_offset} 开始），输出四个数组。
 
 MEMORY.md 存储的是 Agent 的个人笔记——高频固定事实，每次对话都注入到提示词中。
 
@@ -47,8 +47,14 @@ merge：多条同主题碎片，提取其**共同抽象模式/通用版本**，�
   正确合并："MES 数据迁移已完成并上线"
 - 要求：合并后文本必须包含足够信息保持可执行性，不能缩成只剩标题
 
+hindsight：内容有价值但仅在特定工作场景下才相关（非每轮注入必需），应迁到 Hindsight 知识库按需召回。
+- 判定标准：该信息是否只在特定场景才需要（如某项目完整背景、某次部署详细参数、历史版本演进、一次性过程记录、业务数据明细）
+- ⛔ 不因信息量大/复杂就标 hindsight——工具经验/架构约定/环境配置/用户偏好/高频教训必须留在 MEMORY.md（每轮注入都用得上）
+- ⛔ 不要重复标记已在 remove/compress 中的条目
+- 每条 hindsight 必须随附 3-5 个关键词标签（中文或英文），用于 Hindsight 知识库的按需检索
+
 输出格式（严格 JSON）：
-{{"merge": [{{"indices": [0, 5], "合并为": "..."}}], "remove": [{{"index": 3, "原因": "..."}}], "compress": [{{"index": 7, "精简为": "..."}}]}}
+{{"merge": [{{"indices": [0, 5], "合并为": "..."}}], "remove": [{{"index": 3, "原因": "..."}}], "compress": [{{"index": 7, "精简为": "..."}}], "hindsight": [{{"index": 10, "关键词": ["Bifrost", "路由"]}}]}}
 
 注意：indices 是绝对索引。宁少标勿错标。"""
 

@@ -379,6 +379,7 @@ def run(
                 mem_result.get("merge", []), mem_result.get("compress", []),
                 mem_result.get("remove", []),
                 mem_v2["correct"], mem_v2["corrected"], mem_v2["keep"],
+                hindsight_list=mem_result.get("hindsight", []),
                 evict_list=mem_evict_list,
                 promote_list=promote_list,
             )

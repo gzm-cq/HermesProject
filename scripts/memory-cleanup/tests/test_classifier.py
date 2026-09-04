@@ -878,10 +878,26 @@ class TestKeywordBackfillIntegration:
         assert len(result["hindsight"]) == 1
         assert result["hindsight"][0]["关键词"][0] == "审计"
 
-    def test_memory_source_no_hindsight_backfill(
+    def test_memory_source_hindsight_backfill_and_validate(
         self, mock_llm_client: MagicMock
     ) -> None:
-        """MEMORY 源不进行 hindsight 处理（也不回填）。"""
+        """MEMORY 源与 USER 一样走 hindsight backfill + validate（2026-09-04 启用）。"""
+        entries = ["审计方法论：采用10+轮递进检查模式，每轮聚焦不同风险维度，逐步深入"]
+        mock_llm_client.classify_batch.return_value = {
+            "merge": [],
+            "remove": [],
+            "compress": [],
+            "hindsight": [{"index": 0}],  # 没有关键词 → 应回填
+        }
+        result = classify_all(entries, "MEMORY", mock_llm_client, batch_size=10, max_workers=1)
+        assert len(result["hindsight"]) == 1
+        assert "关键词" in result["hindsight"][0]
+        assert len(result["hindsight"][0]["关键词"]) >= 1
+
+    def test_memory_source_short_entry_filtered_by_validate(
+        self, mock_llm_client: MagicMock
+    ) -> None:
+        """MEMORY 源过短条目（<20 字符）被 validate 过滤，与 USER 行为一致。"""
         entries = ["条目一"]
         mock_llm_client.classify_batch.return_value = {
             "merge": [],
@@ -890,8 +906,24 @@ class TestKeywordBackfillIntegration:
             "hindsight": [{"index": 0}],
         }
         result = classify_all(entries, "MEMORY", mock_llm_client, batch_size=10, max_workers=1)
-        assert len(result["hindsight"]) == 1
-        # MEMORY 源不调用 validate_hindsight_quality，也不回填
-        # 但关键词字段是否存在取决于 LLM 返回
-        # 这里测试的是不报错即可
-        assert result["hindsight"][0].get("index") == 0
+        assert result["hindsight"] == []
+
+
+class TestMemoryPromptHindsightOutput:
+    """MEMORY prompt 输出格式包含 hindsight 数组（2026-09-04）。"""
+
+    def test_memory_prompt_contains_hindsight(self) -> None:
+        from memory_cleanup.core.prompts import build_system_prompt
+
+        prompt = build_system_prompt("MEMORY", 0)
+        assert "输出四个数组" in prompt
+        assert '"hindsight"' in prompt
+        assert "hindsight：" in prompt
+        assert "关键词" in prompt
+
+    def test_user_prompt_still_has_hindsight(self) -> None:
+        from memory_cleanup.core.prompts import build_system_prompt
+
+        prompt = build_system_prompt("USER", 0)
+        assert "输出四个数组" in prompt
+        assert '"hindsight"' in prompt
