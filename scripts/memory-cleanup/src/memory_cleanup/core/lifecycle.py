@@ -127,6 +127,38 @@ def _estimate_access_count(entry: dict[str, Any]) -> int:
     return 3
 
 
+def _is_protected(entry: dict[str, Any]) -> bool:
+    """判断条目是否含受保护信号（用户偏好/行为规则），受保护条目永不淘汰。
+
+    2026-09-04 修复：启发式日期估算会把内容中的日期当创建时间，导致含
+    旧日期的用户偏好（如 "2026-06-10 session confirmed"）被误判为冷记忆。
+    """
+    content = entry.get("content", "")
+    if not isinstance(content, str):
+        return False
+    content_lower = content.lower()
+    for kw in CONFIG.lifecycle_protected_keywords:
+        if kw in content or kw.lower() in content_lower:
+            return True
+    return False
+
+
+def compute_capacity_ratio(entries: list[str], char_limit: int) -> float:
+    """计算记忆容量占用比例（字符数 / 上限）。
+
+    Args:
+        entries: 记忆条目列表
+        char_limit: 字符上限（memory_char_limit / user_char_limit）
+
+    Returns:
+        占用比例（0.0 ~ 1.0+），char_limit <= 0 时返回 0.0
+    """
+    if char_limit <= 0:
+        return 0.0
+    total = sum(len(e) for e in entries)
+    return total / char_limit
+
+
 def detect_cold_memories(
     entries: list[dict[str, Any]],
     cold_days: int,
@@ -152,6 +184,9 @@ def detect_cold_memories(
     cold_entries: list[dict[str, Any]] = []
 
     for entry in entries:
+        if _is_protected(entry):
+            logger.info("冷记忆检测: 条目含受保护信号，跳过淘汰")
+            continue
         last_access = _estimate_last_access(entry, now)
         days_since = (now - last_access).days
 

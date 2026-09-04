@@ -164,7 +164,7 @@ class TestFeatureFlagInteraction:
     def test_cold_memory_days_default(self) -> None:
         from memory_cleanup.config import AppConfig
         cfg = AppConfig()
-        assert cfg.cold_memory_days == 30
+        assert cfg.cold_memory_days == 60
         assert cfg.hot_memory_access_count == 10
         assert cfg.l2_max_entries == 200
 
@@ -190,3 +190,74 @@ class TestFeatureFlagInteraction:
         assert cfg.hot_memory_promotion is True
         assert cfg.hot_memory_access_count == 20
         assert cfg.l2_max_entries == 300
+
+
+class TestProtectedColdMemories:
+    """2026-09-04 修复：用户偏好/行为规则条目不得被误判为冷记忆淘汰。"""
+
+    def test_preference_with_old_date_not_cold(self) -> None:
+        """含旧日期但带 '偏好' 信号的条目永不淘汰。"""
+        now = datetime(2026, 9, 4)
+        entries = [
+            {"content": "用户偏好：技术评估先结论再展开，数据驱动决策（实测RSS）。2026-06-10 session confirmed"},
+        ]
+        result = detect_cold_memories(entries, 30, now=now)
+        assert result == []
+
+    def test_english_preference_signal_not_cold(self) -> None:
+        """英文偏好信号（user wants）也不得淘汰。"""
+        now = datetime(2026, 9, 4)
+        entries = [
+            {"content": "Executive briefing conciseness: user wants one sentence format. 2026-06-10 session confirmed"},
+        ]
+        result = detect_cold_memories(entries, 30, now=now)
+        assert result == []
+
+    def test_session_correction_not_cold(self) -> None:
+        """session纠正（行为纠正记录）不得淘汰。"""
+        now = datetime(2026, 9, 4)
+        entries = [
+            {"content": "生成的md文件禁止放在scripts目录。2026-07-26 session纠正。"},
+        ]
+        result = detect_cold_memories(entries, 30, now=now)
+        assert result == []
+
+    def test_plain_old_entry_still_cold(self) -> None:
+        """无保护信号的旧条目仍正常淘汰（保护逻辑不误伤）。"""
+        now = datetime(2026, 9, 4)
+        entries = [
+            {"content": "2026-05-01 完成了MES数据迁移，共迁移3000条记录", "last_accessed": datetime(2026, 1, 1)},
+        ]
+        result = detect_cold_memories(entries, 30, now=now)
+        assert len(result) == 1
+
+    def test_protected_with_explicit_old_last_accessed(self) -> None:
+        """即使 last_accessed 明确很旧，偏好条目仍受保护。"""
+        now = datetime(2026, 9, 4)
+        entries = [
+            {"content": "用户偏好：简洁回复", "last_accessed": datetime(2025, 1, 1)},
+        ]
+        result = detect_cold_memories(entries, 30, now=now)
+        assert result == []
+
+
+class TestComputeCapacityRatio:
+    """compute_capacity_ratio() 测试。"""
+
+    def test_ratio_normal(self) -> None:
+        from memory_cleanup.core.lifecycle import compute_capacity_ratio
+        entries = ["abc", "def"]  # 6 chars
+        assert compute_capacity_ratio(entries, 100) == 0.06
+
+    def test_ratio_exceeded(self) -> None:
+        from memory_cleanup.core.lifecycle import compute_capacity_ratio
+        entries = ["a" * 90]
+        assert compute_capacity_ratio(entries, 100) == 0.9
+
+    def test_ratio_zero_limit(self) -> None:
+        from memory_cleanup.core.lifecycle import compute_capacity_ratio
+        assert compute_capacity_ratio(["abc"], 0) == 0.0
+
+    def test_ratio_empty_entries(self) -> None:
+        from memory_cleanup.core.lifecycle import compute_capacity_ratio
+        assert compute_capacity_ratio([], 100) == 0.0

@@ -192,10 +192,20 @@ class AppConfig:
 
     # ── 生命周期管理（P3-4） ──
     cold_memory_eviction: bool = False
-    cold_memory_days: int = 30
+    cold_memory_days: int = 60
     hot_memory_promotion: bool = False
     hot_memory_access_count: int = 10
     l2_max_entries: int = 200
+    # MEMORY 占用超过该比例时强制触发冷记忆淘汰（2026-09-04 容量守卫）
+    memory_capacity_safe_ratio: float = 0.85
+
+    # ── 生命周期保护关键词（含这些信号的条目永不淘汰，2026-09-04 修复误判） ──
+    lifecycle_protected_keywords: list[str] = field(default_factory=lambda: [
+        "偏好", "用户", "工作习惯", "沟通风格", "行为纠正", "接受纠正",
+        "user prefers", "user wants", "user likes", "user asked", "user requested",
+        "session纠正", "session confirmed", "session 纠正",
+        "preference", "preferred",
+    ])
 
     # ── 生命周期关键词（从配置读取，避免硬编码） ──
     lifecycle_frequency_keywords: list[str] = field(default_factory=lambda: [
@@ -250,6 +260,10 @@ class AppConfig:
             raise ValueError(f"hot_memory_access_count must be >= 1, got {self.hot_memory_access_count}")
         if self.l2_max_entries < 10:
             raise ValueError(f"l2_max_entries must be >= 10, got {self.l2_max_entries}")
+        if not 0.0 < self.memory_capacity_safe_ratio <= 1.0:
+            raise ValueError(
+                f"memory_capacity_safe_ratio must be in (0, 1], got {self.memory_capacity_safe_ratio}"
+            )
 
     @classmethod
     def from_env(cls, defaults: dict[str, Any] | None = None) -> "AppConfig":
@@ -311,6 +325,7 @@ class AppConfig:
         _safe_bool_env("MEMORY_CLEANUP_HOT_MEMORY_PROMOTION", "hot_memory_promotion", values)
         _safe_int_env("MEMORY_CLEANUP_HOT_MEMORY_ACCESS_COUNT", "hot_memory_access_count", values)
         _safe_int_env("MEMORY_CLEANUP_L2_MAX_ENTRIES", "l2_max_entries", values)
+        _safe_float_env("MEMORY_CLEANUP_MEMORY_CAPACITY_SAFE_RATIO", "memory_capacity_safe_ratio", values)
 
         return cls(**values)
 

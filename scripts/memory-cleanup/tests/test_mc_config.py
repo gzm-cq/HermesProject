@@ -204,3 +204,41 @@ class TestKeywordBackfillConfig:
         """from_dict 应支持 hindsight_keyword_count。"""
         cfg = AppConfig.from_dict({"hindsight_keyword_count": 7})
         assert cfg.hindsight_keyword_count == 7
+
+
+class TestCapacitySafeRatioValidation:
+    """memory_capacity_safe_ratio 校验测试（2026-09-04 容量守卫）。"""
+
+    def test_ratio_zero_invalid(self) -> None:
+        with pytest.raises(ValueError, match="memory_capacity_safe_ratio"):
+            AppConfig(memory_capacity_safe_ratio=0.0)
+
+    def test_ratio_negative_invalid(self) -> None:
+        with pytest.raises(ValueError, match="memory_capacity_safe_ratio"):
+            AppConfig(memory_capacity_safe_ratio=-0.1)
+
+    def test_ratio_over_one_invalid(self) -> None:
+        with pytest.raises(ValueError, match="memory_capacity_safe_ratio"):
+            AppConfig(memory_capacity_safe_ratio=1.1)
+
+    def test_ratio_one_valid(self) -> None:
+        cfg = AppConfig(memory_capacity_safe_ratio=1.0)
+        assert cfg.memory_capacity_safe_ratio == 1.0
+
+    def test_ratio_default(self) -> None:
+        cfg = AppConfig()
+        assert cfg.memory_capacity_safe_ratio == 0.85
+
+    def test_cold_memory_days_default_60(self) -> None:
+        cfg = AppConfig()
+        assert cfg.cold_memory_days == 60
+
+    def test_protected_keywords_present(self) -> None:
+        cfg = AppConfig()
+        assert "偏好" in cfg.lifecycle_protected_keywords
+        assert "user wants" in cfg.lifecycle_protected_keywords
+
+    def test_ratio_from_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("MEMORY_CLEANUP_MEMORY_CAPACITY_SAFE_RATIO", "0.9")
+        cfg = AppConfig.from_env()
+        assert cfg.memory_capacity_safe_ratio == 0.9

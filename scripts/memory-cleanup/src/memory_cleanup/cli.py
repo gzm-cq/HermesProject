@@ -19,7 +19,11 @@ from memory_cleanup.adapters.memory_store import MemoryFileStore
 from memory_cleanup.adapters.session_db import SessionDB
 from memory_cleanup.config import AppConfig, load_config, setup_logging
 from memory_cleanup.core.classifier import calc_remove_candidates, classify_all
-from memory_cleanup.core.lifecycle import detect_cold_memories, detect_hot_memories
+from memory_cleanup.core.lifecycle import (
+    compute_capacity_ratio,
+    detect_cold_memories,
+    detect_hot_memories,
+)
 from memory_cleanup.core.reporter import print_report, print_v2_detail
 from memory_cleanup.core.verifier import phase2_verify
 
@@ -166,12 +170,18 @@ def run(
         promote_list: list[dict[str, Any]] = []
         hindsight_entries: list[dict[str, Any]] = []
 
-        if cfg.cold_memory_eviction or cfg.hot_memory_promotion:
+        # 容量守卫：MEMORY 占用超安全阈值时强制触发淘汰（2026-09-04）
+        capacity_ratio = compute_capacity_ratio(mem_entries, cfg.memory_char_limit)
+        capacity_exceeded = capacity_ratio > cfg.memory_capacity_safe_ratio
+        if capacity_exceeded:
+            print(f"  ⚠️ MEMORY 容量 {capacity_ratio:.1%} 超过安全阈值 {cfg.memory_capacity_safe_ratio:.0%}，强制触发冷记忆淘汰")
+
+        if cfg.cold_memory_eviction or cfg.hot_memory_promotion or capacity_exceeded:
             print(f"\n{'=' * 70}")
             print(f"  🔄 Phase 0：生命周期检查")
             print(f"{'=' * 70}")
 
-        if cfg.cold_memory_eviction:
+        if cfg.cold_memory_eviction or capacity_exceeded:
             total_l2 = len(mem_entries) + len(user_entries)
             print(f"  冷记忆淘汰：已启用（阈值 {cfg.cold_memory_days} 天，L2 上限 {cfg.l2_max_entries} 条）")
 
@@ -187,7 +197,7 @@ def run(
             mem_cold = detect_cold_memories(mem_entry_dicts, cfg.cold_memory_days)
             user_cold = detect_cold_memories(user_entry_dicts, cfg.cold_memory_days)
 
-            if total_l2 > cfg.l2_max_entries:
+            if total_l2 > cfg.l2_max_entries or capacity_exceeded:
                 mem_evict_list = mem_cold
                 user_evict_list = user_cold
             else:
