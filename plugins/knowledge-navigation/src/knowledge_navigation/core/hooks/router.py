@@ -320,12 +320,39 @@ def _do_kt_recall(session_id: str, query: str) -> list[dict]:
         return []
 
 
-def _do_skill_match(query: str) -> str:
+def _build_intent_context(user_message: str, conversation_history: list | None) -> str:
+    """从对话历史提取最近 N 轮 (user/assistant) 作为 skill 选择的目标上下文。
+
+    gateway 每轮都传完整 conversation_history 给 pre_llm_call，但此前从未被使用。
+    skill 选择是"目标×动作×用户输入"驱动的：意图通常隐藏在对话上下文里
+    （如"接着分析利润率"），不能只看当前单条消息。
+    """
+    if not conversation_history:
+        return ""
+    recent = list(conversation_history)[-6:]  # 最近 3 轮 (user+assistant 成对)
+    parts: list[str] = []
+    for m in recent:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role", "")
+        content = m.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if role in ("user", "assistant"):
+            _c = content.strip().replace("\n", " ")[:200]
+            if _c:
+                parts.append(f"{role}: {_c}")
+    if not parts:
+        return ""
+    return "\n".join(parts[-4:])  # 至多 4 条（2 轮完整上下文 + 余量）
+
+
+def _do_skill_match(query: str, context: str = "") -> str:
     """执行 skill 匹配，返回注入文本或空字符串。"""
-    from knowledge_navigation.core.skill_matcher import match_skills, strip_frontmatter
+    from knowledge_navigation.core.skill_matcher import _match_skills_cached, strip_frontmatter
 
     try:
-        matched = match_skills(query)
+        matched = _match_skills_cached(query, context=context)
         if not matched:
             return ""
         lines: list[str] = ["", "<auto_loaded_skills>"]
@@ -629,6 +656,7 @@ def _execute_recall(
     t0: float,
     query_trunc: str,
     recall_logger: RecallLogger,
+    context: str = "",
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str, list[dict[str, Any]]]:
     """执行四路 recall（Hindsight + 知识树 + Skill + SAG），并行或串行。"""
     result: dict[str, Any] | None = None
@@ -657,7 +685,7 @@ def _execute_recall(
 
         hs_future = _recall_executor.submit(_do_hindsight_recall, user_message) if hs_active else None
         kt_future = _recall_executor.submit(_do_kt_recall, session_id, user_message) if kt_active else None
-        sk_future = _recall_executor.submit(_do_skill_match, user_message) if s_active else None
+        sk_future = _recall_executor.submit(_do_skill_match, user_message, context) if s_active else None
         sag_future = _recall_executor.submit(_do_sag_recall, user_message) if sag_active else None
         try:
             if hs_future is not None:
@@ -801,7 +829,7 @@ def _execute_recall(
         if s_active:
             _sk_t0 = time.time()
             try:
-                skill_context = _do_skill_match(user_message)
+                skill_context = _do_skill_match(user_message, context)
                 _sk_latency = (time.time() - _sk_t0) * 1000
                 _sk_results = [{"id": "skill_context", "score": 1.0}] if skill_context else []
                 recall_logger.record("skill", _sk_results, _sk_latency, session_id=session_id, query=user_message)
@@ -1271,10 +1299,14 @@ def pre_llm_call(session_id: str, user_message: str, **kwargs: Any) -> str | Non
 
     _recall_logger = RecallLogger(use_logger=_get_use_logger())
 
+    # 用户目标/上下文：从 gateway 传入的 conversation_history 提取最近 N 轮，
+    # 供 skill 选择作为"目标×动作×用户输入"意图判断的上下文（不依赖 goal 命令）
+    _context = _build_intent_context(user_message, kwargs.get("conversation_history"))
+
     result, kt_raw_results, _skill_context, sag_raw_results = _execute_recall(
         session_id, user_message,
         _hs_active, _kt_active, _s_active, _sag_active, _active_count,
-        t0, query_trunc, _recall_logger,
+        t0, query_trunc, _recall_logger, _context,
     )
 
     kt_raw_results = _expand_multi_hop(kt_raw_results, _kt_active, session_id)

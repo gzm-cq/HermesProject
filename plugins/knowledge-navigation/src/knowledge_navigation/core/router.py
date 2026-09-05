@@ -9,9 +9,16 @@ import time
 from collections import OrderedDict
 
 import httpx
+import numpy as np
 
 from knowledge_navigation.core.source_defs import build_router_prompt
 from knowledge_navigation.core.env_loader import get_env, get_env_int, get_env_float
+
+# 复用 skill_matcher 的 embedding 配置（本地 GPU bge-m3, 127.0.0.1:8082）
+try:  # noqa: SIM105
+    from knowledge_navigation.core.skill_matcher import _get_embedding_config as _router_emb_config
+except Exception:  # noqa: BLE001
+    _router_emb_config = None
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +30,15 @@ _ROUTER_CACHE_MAX = 64
 _ROUTER_CACHE_TTL = 300
 
 _router_cache_timestamps: dict[tuple[str, str], float] = {}
+
+# ── embedding 语义缓存（同 session 追问复用，跨 session 不启用）──
+# 与 _router_cache 同 key 并行存储，淘汰同步进行；embedding 失败静默降级回前缀匹配
+_ROUTER_EMBEDDING_SIM_THRESHOLD = float(os.getenv("KN_ROUTER_EMBEDDING_THRESHOLD", "0.85"))
+_router_cache_embs: dict[tuple[str, str], np.ndarray] = {}
+
+# embedding 输入文本缓存（避免同 session 多次 embed 同一 query）
+_emb_text_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+_EMB_TEXT_CACHE_MAX = 128
 
 _ROUTER_SYSTEM_PROMPT = build_router_prompt()
 
@@ -72,7 +88,7 @@ def _call_router_llm(
                     "model": model,
                     "temperature": 0,
                     "top_p": 0.1,
-                    "max_tokens": 2048,
+                    "max_tokens": 512,
                     "messages": [
                         {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
                         {"role": "user", "content": f"消息：{safe_msg}\n\nJSON 输出："},
@@ -109,6 +125,7 @@ def _clean_expired_cache() -> None:
     for k in to_remove:
         _router_cache.pop(k, None)
         _router_cache_timestamps.pop(k, None)
+        _router_cache_embs.pop(k, None)
 
 
 def _cache_get(cache_key: tuple[str, str]) -> dict[str, bool] | None:
@@ -130,6 +147,68 @@ def _cache_put(cache_key: tuple[str, str], mask: dict[str, bool]) -> None:
         while len(_router_cache) > _ROUTER_CACHE_MAX:
             evict_key, _ = _router_cache.popitem(last=False)
             _router_cache_timestamps.pop(evict_key, None)
+            _router_cache_embs.pop(evict_key, None)
+
+
+def _get_router_embedding(message: str) -> np.ndarray | None:
+    """获取 message 的 query embedding（带文本级 LRU 缓存）。
+
+    复用 skill_matcher 的 embedding 配置（本地 GPU bge-m3, 127.0.0.1:8082）。
+    失败返回 None → 调用方静默降级回前缀匹配。
+    """
+    if _router_emb_config is None:
+        return None
+    try:
+        with _router_lock:
+            if message in _emb_text_cache:
+                _emb_text_cache.move_to_end(message)
+                return _emb_text_cache[message]
+        model, url, api_key, _ = _router_emb_config()
+        resp = httpx.post(
+            f"{url.rstrip('/')}/embeddings",
+            json={"model": model, "input": [message]},
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            timeout=3,
+        )
+        resp.raise_for_status()
+        emb = np.array(resp.json()["data"][0]["embedding"], dtype=np.float32)
+        norm = np.linalg.norm(emb)
+        emb = emb / norm if norm > 0 else emb
+        with _router_lock:
+            _emb_text_cache[message] = emb
+            _emb_text_cache.move_to_end(message)
+            while len(_emb_text_cache) > _EMB_TEXT_CACHE_MAX:
+                _emb_text_cache.popitem(last=False)
+        return emb
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Router embedding failed, degrade to prefix cache: %s", e)
+        return None
+
+
+def _router_embedding_lookup(session_id: str, message: str) -> dict[str, bool] | None:
+    """同 session 内 embedding 语义缓存查找（跨 session 不启用）。
+
+    安全约束：
+    - 仅遍历同 session 的缓存条目（会话内追问/换说法复用）
+    - 余弦相似度 ≥ KN_ROUTER_EMBEDDING_THRESHOLD（默认 0.85）
+    - 失败/无配置 → None（降级，不影响主链路）
+    """
+    cur_emb = _get_router_embedding(message)
+    if cur_emb is None:
+        return None
+    with _router_lock:
+        _clean_expired_cache()
+        for ck, cm in reversed(list(_router_cache.items())):
+            if ck[0] != session_id:
+                continue
+            cached_emb = _router_cache_embs.get(ck)
+            if cached_emb is None:
+                continue
+            sim = float(np.dot(cur_emb, cached_emb))
+            if sim >= _ROUTER_EMBEDDING_SIM_THRESHOLD:
+                _router_cache.move_to_end(ck)
+                return cm
+    return None
 
 
 def _incr_fallback(key: str) -> None:
@@ -349,7 +428,10 @@ def route(
         return {
             "confidence": round(confidence, 4) if confidence is not None else None,
             "fallback_reason": reason,
-            "is_fallback": reason not in ("success", "success_all_off", "cache_hit", "timeout_historical"),
+            "is_fallback": reason not in (
+                "success", "success_all_off", "cache_hit", "cache_hit_semantic",
+                "cache_hit_emb", "timeout_historical",
+            ),
             "latency_ms": latency_ms,
         }
 
@@ -371,6 +453,12 @@ def route(
             if ck[0] == session_id and ck[1][:80].lower().replace("\n", " ").replace("\r", " ") == safe_msg_preview:
                 _router_cache.move_to_end(ck)
                 return cm, _meta(None, "cache_hit_semantic", None)
+
+    # P2.5: embedding 语义缓存 — 同 session 内换说法但意思相同（如"再看看利润率"→"继续分析"）
+    # 安全约束：仅同 session；相似度 ≥0.85；embedding 失败静默降级
+    emb_hit = _router_embedding_lookup(session_id, message)
+    if emb_hit is not None:
+        return emb_hit, _meta(None, "cache_hit_emb", None)
 
     safe_msg = message[:300] + message[-200:] if len(message) > 500 else message
     safe_msg = safe_msg.replace("\n", " ").replace("\r", " ")
@@ -426,6 +514,11 @@ def route(
             duration = time.time() - start_time
             logger.info("Router 调用成功, mask=%s, duration=%.2fs", mask, duration)
             _cache_put(cache_key, mask)
+            # 并行存 embedding（供同 session 语义复用；失败静默，不影响主链路）
+            _emb = _get_router_embedding(message)
+            if _emb is not None:
+                with _router_lock:
+                    _router_cache_embs[cache_key] = _emb
             latency_ms = int((time.time() - start_time) * 1000)
             return mask, _meta(confidence, fallback_reason, latency_ms)
 
