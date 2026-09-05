@@ -18,12 +18,37 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
 from knowledge_navigation.config import CONFIG
 from knowledge_navigation.core.env_loader import get_env, get_env_int
+from knowledge_navigation.core.skill_match_cache import SkillMatchCache
+
+# ── Skill 匹配结果缓存（B 方案：0.92 阈值，服务"字面重复" query）──
+# 命中率实测 95.3%（trace.log 真实重复 query，73.5% 流量是重复）；
+# 懒加载单例，异常静默降级走原 match_skills 流程。
+_skill_match_cache: SkillMatchCache | None = None
+_skill_match_cache_lock = threading.Lock()
+
+
+def _get_skill_match_cache() -> SkillMatchCache | None:
+    """获取缓存单例；未启用或初始化失败返回 None（调用方降级）。"""
+    global _skill_match_cache
+    if _skill_match_cache is not None:
+        return _skill_match_cache
+    enabled = get_env("KN_SKILL_MATCH_CACHE_ENABLED", "1").lower() in ("1", "true", "yes")
+    if not enabled:
+        return None
+    with _skill_match_cache_lock:
+        if _skill_match_cache is None:
+            try:
+                _skill_match_cache = SkillMatchCache()
+            except Exception:  # noqa: BLE001
+                logger.warning("Skill match cache init failed, degraded to no-cache", exc_info=True)
+                _skill_match_cache = None
+        return _skill_match_cache
 
 # ── SkillRouter 语义召回后端（P0-1，懒加载，失败即降级）──
 # 仅在 KN_SKILL_EMBEDDING_BACKEND=skillrouter 且环境就绪时启用；
@@ -1083,24 +1108,32 @@ def _llm_match(
     query: str,
     top_k: int | None = None,
     candidates: list[dict[str, Any]] | None = None,
-) -> list[dict[str, str]]:
+    context: str = "",
+    with_intent: bool = False,
+) -> list[dict[str, str]] | tuple[str, list[dict[str, str]]]:
     """LLM 语义精排。从候选中选出 top_k 个技能。
 
     Args:
         query: 用户查询
         top_k: 最多返回数量；None 表示运行期读取 KN_SKILL_TOP_K
         candidates: 候选 skill 列表（预筛选结果），None 表示用全量索引
+        context: 对话上下文（目标×动作），注入精排 prompt 帮助意图判断
+        with_intent: True 时返回 (intent, results)，intent 为显式意图标签
+            （A 方案缓存键基础：精排顺带输出结构化为 {"intent": "...", "skills": [...]}）
+
+    Returns:
+        默认 list[dict]；with_intent=True 时 (intent_str, list[dict])
     """
     if top_k is None:
         top_k = _get_top_k()
 
     if not _skill_index:
-        return []
+        return ("", []) if with_intent else []
 
     skill_list = _get_skill_list()
     pool = candidates if candidates is not None else skill_list
     if not pool:
-        return []
+        return ("", []) if with_intent else []
 
     skill_text = _build_skill_prompt(pool)
     prompt = (
@@ -1109,14 +1142,16 @@ def _llm_match(
         "<user_query>\n"
         + query + "\n"
         "</user_query>\n\n"
-        "## 候选技能列表（已按预筛相关度降序，最相关排最前）\n"
+        + (("## 用户目标与对话上下文（用于判断用户要做什么，优先于单条问题）\n"
+            "<user_context>\n" + context + "\n</user_context>\n\n") if context else "")
+        + "## 候选技能列表（已按预筛相关度降序，最相关排最前）\n"
         + skill_text + "\n\n"
         "## 选择规则\n"
         "1. 技能 name 是强信号，description 是补充信号。\n"
         "2. 只选确信与用户问题直接相关的技能；只确信 1 个就返回 1 个，不要凑数。\n"
         "3. 若与任何候选都不相关，输出空数组。\n\n"
-        "## 输出(仅 JSON 数组 不要其他文字)\n"
-    )
+        "## 输出(仅 JSON 对象 不要其他文字, 格式: {\"intent\": \"意图标签(短,如 excel-analysis/continue)\", \"skills\": [技能名数组]})\n"
+            )
 
     # 冷配置：确定性技能匹配取低温和低 top_p（见 SPEC-llm-call-3params-cleanup）
     # 不重试：单次失败立即返回空触发 fallback（kw+emb union top-K），
@@ -1134,7 +1169,7 @@ def _llm_match(
                 json={
                     "model": skill_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 16384,
+                    "max_tokens": 8192,
                     "temperature": 0,
                     "top_p": 0.1,
                 },
@@ -1147,17 +1182,25 @@ def _llm_match(
             finish_reason = choice.get("finish_reason", "")
             raw = (msg.get("content") or "").strip()
 
-            # 兜底：content 空但 reasoning_content 非空时，从 reasoning 末尾提取 JSON 数组。
+            # 兜底：content 空但 reasoning_content 非空时，从 reasoning 末尾提取 JSON。
             # reasoning_content 占满 token 后 content 为空时，reasoning 末尾通常会给出最终答案。
+            # 兼容两种输出格式（2026-09-04 A 方案后 LLM 输出对象 {"intent","skills"}，
+            # 旧格式为纯数组 [...]）——先尝试对象，再回退数组。
             if not raw:
                 reasoning = (msg.get("reasoning_content") or "").strip()
                 if reasoning:
-                    # 匹配 reasoning 末尾的 JSON 数组（支持多行、带引号变体）
-                    m = re.search(r'\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]\s*$', reasoning, re.MULTILINE)
+                    m = re.search(
+                        r'\{\s*"intent"\s*:\s*"[^"]*"\s*,\s*"skills"\s*:\s*\[[^\]]*\]\s*\}\s*$',
+                        reasoning,
+                        re.MULTILINE | re.DOTALL,
+                    )
+                    if not m:
+                        # 旧数组格式兜底
+                        m = re.search(r'\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]\s*$', reasoning, re.MULTILINE)
                     if m:
                         raw = m.group(0)
                         logger.info(
-                            "Skill match LLM: content 空，从 reasoning_content 兜底提取 %s", raw
+                            "Skill match LLM: content 空，从 reasoning_content 兜底提取 %s", raw[:200]
                         )
                 # 记录 length 截断告警，便于监控 LiteLLM 路由异常
                 if finish_reason == "length":
@@ -1168,10 +1211,20 @@ def _llm_match(
                     )
 
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            names = json.loads(raw)
+            parsed = json.loads(raw)
+            # A 方案：LLM 可返回 JSON 对象 {"intent": ..., "skills": [...]} 或旧数组格式
+            intent: str = ""
+            if isinstance(parsed, dict):
+                intent = str(parsed.get("intent", "")).strip()
+                names = parsed.get("skills", [])
+            elif isinstance(parsed, list):
+                names = parsed
+            else:
+                logger.debug("Skill match LLM: non-list/object: %s", raw)
+                return ("", []) if with_intent else []
             if not isinstance(names, list):
-                logger.debug("Skill match LLM: non-list: %s", raw)
-                return []
+                logger.debug("Skill match LLM: non-list skills: %s", raw)
+                return ("", []) if with_intent else []
 
             info_map = {s["name"]: {"description": s["description"], "path": s["path"]} for s in skill_list}
             # 大小写不敏感的名称映射，处理 LLM 返回的大小写/连字符变体
@@ -1200,22 +1253,165 @@ def _llm_match(
                         "path": info_map[matched_name]["path"],
                         "score": f"{final_score:.3f}",
                     })
+            if with_intent:
+                return intent, results
             return results
 
         except Exception as e:
             logger.debug("Skill match LLM error (no retry): %s", e)
-            return []
+            return ("", []) if with_intent else []
 
 
 # ====================================================================
 # 入口
 # ====================================================================
 
+def _skill_set_fingerprint(names: list[str]) -> str:
+    """稳定技能集指纹（2026-09-05 修复，替代全量 name md5）。
+
+    原实现 = 全部技能名的 md5：技能库任何微调（lark symlink 化、新增/删除
+    任意技能）都导致整库惰性 miss，9/4 部署后两天内技能名列表变了 6 次，
+    缓存永远在冷启动循环（实测今天命中率 ~7%）。
+
+    新实现：
+    - 数量桶 len//10：每 ±10 个技能变化才翻转
+    - 字典序极值 head/tail：普通技能增删（中间位置）不影响
+
+    少量/中间技能的增删不再整库失效——命中后由调用方做条目级 skill
+    存在性校验兜底（引用已删技能 → 当 miss 重算）；
+    TTL（24h）兜底"新技能更优但缓存选旧"的窗口。只有技能生态大规模
+    变化（数量桶翻转或极值技能变更）才整库失效。
+    """
+    names = sorted(names)
+    if not names:
+        return ""
+    bucket = len(names) // 10
+    head = names[0]
+    tail = names[-1]
+    return hashlib.md5(f"{bucket}:{head}:{tail}".encode("utf-8")).hexdigest()
+
+
+def _match_skills_cached(
+    query: str,
+    context: str = "",
+) -> list[dict[str, str]]:
+    """带结果缓存的 skill 匹配（A 方案接入层）。
+
+    A 方案：query_threshold=0.85（实测 2026-09-04：同意图改写 0.897-0.935
+    全覆盖，不同意图 0.304-0.421 全拒，间隔 0.47），覆盖"同意图改写"
+    流量（B 方案 0.92 漏掉的如"moa配置是什么"→"帮我看看moa的配置" 0.897）。
+
+    设计要点（实测修正）：
+    - 稳定指纹：技能少量增删不失效（bucket + 字典序极值），大规模变化才整库失效
+    - L0 全等快路径：query 原文 md5 精确匹配，命中前零模型调用（服务 cron 固定 prompt）
+    - 条目存 intent 标签（精排 LLM 顺带输出）——监控意图分布用
+      （cache.stats().intent_histogram + cache_monitor.py）
+
+    流程：
+      1. 计算稳定技能集指纹（L1 失效：技能库大变化 → 旧条目惰性 miss）
+      2. L0 全等快路径：query 原文 md5 → cache.lookup_exact（无 embedding 开销）
+      3. query embedding → cache.lookup(ctx=None, query_emb, skill_set_hash)
+      4. 命中 → 从当前索引重建条目（技能已删除 → 视为 miss 重新匹配）
+      5. miss → match_skills(with_intent=True) 精排 + 取意图 → 写缓存（含 exact）
+      6. 任何异常 → 静默降级原流程（缓存绝不影响主链路）
+    """
+    cache = _get_skill_match_cache()
+    if cache is None:
+        return match_skills(query, context=context)
+
+    try:
+        # 技能集指纹（稳定版：桶+极值——小变更不失效，大变更整库 miss）
+        skill_list = _get_skill_list()
+        names = sorted(s["name"] for s in skill_list)
+        skill_set_hash = _skill_set_fingerprint(names)
+
+        # L0 全等快路径：query 原文 md5 精确匹配（免 embedding，命中前零模型调用）
+        exact_hit = cache.lookup_exact(query, skill_set_hash=skill_set_hash)
+        if exact_hit is not None:
+            info_map = {s["name"]: s for s in skill_list}
+            rebuilt = []
+            for name in exact_hit:
+                s = info_map.get(name)
+                if s is None:
+                    rebuilt = []
+                    break
+                rebuilt.append({
+                    "name": name,
+                    "description": s["description"],
+                    "path": s["path"],
+                    "score": "0.500",
+                })
+            if rebuilt:
+                logger.info(
+                    "Skill match (cache-hit L0-exact): %s query=%s",
+                    [r["name"] for r in rebuilt], query[:100].replace("\n", " "),
+                )
+                return rebuilt
+
+        # query embedding（复用现有 TTL+LRU 缓存函数）
+        model, url, api_key, _ = _get_embedding_config()
+        q_emb = _get_query_embedding(query, model, url, api_key)
+        if q_emb is None:
+            logger.debug("Skill match cache: embedding failed, degraded")
+            results_list = cast(list[dict[str, str]], match_skills(query, context=context))
+            # embedding 不可用也要登记 L0 exact 键（零模型依赖）：
+            # 下次相同 query 无需 embedding 直接命中，避免反复走精排。
+            if results_list:
+                cache.store_exact(query, [r["name"] for r in results_list],
+                                  skill_set_hash=skill_set_hash)
+            return results_list
+
+        # 命中检查（L1 语义路径）
+        hit_names = cache.lookup(None, q_emb, skill_set_hash=skill_set_hash)
+        if hit_names is not None:
+            # 校验技能仍存在（技能已删除/改名 → 当 miss）
+            info_map = {s["name"]: s for s in skill_list}
+            rebuilt = []
+            for name in hit_names:
+                s = info_map.get(name)
+                if s is None:
+                    rebuilt = []  # 任一技能不存在 → 整条失效
+                    break
+                rebuilt.append({
+                    "name": name,
+                    "description": s["description"],
+                    "path": s["path"],
+                    "score": "0.500",  # 缓存命中标记分（注入仅作展示）
+                })
+            if rebuilt:
+                logger.info(
+                    "Skill match (cache-hit L1-semantic): %s query=%s",
+                    [r["name"] for r in rebuilt], query[:100].replace("\n", " "),
+                )
+                return rebuilt
+
+        # miss → 原流程（A 方案：顺带取精排输出的意图标签）
+        llm_out = match_skills(query, context=context, with_intent=True)
+        intent, results = cast(tuple[str, list[dict[str, str]]], llm_out)
+        if results:
+            cache.store(
+                None, q_emb, [r["name"] for r in results],
+                skill_set_hash=skill_set_hash, intent=intent,
+                query_text=query,
+            )
+        logger.info(
+            "Skill match (cache-miss): query=%s skills=%s",
+            query[:100].replace("\n", " "),
+            [r["name"] for r in results] if results else [],
+        )
+        return results
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Skill match cache error, degraded: %s", e)
+        return match_skills(query, context=context)
+
+
 def match_skills(
     query: str,
     top_k: int | None = None,
     enable_keyword_prescreen: bool = True,
-) -> list[dict[str, str]]:
+    context: str = "",
+    with_intent: bool = False,
+) -> list[dict[str, str]] | tuple[str, list[dict[str, str]]]:
     """技能匹配：Embedding 主召回 + LLM 精排（≤3 早退，2 步流程）。
 
     Stage 1 (embedding 主召回): 从全量 skill 中按相似度选 top-N 候选（N=30）
@@ -1227,6 +1423,12 @@ def match_skills(
         query: 用户消息
         top_k: 最多返回数量；None 表示运行期读取 KN_SKILL_TOP_K
         enable_keyword_prescreen: False 时走全量 LLM 匹配（无预筛）
+        context: 对话上下文（最近几轮 user/assistant），用于意图判断——
+            skill 选择是"目标×动作×用户输入"驱动的，目标通常藏在上下文里
+            而非单条消息（如"接着分析利润率"）。非空时拼入 embedding 主召回
+            与 LLM 精排 prompt。
+        with_intent: True 时返回 (intent, results)——A 方案顺带提取意图标签
+            供缓存键使用。early-exit/fallback 路径无 LLM 时 intent 为空串
 
     Returns:
         [{name, description, score, path}, ...]
@@ -1236,17 +1438,19 @@ def match_skills(
         top_k = _get_top_k()
 
     if not ensure_index():
-        return []
+        return ("", []) if with_intent else []
 
     if not query or not query.strip():
-        return []
+        return ("", []) if with_intent else []
 
     t0 = time.time()
     skill_list = _get_skill_list()
 
     # 兼容旧语义：关闭预筛 → 全量 LLM 匹配
     if not enable_keyword_prescreen:
-        results = _llm_match(query, top_k, candidates=None)
+        llm_intent, results = cast(tuple[str, list[dict[str, str]]], _llm_match(
+            query, top_k, candidates=None, context=context, with_intent=True
+        ))
         if results:
             elapsed = (time.time() - t0) * 1000
             logger.info(
@@ -1254,16 +1458,18 @@ def match_skills(
                 [r["name"] for r in results], elapsed, len(skill_list), len(results),
                 query[:100].replace("\n", " "),
             )
-            return results
+            return (llm_intent, results) if with_intent else results
         logger.debug("Skill match: empty (LLM returned nothing, no prescreen)")
-        return []
+        return ("", []) if with_intent else []
 
     # Stage 1: Embedding 主召回（独立全量，带熔断）
     emb_candidates: list[dict[str, Any]] = []
     if not _embedding_circuit_breaker():
         _, _, emb_api_key, _ = _get_embedding_config()
         if emb_api_key:
-            emb_candidates = _embedding_prescreen(query, skill_list, top_k=_get_embedding_main_top_k())
+            # 意图上下文拼入召回文本：目标（上下文）+ 当前动作（query）
+            _emb_query = (context + "\n" + query) if context else query
+            emb_candidates = _embedding_prescreen(_emb_query, skill_list, top_k=_get_embedding_main_top_k())
             # 降级检查：返回的候选没有 _emb_score 说明 embedding 失败，跳过
             if emb_candidates and not any("_emb_score" in c for c in emb_candidates):
                 logger.debug("Skill match: embedding prescreen degraded, skipping")
@@ -1280,7 +1486,7 @@ def match_skills(
 
     if not candidates:
         logger.debug("Skill match: no candidates")
-        return []
+        return ("", []) if with_intent else []
 
     n_union = len(candidates)
     logger.debug(
@@ -1297,11 +1503,13 @@ def match_skills(
             [r["name"] for r in results], elapsed, n_union, len(results),
             query[:100].replace("\n", " "),
         )
-        return results
+        return ("", results) if with_intent else results
 
     # Stage 3: LLM 精排（输入截断到精排上限）
     llm_pool = candidates[:_get_rerank_max_candidates()]
-    results = _llm_match(query, top_k, candidates=llm_pool)
+    llm_intent, results = cast(tuple[str, list[dict[str, str]]], _llm_match(
+        query, top_k, candidates=llm_pool, context=context, with_intent=True
+    ))
     if results:
         elapsed = (time.time() - t0) * 1000
         logger.info(
@@ -1312,7 +1520,7 @@ def match_skills(
             len(results),
             query[:100].replace("\n", " "),
         )
-        return results
+        return (llm_intent, results) if with_intent else results
 
     # Fallback: LLM 返回空时，用 union top-K 兜底
     logger.debug("Skill match: LLM returned empty, falling back to union top-%d", top_k)
@@ -1339,7 +1547,7 @@ def match_skills(
             len(fallback),
             query[:100].replace("\n", " "),
         )
-    return fallback
+    return ("", fallback) if with_intent else fallback
 
 
 def _candidate_sort_key(c: dict[str, Any]) -> float:
