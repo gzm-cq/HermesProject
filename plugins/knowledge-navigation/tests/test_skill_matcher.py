@@ -890,7 +890,7 @@ def test_early_exit_gt3_calls_llm(mock_ensure: MagicMock, monkeypatch: pytest.Mo
     with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
          patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
          patch.object(sm, "_embedding_prescreen", side_effect=mock_emb), \
-         patch.object(sm, "_llm_match", return_value=[{"name": "skill-0", "description": "desc 0", "path": "/p0", "score": "0.900"}]) as mock_llm:
+         patch.object(sm, "_llm_match", return_value=("test-intent", [{"name": "skill-0", "description": "desc 0", "path": "/p0", "score": "0.900"}])) as mock_llm:
         results = match_skills("deploy")
 
     mock_llm.assert_called_once()  # union=5 >3 → 精排 LLM 被调用
@@ -990,4 +990,91 @@ def test_rerank_input_capped(mock_ensure: MagicMock, monkeypatch: pytest.MonkeyP
     lines = [ln for ln in captured["prompt"].splitlines() if ln.startswith("- ")]
     assert len(lines) <= 20, f"精排输入未截断: {len(lines)} 个候选"
     assert len(lines) == 20  # 50 个候选截断到上限 20
+    sm._skill_index = None
+
+
+# ====================================================================
+# A 方案：intent 标签（精排 JSON 对象输出 + with_intent 透传）
+# ====================================================================
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_llm_match_parses_intent_object(mock_ensure: MagicMock) -> None:
+    """A1: _llm_match 解析精排输出的 JSON 对象（intent + skills）。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = {
+        "docker-patterns": {"name": "docker-patterns", "description": "Docker deployment", "path": "/p1", "category": "ops"},
+        "git-workflow": {"name": "git-workflow", "description": "Git workflow", "path": "/p2", "category": "dev"},
+    }
+    raw = '{"intent": "ops-deploy", "skills": ["docker-patterns"]}'
+    with patch("httpx.post", return_value=_mock_llm_response(raw)):
+        intent, results = sm._llm_match("docker 怎么部署", with_intent=True)  # type: ignore[misc]
+
+    assert intent == "ops-deploy"
+    assert results[0]["name"] == "docker-patterns"
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_llm_match_backwards_compat_array(mock_ensure: MagicMock) -> None:
+    """A2: _llm_match 兼容旧数组格式（无 intent → 空串）。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = {
+        "git-workflow": {"name": "git-workflow", "description": "Git workflow", "path": "/p2", "category": "dev"},
+    }
+    with patch("httpx.post", return_value=_mock_llm_response('["git-workflow"]')):
+        intent, results = sm._llm_match("git 分支", with_intent=True)  # type: ignore[misc]
+
+    assert intent == ""
+    assert results[0]["name"] == "git-workflow"
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_llm_match_with_intent_false_returns_list(mock_ensure: MagicMock) -> None:
+    """A3: with_intent=False（默认）保持旧返回类型（list）。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = {
+        "git-workflow": {"name": "git-workflow", "description": "Git workflow", "path": "/p2", "category": "dev"},
+    }
+    with patch("httpx.post", return_value=_mock_llm_response('["git-workflow"]')):
+        results = sm._llm_match("git 分支")  # 默认 False
+
+    assert isinstance(results, list)
+    assert results[0]["name"] == "git-workflow"
+    sm._skill_index = None
+
+
+@patch("knowledge_navigation.core.skill_matcher.ensure_index", return_value=True)
+def test_match_skills_with_intent_returns_tuple(mock_ensure: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A4: match_skills(with_intent=True) 返回 (intent, results) 元组。"""
+    import knowledge_navigation.core.skill_matcher as sm
+
+    sm._skill_index = {
+        "docker-patterns": {"name": "docker-patterns", "description": "Docker deployment", "path": "/p1", "category": "ops"},
+        "git-workflow": {"name": "git-workflow", "description": "Git workflow", "path": "/p2", "category": "dev"},
+        "lark-notify": {"name": "lark-notify", "description": "Feishu notify", "path": "/p3", "category": "lark"},
+        "db-migration": {"name": "db-migration", "description": "DB migration", "path": "/p4", "category": "db"},
+    }
+
+    def mock_emb(query, candidates, top_k=20):
+        # 返回 4 个候选 → union=4 > 3 → 触发 LLM 精排路径
+        return [
+            dict(c, **{"_emb_score": 0.9 - i * 0.1})
+            for i, c in enumerate(candidates)
+        ]
+
+    with patch.object(sm, "_embedding_circuit_breaker", return_value=False), \
+         patch.object(sm, "_get_embedding_config", return_value=("model", "url", "key", 20)), \
+         patch.object(sm, "_embedding_prescreen", side_effect=mock_emb), \
+         patch.object(sm, "_llm_match", return_value=("ops-deploy", [{"name": "docker-patterns", "description": "d", "path": "/p", "score": "0.9"}])):
+        out = match_skills("docker 部署", with_intent=True)
+
+    assert isinstance(out, tuple)
+    intent, results = out
+    assert intent == "ops-deploy"
+    assert results[0]["name"] == "docker-patterns"
     sm._skill_index = None
