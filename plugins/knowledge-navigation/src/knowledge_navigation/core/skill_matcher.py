@@ -1321,6 +1321,8 @@ def _match_skills_cached(
 
     try:
         # 技能集指纹（稳定版：桶+极值——小变更不失效，大变更整库 miss）
+        if not _get_skill_list():
+            ensure_index()  # 首次请求构建索引，避免指纹退化为空
         skill_list = _get_skill_list()
         names = sorted(s["name"] for s in skill_list)
         skill_set_hash = _skill_set_fingerprint(names)

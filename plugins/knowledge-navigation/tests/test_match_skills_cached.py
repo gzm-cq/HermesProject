@@ -289,3 +289,44 @@ class TestEnvSwitch:
         with patch.object(SkillMatchCache, "cache_path", tmp_path / "c.json", create=True):
             c = sm._get_skill_match_cache()
         assert c is not None or True  # 默认启用；路径 patch 失败也不该抛异常
+
+
+class TestIndexBuildOnFirstCall:
+    def test_first_call_builds_index_fingerprint_nonempty(self, enable_cache, mock_emb, monkeypatch):
+        """首次请求 _get_skill_list 为空时，ensure_index 被调用，指纹非空（2026-09-05 修复）。
+
+        原缺陷：_match_skills_cached 未 ensure_index，首个请求 _skill_index=None
+        → 指纹退化为空串 → 缓存条目无 L1 指纹保护。
+        """
+        calls = {"ensure": 0, "match": 0}
+
+        def fake_ensure():
+            calls["ensure"] += 1
+            return True
+
+        def fake_get_list():
+            # 首次返回空（模拟索引未构建），ensure 后返回 3 个技能
+            if calls["ensure"] >= 1 and not getattr(fake_get_list, "built", False):
+                fake_get_list.built = True
+                return [
+                    {"name": "docker-patterns", "description": "d", "path": "/p", "category": ""},
+                    {"name": "git-workflow", "description": "g", "path": "/p", "category": ""},
+                    {"name": "lark-notify", "description": "l", "path": "/p", "category": ""},
+                ]
+            return []
+
+        def fake_match_skills(query, **kwargs):
+            calls["match"] += 1
+            # miss 路径调用带 with_intent=True → 返回 (intent, results) tuple
+            return ("test-intent", [{"name": "docker-patterns", "description": "d", "path": "/p", "score": "0.9"}])
+
+        monkeypatch.setattr(sm, "ensure_index", fake_ensure)
+        monkeypatch.setattr(sm, "_get_skill_list", fake_get_list)
+        monkeypatch.setattr(sm, "match_skills", fake_match_skills)
+        result = sm._match_skills_cached("docker 部署", context="")
+        assert calls["ensure"] >= 1, "ensure_index 未被调用"
+        assert result, "匹配结果为空"
+        # store 的条目应带非空指纹（防 L1 绕过）
+        cache_inst = enable_cache
+        assert len(cache_inst._entries) == 1
+        assert cache_inst._entries[0].skill_set_hash != "", "指纹退化为空串"

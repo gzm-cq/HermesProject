@@ -105,6 +105,10 @@ class SkillMatchCache:
         # 与 embedding 路径解耦：不依赖模型服务，命中前无需调 embedding；
         # 适合固定 prompt 的高重复流量（如 cron 整点巡检）。
         self._exact: dict[str, dict[str, Any]] = {}
+        # 短生命周期进程（cron agent / CLI 子进程）退出时兜底落盘：
+        # store 后未到 5s 批处理窗口就退出 → dirty 数据丢失（2026-09-05 发现）
+        import atexit as _atexit
+        _atexit.register(self._flush_on_exit)
 
         # ── 全局命中率监控（跨重启持久化，随 cache 落盘）──
         self._total_lookups = 0     # lookup() 调用次数
@@ -432,6 +436,15 @@ class SkillMatchCache:
             bucket = self._hourly.setdefault(str(h), {"lookups": 0, "hits": 0, "misses": 0})
             for k in ("lookups", "hits", "misses"):
                 bucket[k] = max(bucket[k], int(d.get(k, 0)))
+
+    def _flush_on_exit(self) -> None:
+        """进程退出兜底落盘（atexit 注册）。避免短进程 store 后未落盘即退出。"""
+        try:
+            if self._dirty:
+                with self._lock:
+                    self._save_locked()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _save_if_due_locked(self, now: float) -> None:
         """批量落盘：dirty 且距上次保存超过间隔才真正写盘。"""

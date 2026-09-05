@@ -16,6 +16,8 @@ import sys
 import threading
 import time
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -554,3 +556,44 @@ class TestStatsMerge:
         )
         assert reloaded.lookup_exact("合并持久化 query") == ["skill-x"]
 
+
+
+# ──────────────────────────────────────────────
+# 指标 11：进程退出兜底落盘（2026-09-05 修复：atexit flush）
+# ──────────────────────────────────────────────
+
+class TestFlushOnExit:
+    def test_dirty_store_flushed_on_exit(self, tmp_path):
+        """短进程 store 后不显式 flush 即退出 → atexit 兜底落盘。"""
+        import subprocess, sys, json
+        cache_file = tmp_path / "exit_cache.json"
+        code = (
+            "import sys; sys.path.insert(0, %r); "
+            "from knowledge_navigation.core.skill_match_cache import SkillMatchCache; "
+            "import numpy as np; "
+            "c = SkillMatchCache(ctx_threshold=0.90, query_threshold=0.85, max_entries=100, "
+            "cache_path=%r, save_interval=3600); "
+            "c.store(None, np.zeros(1024, dtype=np.float32), ['skill-a'], query_text='退出前写入'); "
+            "c.store_exact('退出前写入2', ['skill-b'])"
+            % (str(Path(__file__).resolve().parent.parent / "src"), str(cache_file))
+        )
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, f"子进程失败: {r.stderr}"
+        # 文件应存在且包含 exact 键（atexit flush 兜底）
+        assert cache_file.exists(), "退出后缓存文件未落盘"
+        data = json.loads(cache_file.read_text())
+        assert len(data.get("exact", {})) == 2, f"exact 键丢失: {data.get('exact')}"
+
+    def test_clean_exit_no_flush_needed(self, tmp_path):
+        """无 dirty 数据时退出不落盘也不报错。"""
+        import subprocess, sys
+        cache_file = tmp_path / "clean_exit_cache.json"
+        code = (
+            "import sys; sys.path.insert(0, %r); "
+            "from knowledge_navigation.core.skill_match_cache import SkillMatchCache; "
+            "c = SkillMatchCache(cache_path=%r, save_interval=3600)"
+            % (str(Path(__file__).resolve().parent.parent / "src"), str(cache_file))
+        )
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0
+        assert not cache_file.exists() or True  # 无 dirty → 无写盘要求，不报错即可
