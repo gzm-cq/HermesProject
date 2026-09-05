@@ -134,3 +134,6 @@ nul
 .workbuddy/
 .codegraph/
 .aider*
+
+# CodeGraph symlink（本地索引，不提交）
+.codegraph
